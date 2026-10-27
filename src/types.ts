@@ -9,6 +9,8 @@ export interface Instrument {
   tickSize: string;
   minOrderSize: string;
   volume24hr: number;
+  category: string;
+  tags: string[];
 }
 
 export interface PriceLevel {
@@ -58,14 +60,75 @@ export interface OrderDraft {
   size: string;
   sizeUnit: "USD" | "SHARES";
   execution: "GTC" | "FAK";
-  mode: "DRY";
+  mode: "DRY" | "LIVE";
+}
+
+export interface GeoblockStatus {
+  blocked: boolean | null;
+  country: string;
+  region: string;
+  checkedAt: string | null;
+  error: string;
+}
+
+export interface AccountStatus {
+  connected: boolean;
+  armed: boolean;
+  maxOrderUsd: number;
+  geoblock: GeoblockStatus;
+  closedOnly: boolean | null;
+  account?: {
+    signer: string;
+    signerType: string;
+    wallet: string;
+    walletType: string;
+  };
+}
+
+export interface AccountPosition {
+  assetId: string;
+  conditionId: string;
+  title: string;
+  outcome: string;
+  currentSize: string;
+  avgPrice: string;
+  currentPrice: string;
+  currentValue: string;
+  realizedPnl: string;
+  unrealizedPnl: string;
+  totalPnl: string;
+  percentPnl: string;
+  status: string;
+  redeemable: boolean;
+}
+
+export interface AccountSnapshot {
+  wallet: string;
+  portfolioValue: string;
+  openPositions: AccountPosition[];
+  closedPositions: AccountPosition[];
+  openOrderCount: number;
+  refreshedAt: string;
+}
+
+export interface OrderResult extends OrderDraft {
+  status: string;
+  createdAt: string;
+  orderId?: string;
+  message?: string;
 }
 
 export interface TerminalBridge {
   listMarkets(): Promise<Instrument[]>;
   subscribeAssets(assetIds: string[]): Promise<{ subscribed: string[] }>;
   unsubscribeAssets(assetIds: string[]): Promise<{ subscribed: string[] }>;
-  submitOrder(draft: OrderDraft): Promise<OrderDraft & { status: string; createdAt: string }>;
+  submitOrder(draft: OrderDraft): Promise<OrderResult>;
+  getAccountStatus(): Promise<AccountStatus>;
+  connectAccount(request: { privateKey: string; walletAddress?: string }): Promise<AccountStatus>;
+  disconnectAccount(): Promise<AccountStatus>;
+  setTradingArmed(armed: boolean): Promise<AccountStatus>;
+  getAccountSnapshot(): Promise<AccountSnapshot>;
+  cancelAllOrders(): Promise<{ canceled: string[]; status: string }>;
   onMarketEvent(callback: (event: MarketEvent) => void): () => void;
   onConnectionStatus(callback: (status: ConnectionStatus) => void): () => void;
 }

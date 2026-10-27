@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { demoBridge } from "./demoBridge";
 import type {
+  AccountSnapshot,
+  AccountStatus,
   BookState,
   ConnectionStatus,
   Instrument,
@@ -10,6 +12,13 @@ import type {
 
 const bridge = window.polymarketTerminal ?? demoBridge;
 const STORAGE_KEY = "pm-terminal:open-instruments";
+const INITIAL_ACCOUNT_STATUS: AccountStatus = {
+  connected: false,
+  armed: false,
+  maxOrderUsd: 25,
+  closedOnly: null,
+  geoblock: { blocked: null, country: "", region: "", checkedAt: null, error: "Not checked" },
+};
 
 function freshBook(instrument: Instrument): BookState {
   return {
@@ -99,6 +108,20 @@ function priceLabel(value: string) {
   return `${numeric.toFixed(numeric % 1 === 0 ? 0 : 1)}¢`;
 }
 
+function shortAddress(value?: string) {
+  if (!value) return "not connected";
+  return `${value.slice(0, 6)}…${value.slice(-4)}`;
+}
+
+function signedMoney(value: number) {
+  const prefix = value > 0 ? "+" : "";
+  return `${prefix}${new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  }).format(value)}`;
+}
+
 interface Toast {
   id: number;
   tone: "good" | "bad";
@@ -109,6 +132,7 @@ interface BookPanelProps {
   instrument: Instrument;
   book: BookState;
   connection: ConnectionStatus;
+  accountStatus: AccountStatus;
   onClose(): void;
   onOrder(draft: OrderDraft): Promise<void>;
   onDragStart(): void;
@@ -119,6 +143,7 @@ function BookPanel({
   instrument,
   book,
   connection,
+  accountStatus,
   onClose,
   onOrder,
   onDragStart,
@@ -127,21 +152,33 @@ function BookPanel({
   const [size, setSize] = useState("10");
   const [sizeUnit, setSizeUnit] = useState<"USD" | "SHARES">("USD");
   const [pending, setPending] = useState(false);
+  const [visibleLevels, setVisibleLevels] = useState(8);
+  const panelRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (!panelRef.current || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      const levels = Math.max(5, Math.min(18, Math.floor((entry.contentRect.height - 195) / 42)));
+      setVisibleLevels(levels);
+    });
+    observer.observe(panelRef.current);
+    return () => observer.disconnect();
+  }, []);
 
   const asks = useMemo(
     () =>
       [...book.asks.entries()]
         .sort((a, b) => Number(a[0]) - Number(b[0]))
-        .slice(0, 8)
+        .slice(0, visibleLevels)
         .reverse(),
-    [book.asks],
+    [book.asks, visibleLevels],
   );
   const bids = useMemo(
     () =>
       [...book.bids.entries()]
         .sort((a, b) => Number(b[0]) - Number(a[0]))
-        .slice(0, 8),
-    [book.bids],
+        .slice(0, visibleLevels),
+    [book.bids, visibleLevels],
   );
   const maxDepth = Math.max(1, ...asks.map(([, value]) => Number(value)), ...bids.map(([, value]) => Number(value)));
   const disabled = pending || connection !== "live" || !book.ready || Number(size) <= 0;
@@ -159,7 +196,7 @@ function BookPanel({
         size,
         sizeUnit,
         execution,
-        mode: "DRY",
+        mode: accountStatus.armed ? "LIVE" : "DRY",
       });
     } finally {
       setPending(false);
@@ -169,13 +206,14 @@ function BookPanel({
   const row = (side: "bid" | "ask", [price, levelSize]: [string, string]) => {
     const isBid = side === "bid";
     const depth = Math.min(100, (Number(levelSize) / maxDepth) * 100);
+    const bubbleSize = 7 + Math.sqrt(depth / 100) * 17;
     return (
       <div className={`book-row ${side}`} key={`${side}-${price}`}>
         <button
           className="order-lane buy-lane"
-          disabled={disabled}
+          disabled={disabled || !isBid}
           title={`Rest BUY ${size} ${sizeUnit.toLowerCase()} at ${priceLabel(price)}`}
-          onClick={() => place("BUY", price, "GTC")}
+          onClick={() => isBid && place("BUY", price, "GTC")}
         >
           {isBid ? "+ BUY" : ""}
         </button>
@@ -186,7 +224,8 @@ function BookPanel({
           onClick={() => isBid && place("SELL", price, "FAK")}
         >
           {isBid && <span className="depth" style={{ width: `${depth}%` }} />}
-          <span>{isBid ? Number(levelSize).toLocaleString() : ""}</span>
+          {isBid && <i className="volume-bubble" style={{ width: bubbleSize, height: bubbleSize }} />}
+          <span className="level-value">{isBid ? Number(levelSize).toLocaleString() : ""}</span>
         </button>
         <div className="price-cell">{priceLabel(price)}</div>
         <button
@@ -196,13 +235,14 @@ function BookPanel({
           onClick={() => !isBid && place("BUY", price, "FAK")}
         >
           {!isBid && <span className="depth" style={{ width: `${depth}%` }} />}
-          <span>{!isBid ? Number(levelSize).toLocaleString() : ""}</span>
+          {!isBid && <i className="volume-bubble" style={{ width: bubbleSize, height: bubbleSize }} />}
+          <span className="level-value">{!isBid ? Number(levelSize).toLocaleString() : ""}</span>
         </button>
         <button
           className="order-lane sell-lane"
-          disabled={disabled}
+          disabled={disabled || isBid}
           title={`Rest SELL ${size} ${sizeUnit.toLowerCase()} at ${priceLabel(price)}`}
-          onClick={() => place("SELL", price, "GTC")}
+          onClick={() => !isBid && place("SELL", price, "GTC")}
         >
           {!isBid ? "SELL +" : ""}
         </button>
@@ -214,6 +254,7 @@ function BookPanel({
 
   return (
     <section
+      ref={panelRef}
       className="book-panel"
       draggable
       onDragStart={onDragStart}
@@ -270,9 +311,196 @@ function BookPanel({
       <footer className="book-footer">
         <span>Tick {book.tickSize}</span>
         <span>Min {instrument.minOrderSize} sh</span>
-        <span className="dry-label">DRY · clicks are logged, never posted</span>
+        <span className={accountStatus.armed ? "live-label" : "dry-label"}>
+          {accountStatus.armed ? `LIVE · max $${accountStatus.maxOrderUsd}` : "DRY · clicks are logged, never posted"}
+        </span>
       </footer>
     </section>
+  );
+}
+
+interface LoginModalProps {
+  onClose(): void;
+  onConnect(request: { privateKey: string; walletAddress?: string }): Promise<void>;
+}
+
+function LoginModal({ onClose, onConnect }: LoginModalProps) {
+  const [privateKey, setPrivateKey] = useState("");
+  const [walletAddress, setWalletAddress] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string>();
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setPending(true);
+    setError(undefined);
+    try {
+      await onConnect({ privateKey: privateKey.trim(), walletAddress: walletAddress.trim() || undefined });
+      setPrivateKey("");
+      setWalletAddress("");
+    } catch (connectError) {
+      setError(connectError instanceof Error ? connectError.message : "Could not connect account");
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <form className="login-modal" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
+        <header>
+          <div>
+            <span>POLYMARKET ACCOUNT</span>
+            <strong>Connect a signer</strong>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose}>×</button>
+        </header>
+
+        <div className="security-callout">
+          Use a dedicated low-balance wallet. The key stays in app memory for this session and is never saved.
+        </div>
+
+        <label className="field-label">
+          PRIVATE KEY
+          <input
+            autoFocus
+            autoComplete="off"
+            spellCheck={false}
+            type="password"
+            placeholder="0x…"
+            value={privateKey}
+            onChange={(event) => setPrivateKey(event.target.value)}
+          />
+        </label>
+
+        <label className="field-label">
+          EXISTING POLYMARKET WALLET <span>OPTIONAL</span>
+          <input
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="0x… leave blank for Deposit Wallet"
+            value={walletAddress}
+            onChange={(event) => setWalletAddress(event.target.value)}
+          />
+        </label>
+
+        <p className="field-help">
+          If the signer owns an existing Proxy, Safe or Deposit Wallet, enter that account wallet here. Leaving it blank uses the signer's default Deposit Wallet.
+        </p>
+        {error && <div className="form-error">{error}</div>}
+        <button className="primary-button" disabled={pending || privateKey.trim().length < 66}>
+          {pending ? "CONNECTING…" : "CONNECT FOR THIS SESSION"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+interface AccountDrawerProps {
+  status: AccountStatus;
+  snapshot?: AccountSnapshot;
+  loading: boolean;
+  onClose(): void;
+  onConnect(): void;
+  onRefresh(): void;
+  onToggleArmed(): void;
+  onDisconnect(): void;
+  onCancelAll(): void;
+}
+
+function AccountDrawer({
+  status,
+  snapshot,
+  loading,
+  onClose,
+  onConnect,
+  onRefresh,
+  onToggleArmed,
+  onDisconnect,
+  onCancelAll,
+}: AccountDrawerProps) {
+  const openPnl = (snapshot?.openPositions ?? []).reduce((sum, position) => sum + Number(position.totalPnl), 0);
+  const realizedPnl = [
+    ...(snapshot?.openPositions ?? []),
+    ...(snapshot?.closedPositions ?? []),
+  ].reduce((sum, position) => sum + Number(position.realizedPnl), 0);
+
+  return (
+    <aside className="account-drawer">
+      <header className="account-header">
+        <div>
+          <span>ACCOUNT</span>
+          <strong>{status.connected ? shortAddress(status.account?.wallet) : "Not connected"}</strong>
+        </div>
+        <button className="icon-button" onClick={onClose}>×</button>
+      </header>
+
+      {!status.connected ? (
+        <div className="account-empty">
+          <div className="account-orb">◎</div>
+          <strong>Connect to see positions and PnL</strong>
+          <span>The public order-book terminal remains usable in dry mode.</span>
+          <button className="primary-button" onClick={onConnect}>CONNECT PRIVATE KEY</button>
+        </div>
+      ) : (
+        <>
+          <div className="account-identity">
+            <div><span>WALLET TYPE</span><b>{status.account?.walletType}</b></div>
+            <div><span>LOCATION</span><b>{status.geoblock.blocked === false ? `${status.geoblock.country || "OK"} · OK` : status.geoblock.blocked ? "BLOCKED" : "UNVERIFIED"}</b></div>
+            <div><span>OPEN ORDERS</span><b>{snapshot?.openOrderCount ?? "—"}</b></div>
+          </div>
+
+          <div className="account-metrics">
+            <article>
+              <span>PORTFOLIO VALUE</span>
+              <strong>{snapshot ? money(Number(snapshot.portfolioValue)) : "—"}</strong>
+            </article>
+            <article>
+              <span>OPEN PNL</span>
+              <strong className={openPnl >= 0 ? "positive" : "negative"}>{snapshot ? signedMoney(openPnl) : "—"}</strong>
+            </article>
+            <article>
+              <span>REALIZED · LOADED</span>
+              <strong className={realizedPnl >= 0 ? "positive" : "negative"}>{snapshot ? signedMoney(realizedPnl) : "—"}</strong>
+            </article>
+          </div>
+
+          <div className="account-actions">
+            <button className={status.armed ? "danger-button armed" : "arm-button"} onClick={onToggleArmed}>
+              {status.armed ? "DISARM LIVE" : `ARM LIVE · $${status.maxOrderUsd} MAX`}
+            </button>
+            <button onClick={onRefresh} disabled={loading}>{loading ? "…" : "↻"}</button>
+          </div>
+
+          <section className="positions-section">
+            <div className="section-title"><span>OPEN POSITIONS</span><b>{snapshot?.openPositions.length ?? 0}</b></div>
+            <div className="positions-list">
+              {loading && !snapshot && <div className="drawer-message">Loading portfolio…</div>}
+              {!loading && snapshot?.openPositions.length === 0 && <div className="drawer-message">No open positions.</div>}
+              {snapshot?.openPositions.map((position) => (
+                <article className="position-card" key={`${position.conditionId}-${position.assetId}`}>
+                  <div className="position-title">
+                    <strong>{position.title}</strong>
+                    <span>{position.outcome}</span>
+                  </div>
+                  <div className="position-numbers">
+                    <div><span>SIZE</span><b>{Number(position.currentSize).toLocaleString()}</b></div>
+                    <div><span>AVG</span><b>{priceLabel(position.avgPrice)}</b></div>
+                    <div><span>VALUE</span><b>{money(Number(position.currentValue))}</b></div>
+                    <div><span>PNL</span><b className={Number(position.totalPnl) >= 0 ? "positive" : "negative"}>{signedMoney(Number(position.totalPnl))}</b></div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+
+          <div className="account-footer-actions">
+            <button className="cancel-all" onClick={onCancelAll}>CANCEL ALL OPEN ORDERS</button>
+            <button onClick={onDisconnect}>DISCONNECT SESSION</button>
+          </div>
+        </>
+      )}
+    </aside>
   );
 }
 
@@ -282,10 +510,16 @@ export function App() {
   const [books, setBooks] = useState<Map<string, BookState>>(new Map());
   const [connection, setConnection] = useState<ConnectionStatus>("idle");
   const [query, setQuery] = useState("");
+  const [category, setCategory] = useState("All");
   const [loading, setLoading] = useState(true);
   const [marketError, setMarketError] = useState<string>();
   const [columns, setColumns] = useState(2);
   const [toast, setToast] = useState<Toast>();
+  const [accountStatus, setAccountStatus] = useState<AccountStatus>(INITIAL_ACCOUNT_STATUS);
+  const [accountSnapshot, setAccountSnapshot] = useState<AccountSnapshot>();
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [accountLoading, setAccountLoading] = useState(false);
   const dragIndex = useRef<number | undefined>(undefined);
 
   useEffect(() => {
@@ -297,6 +531,10 @@ export function App() {
       offEvent();
       offStatus();
     };
+  }, []);
+
+  useEffect(() => {
+    bridge.getAccountStatus().then(setAccountStatus).catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -335,18 +573,46 @@ export function App() {
     return () => clearTimeout(timer);
   }, [toast]);
 
+  const categories = useMemo(() => {
+    const preferred = ["Politics", "Crypto", "Sports", "Economy", "Tech & AI", "World", "Culture", "Other"];
+    const available = new Set(instruments.map((instrument) => instrument.category));
+    return ["All", ...preferred.filter((item) => available.has(item))];
+  }, [instruments]);
+
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return instruments
       .filter(
         (item) =>
-          !needle ||
-          item.marketTitle.toLowerCase().includes(needle) ||
-          item.eventTitle.toLowerCase().includes(needle) ||
-          item.outcome.toLowerCase().includes(needle),
+          (category === "All" || item.category === category) &&
+          (!needle ||
+            item.marketTitle.toLowerCase().includes(needle) ||
+            item.eventTitle.toLowerCase().includes(needle) ||
+            item.outcome.toLowerCase().includes(needle) ||
+            item.tags.some((tag) => tag.toLowerCase().includes(needle))),
       )
       .slice(0, 60);
-  }, [instruments, query]);
+  }, [category, instruments, query]);
+
+  const refreshAccount = useCallback(async () => {
+    if (!accountStatus.connected) return;
+    setAccountLoading(true);
+    try {
+      setAccountSnapshot(await bridge.getAccountSnapshot());
+    } catch (error) {
+      setToast({
+        id: Date.now(),
+        tone: "bad",
+        message: error instanceof Error ? error.message : "Could not load account",
+      });
+    } finally {
+      setAccountLoading(false);
+    }
+  }, [accountStatus.connected]);
+
+  useEffect(() => {
+    if (accountOpen && accountStatus.connected && !accountSnapshot) refreshAccount();
+  }, [accountOpen, accountSnapshot, accountStatus.connected, refreshAccount]);
 
   const openBook = useCallback(
     async (instrument: Instrument) => {
@@ -377,15 +643,67 @@ export function App() {
       const result = await bridge.submitOrder(draft);
       setToast({
         id: Date.now(),
-        tone: "good",
-        message: `${result.status}: ${draft.side} ${draft.size} ${draft.sizeUnit} ${draft.outcome} @ ${priceLabel(draft.price)} ${draft.execution}`,
+        tone: result.status.includes("ACCEPTED") ? "good" : "bad",
+        message: `${result.status}: ${draft.side} ${draft.size} ${draft.sizeUnit} ${draft.outcome} @ ${priceLabel(draft.price)} ${draft.execution}${result.message ? ` · ${result.message}` : ""}`,
       });
+      if (draft.mode === "LIVE") refreshAccount();
     } catch (error) {
       setToast({
         id: Date.now(),
         tone: "bad",
         message: error instanceof Error ? error.message : "Order rejected",
       });
+    }
+  };
+
+  const connectAccount = async (request: { privateKey: string; walletAddress?: string }) => {
+    const status = await bridge.connectAccount(request);
+    setAccountStatus(status);
+    setAccountSnapshot(undefined);
+    setLoginOpen(false);
+    setAccountOpen(true);
+    setToast({ id: Date.now(), tone: "good", message: `CONNECTED: ${shortAddress(status.account?.wallet)} · live remains disarmed` });
+  };
+
+  const disconnectAccount = async () => {
+    setAccountStatus(await bridge.disconnectAccount());
+    setAccountSnapshot(undefined);
+    setToast({ id: Date.now(), tone: "good", message: "Account disconnected; key removed from app memory" });
+  };
+
+  const toggleArmed = async () => {
+    if (!accountStatus.connected) {
+      setLoginOpen(true);
+      return;
+    }
+    if (!accountStatus.armed) {
+      const confirmed = window.confirm(
+        `Arm live trading for this session? Clicking a book will place real orders, capped at $${accountStatus.maxOrderUsd} each.`,
+      );
+      if (!confirmed) return;
+    }
+    try {
+      const status = await bridge.setTradingArmed(!accountStatus.armed);
+      setAccountStatus(status);
+      setToast({
+        id: Date.now(),
+        tone: status.armed ? "bad" : "good",
+        message: status.armed ? "LIVE TRADING ARMED" : "Live trading disarmed",
+      });
+    } catch (error) {
+      setToast({ id: Date.now(), tone: "bad", message: error instanceof Error ? error.message : "Could not change trading mode" });
+    }
+  };
+
+  const cancelAllOrders = async () => {
+    if (!window.confirm("Cancel every open order for this connected Polymarket account?")) return;
+    try {
+      const result = await bridge.cancelAllOrders();
+      setAccountStatus(await bridge.getAccountStatus());
+      setToast({ id: Date.now(), tone: "good", message: `${result.status}: ${result.canceled.length} orders canceled` });
+      refreshAccount();
+    } catch (error) {
+      setToast({ id: Date.now(), tone: "bad", message: error instanceof Error ? error.message : "Cancel-all failed" });
     }
   };
 
@@ -413,14 +731,21 @@ export function App() {
         <div className="top-stats">
           <span className={`status status-${connection}`}><i />{connection}</span>
           <span>{openInstruments.length} books</span>
-          <span className="mode-pill">DRY MODE</span>
+          <button className={`mode-pill ${accountStatus.armed ? "mode-live" : ""}`} onClick={toggleArmed}>
+            {accountStatus.armed ? "LIVE ARMED" : "DRY MODE"}
+          </button>
         </div>
-        <div className="layout-switcher" aria-label="Grid columns">
-          {[1, 2, 3].map((count) => (
-            <button key={count} className={columns === count ? "active" : ""} onClick={() => setColumns(count)}>
-              {count}C
-            </button>
-          ))}
+        <div className="top-actions">
+          <button className={`account-button ${accountStatus.connected ? "connected" : ""}`} onClick={() => setAccountOpen(true)}>
+            <i /> {shortAddress(accountStatus.account?.wallet)}
+          </button>
+          <div className="layout-switcher" aria-label="Grid columns">
+            {[1, 2, 3].map((count) => (
+              <button key={count} className={columns === count ? "active" : ""} onClick={() => setColumns(count)}>
+                {count}C
+              </button>
+            ))}
+          </div>
         </div>
       </header>
 
@@ -436,6 +761,13 @@ export function App() {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
+          <div className="category-strip">
+            {categories.map((item) => (
+              <button key={item} className={category === item ? "active" : ""} onClick={() => setCategory(item)}>
+                {item}
+              </button>
+            ))}
+          </div>
           <div className="market-list">
             {loading && <div className="drawer-message">Loading active markets…</div>}
             {marketError && <div className="drawer-message error">{marketError}</div>}
@@ -454,6 +786,7 @@ export function App() {
                     <span>{money(instrument.volume24hr)} vol</span>
                     <i>{isOpen ? "OPEN" : "+ BOOK"}</i>
                   </span>
+                  <span className="market-category">{instrument.category}</span>
                 </button>
               );
             })}
@@ -462,8 +795,8 @@ export function App() {
 
         <section className="books-workspace">
           <div className="workspace-hint">
-            <span>Click ASK to buy · click BID to sell · outer lanes place resting limits</span>
-            <span>Drag panels to reorder</span>
+            <span>Click ASK to buy · click BID to sell · outer lanes place post-only limits</span>
+            <span>Drag panels · resize from the bottom-right corner</span>
           </div>
           {openInstruments.length === 0 ? (
             <div className="empty-state">
@@ -478,6 +811,7 @@ export function App() {
                   instrument={instrument}
                   book={books.get(instrument.assetId) ?? freshBook(instrument)}
                   connection={connection}
+                  accountStatus={accountStatus}
                   onClose={() => closeBook(instrument)}
                   onOrder={submitOrder}
                   onDragStart={() => {
@@ -491,6 +825,20 @@ export function App() {
         </section>
       </div>
 
+      {accountOpen && (
+        <AccountDrawer
+          status={accountStatus}
+          snapshot={accountSnapshot}
+          loading={accountLoading}
+          onClose={() => setAccountOpen(false)}
+          onConnect={() => setLoginOpen(true)}
+          onRefresh={refreshAccount}
+          onToggleArmed={toggleArmed}
+          onDisconnect={disconnectAccount}
+          onCancelAll={cancelAllOrders}
+        />
+      )}
+      {loginOpen && <LoginModal onClose={() => setLoginOpen(false)} onConnect={connectAccount} />}
       {toast && <div className={`toast toast-${toast.tone}`}>{toast.message}</div>}
     </main>
   );

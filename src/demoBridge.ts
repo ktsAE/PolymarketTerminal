@@ -1,4 +1,12 @@
-import type { Instrument, MarketEvent, OrderDraft, TerminalBridge } from "./types";
+import type { AccountStatus, Instrument, MarketEvent, OrderDraft, TerminalBridge } from "./types";
+
+const disconnectedStatus: AccountStatus = {
+  connected: false,
+  armed: false,
+  maxOrderUsd: 25,
+  closedOnly: null,
+  geoblock: { blocked: null, country: "", region: "", checkedAt: null, error: "Desktop only" },
+};
 
 const instruments: Instrument[] = [
   {
@@ -10,6 +18,8 @@ const instruments: Instrument[] = [
     tickSize: "0.01",
     minOrderSize: "5",
     volume24hr: 2_430_000,
+    category: "Economy",
+    tags: ["Economy", "Fed"],
   },
   {
     assetId: "10002",
@@ -20,6 +30,8 @@ const instruments: Instrument[] = [
     tickSize: "0.01",
     minOrderSize: "5",
     volume24hr: 2_430_000,
+    category: "Economy",
+    tags: ["Economy", "Fed"],
   },
   {
     assetId: "10003",
@@ -30,6 +42,8 @@ const instruments: Instrument[] = [
     tickSize: "0.01",
     minOrderSize: "5",
     volume24hr: 1_280_000,
+    category: "Crypto",
+    tags: ["Crypto", "Bitcoin"],
   },
   {
     assetId: "10004",
@@ -40,6 +54,8 @@ const instruments: Instrument[] = [
     tickSize: "0.01",
     minOrderSize: "5",
     volume24hr: 860_000,
+    category: "Tech & AI",
+    tags: ["Tech", "AI"],
   },
 ];
 
@@ -85,6 +101,24 @@ export const demoBridge: TerminalBridge = {
   },
   async submitOrder(draft: OrderDraft) {
     return { ...draft, status: "DRY_ACCEPTED", createdAt: new Date().toISOString() };
+  },
+  async getAccountStatus() {
+    return disconnectedStatus;
+  },
+  async connectAccount() {
+    throw new Error("Private-key login is available only in the Electron desktop app");
+  },
+  async disconnectAccount() {
+    return disconnectedStatus;
+  },
+  async setTradingArmed() {
+    throw new Error("Live trading is available only in the Electron desktop app");
+  },
+  async getAccountSnapshot() {
+    throw new Error("Connect an account in the Electron desktop app");
+  },
+  async cancelAllOrders() {
+    return { canceled: [], status: "DEMO" };
   },
   onMarketEvent(callback) {
     listeners.add(callback);

@@ -12,13 +12,16 @@
     "preview": "vite preview --host 127.0.0.1",
     "start": "npm run build && electron .",
     "typecheck": "tsc --noEmit",
-    "smoke:live": "node scripts/smoke-live.cjs"
+    "smoke:live": "node scripts/smoke-live.cjs",
+    "smoke:trading-module": "ELECTRON_RUN_AS_NODE=1 electron scripts/smoke-trading-module.mjs",
+    "test:orders": "ELECTRON_RUN_AS_NODE=1 electron scripts/trading-orders.test.mjs"
   },
   "dependencies": {
     "@polymarket/client": "^0.14.0",
     "@vitejs/plugin-react": "latest",
     "react": "latest",
     "react-dom": "latest",
+    "viem": "^2.57.12",
     "ws": "latest",
     "zod": "latest"
   },

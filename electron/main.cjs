@@ -14,18 +14,38 @@ let heartbeat;
 let reconnectTimer;
 let reconnectAttempt = 0;
 const subscriptions = new Set();
+let tradingModulePromise;
+
+const authRequestSchema = z.object({
+  privateKey: z.string().regex(/^0x[0-9a-fA-F]{64}$/, "Private key must be 0x plus 64 hex characters"),
+  walletAddress: z
+    .string()
+    .trim()
+    .refine((value) => value === "" || /^0x[0-9a-fA-F]{40}$/.test(value), "Wallet address is invalid")
+    .optional(),
+});
 
 const orderDraftSchema = z.object({
   assetId: z.string().regex(/^\d+$/),
   marketTitle: z.string().min(1).max(500),
   outcome: z.string().min(1).max(100),
   side: z.enum(["BUY", "SELL"]),
-  price: z.string().regex(/^0\.\d+$/),
-  size: z.string().regex(/^\d+(\.\d+)?$/),
+  price: z.string().regex(/^0\.\d+$/).refine((value) => Number(value) > 0 && Number(value) < 1),
+  size: z.string().regex(/^\d+(\.\d+)?$/).refine((value) => Number(value) > 0),
   sizeUnit: z.enum(["USD", "SHARES"]),
   execution: z.enum(["GTC", "FAK"]),
-  mode: z.literal("DRY"),
+  mode: z.enum(["DRY", "LIVE"]),
 });
+
+function getTradingModule() {
+  tradingModulePromise ??= import("./trading.mjs");
+  return tradingModulePromise;
+}
+
+function appendOrderAudit(entry) {
+  const auditPath = path.join(app.getPath("userData"), "orders.jsonl");
+  fs.appendFileSync(auditPath, `${JSON.stringify(entry)}\n`, { encoding: "utf8", mode: 0o600 });
+}
 
 function sendStatus(status) {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -124,9 +144,30 @@ function parseStringArray(value) {
   }
 }
 
+const categoryRules = [
+  ["Politics", ["politics", "elections", "global-elections", "us-politics"]],
+  ["Crypto", ["crypto", "bitcoin", "ethereum", "solana"]],
+  ["Sports", ["sports", "nba", "nfl", "mlb", "nhl", "soccer", "ufc"]],
+  ["Economy", ["economy", "finance", "business", "fed", "stocks"]],
+  ["Tech & AI", ["tech", "technology", "artificial-intelligence", "ai", "science"]],
+  ["World", ["geopolitics", "world", "middle-east", "ukraine", "china"]],
+  ["Culture", ["culture", "entertainment", "movies", "music", "awards"]],
+];
+
+function marketCategory(tags) {
+  const slugs = new Set(tags.map((tag) => String(tag?.slug || "").toLowerCase()));
+  for (const [label, matches] of categoryRules) {
+    if (matches.some((match) => slugs.has(match))) return label;
+  }
+  return "Other";
+}
+
 function normalizeEvents(events) {
   const instruments = [];
   for (const event of Array.isArray(events) ? events : []) {
+    const tags = Array.isArray(event.tags) ? event.tags : [];
+    const tagLabels = tags.map((tag) => String(tag?.label || "")).filter(Boolean);
+    const category = marketCategory(tags);
     for (const market of Array.isArray(event.markets) ? event.markets : []) {
       if (!market.acceptingOrders || market.closed) continue;
       const outcomes = parseStringArray(market.outcomes);
@@ -141,6 +182,8 @@ function normalizeEvents(events) {
           tickSize: String(market.orderPriceMinTickSize || "0.01"),
           minOrderSize: String(market.orderMinSize || "5"),
           volume24hr: Number(market.volume24hr || event.volume24hr || 0),
+          category,
+          tags: tagLabels,
         });
       }
     }
@@ -199,17 +242,44 @@ ipcMain.handle("books:unsubscribe", (_event, assetIds) => {
   return { subscribed: [...subscriptions] };
 });
 
-ipcMain.handle("orders:submit", (_event, draft) => {
+ipcMain.handle("orders:submit", async (_event, draft) => {
   const order = orderDraftSchema.parse(draft);
+  if (order.mode === "LIVE") {
+    const trading = await getTradingModule();
+    const entry = await trading.submitLiveOrder(order);
+    appendOrderAudit(entry);
+    return entry;
+  }
   const entry = {
     ...order,
     status: "DRY_ACCEPTED",
     createdAt: new Date().toISOString(),
   };
-  const auditPath = path.join(app.getPath("userData"), "orders.jsonl");
-  fs.appendFileSync(auditPath, `${JSON.stringify(entry)}\n`, { encoding: "utf8", mode: 0o600 });
+  appendOrderAudit(entry);
   return entry;
 });
+
+ipcMain.handle("auth:status", async () => (await getTradingModule()).getAccountStatus());
+
+ipcMain.handle("auth:connect", async (_event, request) => {
+  const input = authRequestSchema.parse(request);
+  const trading = await getTradingModule();
+  return trading.connectAccount({
+    privateKey: input.privateKey,
+    walletAddress: input.walletAddress || undefined,
+  });
+});
+
+ipcMain.handle("auth:disconnect", async () => (await getTradingModule()).disconnectAccount());
+
+ipcMain.handle("trading:arm", async (_event, nextArmed) => {
+  const armed = z.boolean().parse(nextArmed);
+  return (await getTradingModule()).setTradingArmed(armed);
+});
+
+ipcMain.handle("account:snapshot", async () => (await getTradingModule()).getAccountSnapshot());
+
+ipcMain.handle("orders:cancel-all", async () => (await getTradingModule()).cancelAllOrders());
 
 app.whenReady().then(() => {
   createWindow();

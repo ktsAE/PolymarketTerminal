@@ -22,6 +22,16 @@ app.whenReady().then(async () => {
   const image = await window.webContents.capturePage();
   const output = path.join("/tmp", "polymarket-terminal-mvp.png");
   fs.writeFileSync(output, image.toPNG());
-  process.stdout.write(`${output}\n${orderToast}\n`);
+  await window.webContents.executeJavaScript(`document.querySelector('.account-button')?.click()`);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const accountImage = await window.webContents.capturePage();
+  const accountOutput = path.join("/tmp", "polymarket-terminal-account.png");
+  fs.writeFileSync(accountOutput, accountImage.toPNG());
+  await window.webContents.executeJavaScript(`document.querySelector('.account-empty .primary-button')?.click()`);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const loginImage = await window.webContents.capturePage();
+  const loginOutput = path.join("/tmp", "polymarket-terminal-login.png");
+  fs.writeFileSync(loginOutput, loginImage.toPNG());
+  process.stdout.write(`${output}\n${accountOutput}\n${loginOutput}\n${orderToast}\n`);
   app.quit();
 });
