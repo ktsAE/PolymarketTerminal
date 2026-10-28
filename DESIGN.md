@@ -33,25 +33,28 @@ Each panel is a continuous probability ladder, high price at the top and low pri
 
 Columns, left to right:
 
-1. BUY action lane — rests a GTC buy at the displayed price.
-2. Bid depth — resting shares, with a proportional green heat bar; clicking populated depth sends a taking SELL/FAK.
-3. Price — probability in cents; current/last traded bucket is explicitly highlighted.
-4. Ask depth — resting shares, with a proportional red heat bar; clicking populated depth sends a taking BUY/FAK.
-5. SELL action lane — rests a GTC sell at the displayed price.
-6. Executed volume — live trade prints aggregated into their displayed price bucket.
+1. Three historical cluster buckets — completed transactions by price and time, switchable between Volume, Delta and Bid×Ask.
+2. BUY action/own-order lane — rests a GTC buy at the displayed price and marks accepted session orders.
+3. Bid depth — resting shares, with a proportional green heat bar; clicking populated depth sends a taking SELL/FAK.
+4. Price — probability in cents; current/last traded bucket is explicitly highlighted.
+5. Ask depth — resting shares, with a proportional red heat bar; clicking populated depth sends a taking BUY/FAK.
+6. SELL action/own-order lane — rests a GTC sell at the displayed price and marks accepted session orders.
+7. Executed volume — live trade prints aggregated into their displayed price bucket.
 
 Resting depth and executed volume are never derived from each other. Bubbles use square-root area scaling so one outlier does not make all other prints invisible. Green means reported BUY, red SELL, and split color means both sides aggregated at the same displayed price. The visible minimum-size filter is `ALL`, `≥50`, `≥200`, or `≥500` shares.
 
-`1T`, `2T`, and `5T` change semantic price aggregation. Wheel movement pans the ladder and visibly pauses auto-centering. `C`/the center control returns to live automatic centering. Panel height independently controls how many rows are rendered.
+`1T`, `2T`, and `5T` change semantic price aggregation. Wheel movement pans the ladder and visibly pauses auto-centering. `C`/the center control returns to live automatic centering. Row height (`18`, `22`, `26`) and panel height independently control density. Depth heatmaps can normalize automatically or to explicit 500/2K/10K-share maxima. Each book's information strip maps Tiger's position panel to outcome-token size, average entry, PnL and current spread.
 
 ## Workspace behavior
 
 - AUTO calculates 1–3 equal-width columns and enough equal-height rows to fit every open book in the viewport. At 1440×960, six books form a 3×2 layout; at 1100×800, they form 2×3.
 - Focus expands one book without closing or unsubscribing the others.
 - Panels can be reordered by dragging their header handle.
-- The navigator can collapse, returning its width to the books.
+- The navigator can collapse or be width-resized, returning space to the books.
 - Manual 1C/2C/3C modes remain available.
-- Up to six visible DOMs are an intentional MVP limit; Tiger/MetaScalp-style arbitrary docking and saved named workspaces are a later phase.
+- Three named workspace slots persist independent sets of open outcome assets and grid modes.
+- A height-resizable bottom dock contains session orders, public CLOB tape, positions, account state and an application trade log. The public tape is explicitly not represented as personal fills.
+- Up to six visible DOMs are an intentional MVP limit. Fully arbitrary free-form docking remains outside this phase; equal grid cells continue to resize with the usable viewport.
 
 ## Readability and visual tokens
 
@@ -83,6 +86,7 @@ Dense does not mean microscopic. Navigational names are 10–11 px, DOM prices a
 - League favorite uses a series ID and survives reload.
 - NBA expands into scheduled events and displays the user's local start time.
 - Outcome buttons open independent CLOB token books.
-- Six books auto-fit at 1440×960 and 1100×800.
-- Tick aggregation, manual pan, recenter, depth heat bars, and price-aligned print bubbles render together.
-- Compact QA observed 6 panels, 54 DOM rows and 30 executed-volume bubbles.
+- Six books auto-fit at 1440×960 and 1100×800 with the blotter collapsed to its tabs.
+- Tick aggregation, manual pan, recenter, time clusters, depth heat bars, and price-aligned print bubbles render together.
+- The bottom Orders blotter opens and shows the audited dry-order result without mislabeling the public tape as account execution data.
+- Compact QA observed 6 panels, 42 DOM rows, 126 cluster cells and 30 executed-volume bubbles.

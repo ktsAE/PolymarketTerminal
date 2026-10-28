@@ -14,6 +14,11 @@ app.whenReady().then(async () => {
     webPreferences: { offscreen: true },
   });
   await window.loadFile(path.join(__dirname, "..", "dist", "index.html"));
+  await window.webContents.executeJavaScript(`
+    localStorage.removeItem('pm-terminal:navigator-width');
+    localStorage.removeItem('pm-terminal:dock-height');
+  `);
+  await window.webContents.reload();
   await new Promise((resolve) => setTimeout(resolve, 800));
   const orderToast = await window.webContents.executeJavaScript(`
     document.querySelector('.ask-size:not([disabled])')?.click();
@@ -38,11 +43,14 @@ app.whenReady().then(async () => {
       books: document.querySelectorAll('.book-panel').length,
       bubbles: document.querySelectorAll('.volume-bubble').length,
       domRows: document.querySelectorAll('.dom-row').length,
+      clusterCells: document.querySelectorAll('.cluster-cell').length,
       leagues: document.querySelectorAll('.league-node').length,
+      dockTabs: document.querySelectorAll('.dock-tabs button').length,
+      workspaces: document.querySelectorAll('.workspace-tabs button').length,
       autoActive: document.querySelector('.layout-switcher button.active')?.textContent?.trim(),
     }))()
   `);
-  if (uiStats.books !== 6 || uiStats.bubbles < 10 || uiStats.domRows < 18 || uiStats.leagues < 1 || uiStats.autoActive !== "AUTO") {
+  if (uiStats.books !== 6 || uiStats.bubbles < 10 || uiStats.domRows < 18 || uiStats.clusterCells < 30 || uiStats.leagues < 1 || uiStats.dockTabs < 5 || uiStats.workspaces !== 3 || uiStats.autoActive !== "AUTO") {
     throw new Error(`Workspace QA failed: ${JSON.stringify(uiStats)}`);
   }
   const autoLayoutImage = await window.webContents.capturePage();
@@ -57,6 +65,16 @@ app.whenReady().then(async () => {
     [...document.querySelectorAll('.book-panel')].every((panel) => panel.getBoundingClientRect().bottom <= window.innerHeight + 1)
   `);
   if (!compactVisible) throw new Error("AUTO layout did not fit all books inside the compact viewport");
+  window.setSize(1440, 960);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await window.webContents.executeJavaScript(`document.querySelector('.dock-toggle')?.click()`);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const blotterVisible = await window.webContents.executeJavaScript(`Boolean(document.querySelector('.orders-table'))`);
+  if (!blotterVisible) throw new Error("Bottom orders blotter did not open");
+  const blotterImage = await window.webContents.capturePage();
+  const blotterOutput = path.join("/tmp", "polymarket-terminal-blotter.png");
+  fs.writeFileSync(blotterOutput, blotterImage.toPNG());
+  await window.webContents.executeJavaScript(`document.querySelector('.dock-toggle')?.click()`);
   await window.webContents.executeJavaScript(`
     const star = document.querySelector('.league-star');
     if (star && !star.classList.contains('active')) star.click();
@@ -65,8 +83,6 @@ app.whenReady().then(async () => {
   await new Promise((resolve) => setTimeout(resolve, 100));
   const favoriteCount = await window.webContents.executeJavaScript(`document.querySelectorAll('.league-node').length`);
   if (favoriteCount < 1) throw new Error("Favorite filter did not retain the starred league");
-  window.setSize(1440, 960);
-  await new Promise((resolve) => setTimeout(resolve, 150));
   await window.webContents.executeJavaScript(`document.querySelector('.account-button')?.click()`);
   await new Promise((resolve) => setTimeout(resolve, 100));
   const accountImage = await window.webContents.capturePage();
@@ -77,6 +93,6 @@ app.whenReady().then(async () => {
   const loginImage = await window.webContents.capturePage();
   const loginOutput = path.join("/tmp", "polymarket-terminal-login.png");
   fs.writeFileSync(loginOutput, loginImage.toPNG());
-  process.stdout.write(`${output}\n${autoLayoutOutput}\n${compactOutput}\n${accountOutput}\n${loginOutput}\n${orderToast}\n${JSON.stringify(uiStats)}\n`);
+  process.stdout.write(`${output}\n${autoLayoutOutput}\n${compactOutput}\n${blotterOutput}\n${accountOutput}\n${loginOutput}\n${orderToast}\n${JSON.stringify(uiStats)}\n`);
   app.quit();
 });

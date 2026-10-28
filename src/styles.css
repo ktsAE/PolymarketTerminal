@@ -462,3 +462,185 @@ body { overflow: hidden; background: var(--bg); }
   .topbar { grid-template-columns: 280px 1fr auto; }
   .workspace { grid-template-columns: 280px minmax(0, 1fr); }
 }
+
+/* Order-flow workspace v3: Tiger-inspired clusters, docked blotter, and resizable workspace chrome. */
+.terminal-shell { background: #07090c; }
+.workspace { position: relative; }
+.market-drawer { position: relative; }
+.navigator-resizer {
+  position: absolute;
+  z-index: 8;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+}
+.navigator-resizer:hover { background: rgba(73, 133, 226, 0.38); }
+
+.workspace-tabs { display: flex; align-items: center; gap: 2px; }
+.workspace-tabs button {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid #202935;
+  border-radius: 2px;
+  background: #0c1117;
+  color: #687589;
+  cursor: pointer;
+  font-size: 7px;
+  font-weight: 850;
+  letter-spacing: 0.06em;
+}
+.workspace-tabs button:hover { color: #b9c5d6; }
+.workspace-tabs button.active { border-color: #3a69aa; background: #152842; color: #cfe1ff; box-shadow: inset 0 -2px #4f8ef1; }
+
+.book-panel { grid-template-rows: 50px 27px 66px minmax(0, 1fr) 27px; }
+.position-strip {
+  min-width: 0;
+  height: 27px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 7px;
+  overflow: hidden;
+  border-bottom: 1px solid #222b36;
+  background: #0c1117;
+  color: #58667a;
+  font: 750 7px "SFMono-Regular", Consolas, monospace;
+  white-space: nowrap;
+}
+.position-strip > span b { margin-left: 3px; color: #aab5c4; font-weight: 850; }
+.flow-settings { min-width: 0; margin-left: auto; display: flex; align-items: center; gap: 3px; }
+.flow-settings select {
+  height: 21px;
+  max-width: 76px;
+  border: 1px solid #27313d;
+  border-radius: 2px;
+  outline: 0;
+  background: #101720;
+  color: #718096;
+  cursor: pointer;
+  font: 800 6px "SFMono-Regular", Consolas, monospace;
+}
+
+.dom-columns, .dom-row {
+  grid-template-columns: repeat(3, minmax(26px, .62fr)) 30px minmax(42px, 1fr) 52px minmax(42px, 1fr) 30px 56px;
+}
+.cluster-heading { color: #73839a !important; background: #101720; }
+.cluster-cell {
+  min-width: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-right: 1px solid #18212c;
+  background: #090d12;
+  color: #607086;
+  font-size: 6px;
+  font-weight: 750;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+.cluster-buy { color: #4bc297; background: linear-gradient(90deg, rgba(23, 105, 77, 0.06), rgba(23, 105, 77, 0.2)); }
+.cluster-sell { color: #dc7485; background: linear-gradient(90deg, rgba(127, 39, 55, 0.06), rgba(127, 39, 55, 0.2)); }
+.working-live, .working-dry {
+  min-width: 17px;
+  height: 15px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid;
+  border-radius: 2px;
+  font-size: 7px;
+}
+.working-live { border-color: #eab44f; background: rgba(234, 180, 79, 0.18); color: #ffd777; }
+.working-dry { border-color: #5375a6; background: rgba(71, 118, 184, 0.16); color: #94b8eb; }
+.book-footer { overflow: hidden; }
+
+.bottom-dock {
+  position: relative;
+  z-index: 20;
+  flex: 0 0 auto;
+  min-height: 31px;
+  overflow: hidden;
+  border-top: 1px solid #2a3441;
+  background: #090d12;
+  box-shadow: 0 -8px 22px rgba(0, 0, 0, 0.18);
+}
+.dock-resizer {
+  position: absolute;
+  z-index: 4;
+  top: -3px;
+  right: 0;
+  left: 0;
+  height: 7px;
+  cursor: row-resize;
+}
+.dock-resizer:hover { background: rgba(73, 133, 226, 0.35); }
+.dock-tabs {
+  height: 31px;
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid #202936;
+  background: #0c1117;
+}
+.dock-tabs button {
+  min-width: 86px;
+  padding: 0 10px;
+  border: 0;
+  border-right: 1px solid #202936;
+  background: transparent;
+  color: #647287;
+  cursor: pointer;
+  font-size: 7px;
+  font-weight: 850;
+  letter-spacing: 0.055em;
+}
+.dock-tabs button:hover { color: #c0c9d6; background: #111822; }
+.dock-tabs button.active { color: #d7e4f8; background: #142034; box-shadow: inset 0 2px #4f8ef1; }
+.dock-tabs button b { margin-left: 6px; padding: 2px 4px; border-radius: 8px; background: #202b39; color: #8fa0b7; font-size: 6px; }
+.dock-note { margin-left: auto; display: flex; align-items: center; padding: 0 10px; color: #4d5a6c; font-size: 6px; font-weight: 800; letter-spacing: .08em; }
+.dock-tabs .dock-toggle { min-width: 36px; width: 36px; padding: 0; border-left: 1px solid #26313e; font-size: 10px; }
+.dock-content { height: calc(100% - 31px); overflow: auto; background: #080c11; }
+.dock-empty { padding: 20px 13px; color: #536174; font-size: 8px; }
+.blotter-table { min-width: 850px; font-family: "SFMono-Regular", Consolas, monospace; }
+.blotter-table > header, .blotter-table > div:not(.dock-empty) {
+  min-height: 25px;
+  display: grid;
+  align-items: center;
+  border-bottom: 1px solid #151d26;
+}
+.blotter-table > header { position: sticky; z-index: 2; top: 0; background: #0d131a; color: #536176; font-size: 6px; font-weight: 900; letter-spacing: .07em; }
+.blotter-table > div:not(.dock-empty) { color: #8491a3; font-size: 7px; }
+.blotter-table > div:not(.dock-empty):hover { background: #0f161f; }
+.blotter-table span { min-width: 0; overflow: hidden; padding: 0 9px; text-overflow: ellipsis; white-space: nowrap; }
+.orders-table > header, .orders-table > div:not(.dock-empty) { grid-template-columns: 82px 55px minmax(220px, 1.8fr) 55px 80px 62px 55px minmax(105px, 1fr); }
+.tape-table > header, .tape-table > div:not(.dock-empty) { grid-template-columns: 88px 88px minmax(280px, 1fr) 78px 72px 90px; }
+.positions-table > header, .positions-table > div:not(.dock-empty) { grid-template-columns: minmax(320px, 1fr) 90px 70px 70px 90px 90px; }
+.buy-text { color: #4fd6a5 !important; }
+.sell-text { color: #f47c90 !important; }
+.live-text { color: #ff9aaa !important; font-weight: 900; }
+.dry-text { color: #d9b76e !important; }
+.dock-account { min-width: 760px; display: grid; grid-template-columns: repeat(5, minmax(125px, 1fr)) 190px; align-items: stretch; }
+.dock-account article { min-height: 58px; padding: 10px 12px; border-right: 1px solid #1d2631; }
+.dock-account span, .dock-account b { display: block; }
+.dock-account span { color: #526074; font-size: 6px; font-weight: 850; letter-spacing: .08em; }
+.dock-account b { margin-top: 8px; color: #a9b4c3; font: 800 9px "SFMono-Regular", Consolas, monospace; }
+.dock-account button { margin: 10px; border: 1px solid rgba(243, 95, 120, .35); border-radius: 3px; background: rgba(243, 95, 120, .08); color: #e68594; cursor: pointer; font-size: 7px; font-weight: 850; }
+.dock-account button:disabled { opacity: .35; cursor: default; }
+.trade-log { min-width: 620px; font: 750 7px "SFMono-Regular", Consolas, monospace; }
+.trade-log > div:not(.dock-empty) { min-height: 25px; display: grid; grid-template-columns: 90px minmax(0, 1fr); align-items: center; border-bottom: 1px solid #151d26; }
+.trade-log time { padding: 0 10px; color: #526074; }
+.trade-log span { color: #8996a8; }
+.trade-log .log-good span { color: #6fc9a6; }
+.trade-log .log-bad span { color: #ed8495; }
+
+@container (max-width: 430px) {
+  .position-strip { gap: 7px; }
+  .position-strip > span:nth-child(2), .position-strip > span:nth-child(4) { display: none; }
+  .flow-settings select:nth-child(3), .flow-settings select:nth-child(4) { display: none; }
+}
+
+@media (max-width: 1080px) {
+  .workspace-tabs button { padding: 0 5px; font-size: 6px; }
+  .top-stats > span:nth-last-child(2) { display: none; }
+  .dock-note { display: none; }
+}

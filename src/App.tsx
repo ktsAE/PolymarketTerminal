@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { demoBridge } from "./demoBridge";
 import type {
+  AccountPosition,
   AccountSnapshot,
   AccountStatus,
   BookState,
@@ -9,13 +10,20 @@ import type {
   MarketLeague,
   MarketEvent,
   OrderDraft,
+  OrderResult,
+  TradePrint,
 } from "./types";
 
 const bridge = window.polymarketTerminal ?? demoBridge;
 const STORAGE_KEY = "pm-terminal:open-instruments";
 const FAVORITE_LEAGUES_KEY = "pm-terminal:favorite-leagues";
 const RECENTS_KEY = "pm-terminal:recent-instruments";
+const ACTIVE_WORKSPACE_KEY = "pm-terminal:active-workspace";
+const WORKSPACE_KEY = "pm-terminal:workspace";
+const NAV_WIDTH_KEY = "pm-terminal:navigator-width";
+const DOCK_HEIGHT_KEY = "pm-terminal:dock-height";
 const MAX_OPEN_BOOKS = 6;
+const WORKSPACE_SLOTS = ["SCALP 1", "SCALP 2", "SCALP 3"] as const;
 const INITIAL_ACCOUNT_STATUS: AccountStatus = {
   connected: false,
   armed: false,
@@ -194,6 +202,32 @@ function mergeInstruments(current: Instrument[], incoming: Instrument[]) {
   return [...merged.values()];
 }
 
+function tradeTime(value: string) {
+  const numeric = Number(value);
+  const millis = Number.isFinite(numeric)
+    ? numeric > 10_000_000_000 ? numeric : numeric * 1000
+    : new Date(value).getTime();
+  return Number.isFinite(millis) ? millis : Date.now();
+}
+
+function readStoredNumber(key: string, fallback: number) {
+  const stored = localStorage.getItem(key);
+  if (stored === null || stored.trim() === "") return fallback;
+  const value = Number(stored);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+interface TradeLogEntry {
+  id: number;
+  time: string;
+  tone: "info" | "good" | "bad";
+  message: string;
+}
+
+function prependTradeLog(current: TradeLogEntry[], tone: TradeLogEntry["tone"], message: string) {
+  return [{ id: Date.now(), time: new Date().toLocaleTimeString(), tone, message }, ...current].slice(0, 200);
+}
+
 interface Toast {
   id: number;
   tone: "good" | "bad";
@@ -205,12 +239,14 @@ interface BookPanelProps {
   book: BookState;
   connection: ConnectionStatus;
   accountStatus: AccountStatus;
+  position?: AccountPosition;
+  sessionOrders: OrderResult[];
   leagueFavorite: boolean;
   focused: boolean;
   onClose(): void;
   onToggleLeagueFavorite(): void;
   onToggleFocus(): void;
-  onOrder(draft: OrderDraft): Promise<void>;
+  onOrder(draft: OrderDraft): Promise<OrderResult | void>;
   onDragStart(): void;
   onDrop(): void;
 }
@@ -220,6 +256,8 @@ function BookPanel({
   book,
   connection,
   accountStatus,
+  position,
+  sessionOrders,
   leagueFavorite,
   focused,
   onClose,
@@ -237,18 +275,22 @@ function BookPanel({
   const [autoCenter, setAutoCenter] = useState(true);
   const [manualCenter, setManualCenter] = useState<number>();
   const [printThreshold, setPrintThreshold] = useState(0);
+  const [clusterMode, setClusterMode] = useState<"VOLUME" | "DELTA" | "BIDASK">("VOLUME");
+  const [clusterPeriod, setClusterPeriod] = useState<5 | 15 | 60>(15);
+  const [rowHeight, setRowHeight] = useState<18 | 22 | 26>(22);
+  const [depthScale, setDepthScale] = useState<"AUTO" | "500" | "2000" | "10000">("AUTO");
   const panelRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     if (!panelRef.current || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(([entry]) => {
-      let rows = Math.max(3, Math.min(39, Math.floor((entry.contentRect.height - 164) / 22)));
+      let rows = Math.max(3, Math.min(49, Math.floor((entry.contentRect.height - 190) / rowHeight)));
       if (rows % 2 === 0) rows -= 1;
       setVisibleRows(rows);
     });
     observer.observe(panelRef.current);
     return () => observer.disconnect();
-  }, []);
+  }, [rowHeight]);
 
   const nativeTick = Math.max(0.001, Number(book.tickSize || instrument.tickSize || 0.01));
   const step = nativeTick * groupTicks;
@@ -296,7 +338,30 @@ function BookPanel({
     });
     return result;
   }, [book.recentTrades, printThreshold, step]);
-  const maxDepth = Math.max(1, ...groupedBids.values(), ...groupedAsks.values());
+  const clusterColumns = useMemo(() => {
+    const periodMs = clusterPeriod * 1000;
+    const anchor = book.recentTrades.reduce((latest, trade) => Math.max(latest, tradeTime(trade.timestamp)), Date.now());
+    return Array.from({ length: 3 }, (_, columnIndex) => {
+      const end = anchor - columnIndex * periodMs;
+      const start = end - periodMs;
+      const levels = new Map<number, { buy: number; sell: number }>();
+      book.recentTrades.forEach((trade) => {
+        const timestamp = tradeTime(trade.timestamp);
+        if (timestamp < start || timestamp >= end) return;
+        const key = bucket(Number(trade.price));
+        const level = levels.get(key) ?? { buy: 0, sell: 0 };
+        level[trade.side === "BUY" ? "buy" : "sell"] += Number(trade.size);
+        levels.set(key, level);
+      });
+      return { label: columnIndex === 0 ? "NOW" : `-${columnIndex * clusterPeriod}s`, levels };
+    }).reverse();
+  }, [book.recentTrades, clusterPeriod, step]);
+  const ownOrders = useMemo(
+    () => sessionOrders.filter((order) => order.assetId === instrument.assetId && order.execution === "GTC" && order.status.includes("ACCEPTED")),
+    [instrument.assetId, sessionOrders],
+  );
+  const autoDepth = Math.max(1, ...groupedBids.values(), ...groupedAsks.values());
+  const maxDepth = depthScale === "AUTO" ? autoDepth : Number(depthScale);
   const maxPrint = Math.max(1, ...[...prints.values()].map((print) => print.buy + print.sell));
   const bidDepth = [...book.bids.values()].reduce((sum, value) => sum + Number(value), 0);
   const askDepth = [...book.asks.values()].reduce((sum, value) => sum + Number(value), 0);
@@ -304,6 +369,13 @@ function BookPanel({
   const bidShare = totalDepth > 0 ? (bidDepth / totalDepth) * 100 : 50;
   const rollingPrintVolume = book.recentTrades.reduce((sum, trade) => sum + Number(trade.size), 0);
   const disabled = pending || connection !== "live" || !book.ready || Number(size) <= 0;
+
+  const clusterLabel = (level?: { buy: number; sell: number }) => {
+    if (!level) return "";
+    if (clusterMode === "BIDASK") return `${compactNumber(level.buy)}×${compactNumber(level.sell)}`;
+    const value = clusterMode === "DELTA" ? level.buy - level.sell : level.buy + level.sell;
+    return `${value > 0 && clusterMode === "DELTA" ? "+" : ""}${compactNumber(value)}`;
+  };
 
   const place = async (side: "BUY" | "SELL", price: string, execution: "GTC" | "FAK") => {
     if (disabled) return;
@@ -337,15 +409,27 @@ function BookPanel({
     const bubbleSize = print ? 17 + Math.sqrt(printSize / maxPrint) * 23 : 0;
     const printSide = !print ? "" : print.buy > print.sell ? "buy" : print.sell > print.buy ? "sell" : "mixed";
     const atLast = book.lastTrade && Math.abs(bucket(Number(book.lastTrade)) - key) < step / 2;
+    const rowOrders = ownOrders.filter((order) => Math.abs(bucket(Number(order.price)) - key) < step / 2);
+    const buyOrders = rowOrders.filter((order) => order.side === "BUY");
+    const sellOrders = rowOrders.filter((order) => order.side === "SELL");
     return (
-      <div className={`dom-row ${atLast ? "last-price" : ""}`} key={price}>
+      <div className={`dom-row ${atLast ? "last-price" : ""}`} key={price} style={{ height: rowHeight }}>
+        {clusterColumns.map((column) => {
+          const level = column.levels.get(key);
+          const delta = (level?.buy ?? 0) - (level?.sell ?? 0);
+          return (
+            <div className={`cluster-cell ${delta > 0 ? "cluster-buy" : delta < 0 ? "cluster-sell" : ""}`} key={column.label} title={level ? `${compactNumber(level.buy)} bought / ${compactNumber(level.sell)} sold` : "No prints in this bucket"}>
+              {clusterLabel(level)}
+            </div>
+          );
+        })}
         <button
           className="order-lane buy-lane"
           disabled={disabled}
           title={`Rest BUY ${size} ${sizeUnit.toLowerCase()} at ${priceLabel(price)}`}
           onClick={() => place("BUY", price, "GTC")}
         >
-          BUY
+          {buyOrders.length ? <b className={buyOrders.some((order) => order.mode === "LIVE") ? "working-live" : "working-dry"}>{buyOrders.length}</b> : "BUY"}
         </button>
         <button
           className="liquidity bid-size"
@@ -372,7 +456,7 @@ function BookPanel({
           title={`Rest SELL ${size} ${sizeUnit.toLowerCase()} at ${priceLabel(price)}`}
           onClick={() => place("SELL", price, "GTC")}
         >
-          SELL
+          {sellOrders.length ? <b className={sellOrders.some((order) => order.mode === "LIVE") ? "working-live" : "working-dry"}>{sellOrders.length}</b> : "SELL"}
         </button>
         <div className="print-cell">
           {print && (
@@ -415,6 +499,36 @@ function BookPanel({
         </div>
       </header>
 
+      <div className="position-strip">
+        <span>POS <b>{position ? compactNumber(Number(position.currentSize)) : "—"}</b></span>
+        <span>AVG <b>{position ? priceLabel(position.avgPrice) : "—"}</b></span>
+        <span>PNL <b className={position && Number(position.totalPnl) < 0 ? "negative" : "positive"}>{position ? signedMoney(Number(position.totalPnl)) : "$0.00"}</b></span>
+        <span>SPREAD <b>{spread === undefined ? "—" : `${(spread * 100).toFixed(1)}¢`}</b></span>
+        <div className="flow-settings">
+          <select value={clusterMode} onChange={(event) => setClusterMode(event.target.value as typeof clusterMode)} title="Cluster calculation">
+            <option value="VOLUME">VOL</option>
+            <option value="DELTA">Δ</option>
+            <option value="BIDASK">B×A</option>
+          </select>
+          <select value={clusterPeriod} onChange={(event) => setClusterPeriod(Number(event.target.value) as typeof clusterPeriod)} title="Cluster time bucket">
+            <option value={5}>5s</option>
+            <option value={15}>15s</option>
+            <option value={60}>60s</option>
+          </select>
+          <select value={depthScale} onChange={(event) => setDepthScale(event.target.value as typeof depthScale)} title="Depth heatmap maximum">
+            <option value="AUTO">MAX A</option>
+            <option value="500">MAX 500</option>
+            <option value="2000">MAX 2K</option>
+            <option value="10000">MAX 10K</option>
+          </select>
+          <select value={rowHeight} onChange={(event) => setRowHeight(Number(event.target.value) as typeof rowHeight)} title="DOM row height">
+            <option value={18}>ROW 18</option>
+            <option value={22}>ROW 22</option>
+            <option value={26}>ROW 26</option>
+          </select>
+        </div>
+      </div>
+
       <div className="trade-strip dom-toolbar">
         <label>
           QTY
@@ -449,6 +563,7 @@ function BookPanel({
       <div className="book-body dom-body">
         <div className="ladder-stack">
           <div className="dom-columns">
+            {clusterColumns.map((column) => <span className="cluster-heading" key={column.label}>{column.label}</span>)}
             <span>BUY</span>
             <span>BID DEPTH</span>
             <span>PRICE</span>
@@ -677,6 +792,137 @@ function AccountDrawer({
   );
 }
 
+type DockTab = "ORDERS" | "MARKET TAPE" | "POSITIONS" | "ACCOUNT" | "TRADE LOG";
+
+interface TapeExecution {
+  instrument: Instrument;
+  trade: TradePrint;
+}
+
+interface BottomDockProps {
+  activeTab: DockTab;
+  height: number;
+  collapsed: boolean;
+  accountStatus: AccountStatus;
+  snapshot?: AccountSnapshot;
+  orders: OrderResult[];
+  tape: TapeExecution[];
+  logs: TradeLogEntry[];
+  onTab(tab: DockTab): void;
+  onToggle(): void;
+  onResizeStart(event: ReactPointerEvent<HTMLDivElement>): void;
+  onCancelAll(): void;
+}
+
+function BottomDock({
+  activeTab,
+  height,
+  collapsed,
+  accountStatus,
+  snapshot,
+  orders,
+  tape,
+  logs,
+  onTab,
+  onToggle,
+  onResizeStart,
+  onCancelAll,
+}: BottomDockProps) {
+  const tabs: Array<{ id: DockTab; count?: number }> = [
+    { id: "ORDERS", count: snapshot?.openOrderCount ?? orders.filter((order) => order.mode === "LIVE" && order.status.includes("ACCEPTED")).length },
+    { id: "MARKET TAPE", count: tape.length },
+    { id: "POSITIONS", count: snapshot?.openPositions.length ?? 0 },
+    { id: "ACCOUNT" },
+    { id: "TRADE LOG", count: logs.length },
+  ];
+
+  return (
+    <section className={`bottom-dock ${collapsed ? "collapsed" : ""}`} style={{ height: collapsed ? 31 : height }}>
+      <div className="dock-resizer" onPointerDown={onResizeStart} title="Drag to resize blotter" />
+      <nav className="dock-tabs">
+        {tabs.map((tab) => (
+          <button key={tab.id} className={activeTab === tab.id && !collapsed ? "active" : ""} onClick={() => { onTab(tab.id); if (collapsed) onToggle(); }}>
+            {tab.id}{tab.count !== undefined && <b>{tab.count}</b>}
+          </button>
+        ))}
+        <span className="dock-note">{activeTab === "MARKET TAPE" ? "PUBLIC CLOB PRINTS · NOT PERSONAL FILLS" : accountStatus.connected ? shortAddress(accountStatus.account?.wallet) : "ACCOUNT OFFLINE"}</span>
+        <button className="dock-toggle" onClick={onToggle}>{collapsed ? "▴" : "▾"}</button>
+      </nav>
+      {!collapsed && (
+        <div className="dock-content">
+          {activeTab === "ORDERS" && (
+            <div className="blotter-table orders-table">
+              <header><span>TIME</span><span>MODE</span><span>MARKET / OUTCOME</span><span>SIDE</span><span>QTY</span><span>PRICE</span><span>TYPE</span><span>STATUS</span></header>
+              {orders.length === 0 && <div className="dock-empty">No session orders. Resting GTC orders appear in the outer DOM rails after submission.</div>}
+              {orders.map((order) => (
+                <div key={`${order.createdAt}-${order.orderId ?? order.assetId}`}>
+                  <span>{new Date(order.createdAt).toLocaleTimeString()}</span>
+                  <span className={order.mode === "LIVE" ? "live-text" : "dry-text"}>{order.mode}</span>
+                  <span title={order.marketTitle}>{order.marketTitle} · {order.outcome}</span>
+                  <span className={order.side === "BUY" ? "buy-text" : "sell-text"}>{order.side}</span>
+                  <span>{order.size} {order.sizeUnit === "SHARES" ? "sh" : "$"}</span>
+                  <span>{priceLabel(order.price)}</span>
+                  <span>{order.execution}</span>
+                  <span title={order.message}>{order.status}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {activeTab === "MARKET TAPE" && (
+            <div className="blotter-table tape-table">
+              <header><span>TIME</span><span>LEAGUE</span><span>MARKET / OUTCOME</span><span>AGGRESSOR</span><span>PRICE</span><span>SIZE</span></header>
+              {tape.length === 0 && <div className="dock-empty">Waiting for public market prints from the open books.</div>}
+              {tape.map(({ instrument, trade }) => (
+                <div key={`${instrument.assetId}-${trade.id}`}>
+                  <span>{new Date(tradeTime(trade.timestamp)).toLocaleTimeString()}</span>
+                  <span>{instrument.leagueName ?? instrument.category}</span>
+                  <span title={instrument.marketTitle}>{instrument.marketTitle} · {instrument.outcome}</span>
+                  <span className={trade.side === "BUY" ? "buy-text" : "sell-text"}>{trade.side}</span>
+                  <span>{priceLabel(trade.price)}</span>
+                  <span>{compactNumber(Number(trade.size))} sh</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {activeTab === "POSITIONS" && (
+            <div className="blotter-table positions-table">
+              <header><span>MARKET / OUTCOME</span><span>SIZE</span><span>AVG</span><span>MARK</span><span>VALUE</span><span>PNL</span></header>
+              {!accountStatus.connected && <div className="dock-empty">Connect an account to load positions and PnL.</div>}
+              {accountStatus.connected && !snapshot && <div className="dock-empty">Open Account and refresh to load positions.</div>}
+              {snapshot?.openPositions.map((position) => (
+                <div key={`${position.conditionId}-${position.assetId}`}>
+                  <span title={position.title}>{position.title} · {position.outcome}</span>
+                  <span>{compactNumber(Number(position.currentSize))}</span>
+                  <span>{priceLabel(position.avgPrice)}</span>
+                  <span>{priceLabel(position.currentPrice)}</span>
+                  <span>{money(Number(position.currentValue))}</span>
+                  <span className={Number(position.totalPnl) >= 0 ? "buy-text" : "sell-text"}>{signedMoney(Number(position.totalPnl))}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {activeTab === "ACCOUNT" && (
+            <div className="dock-account">
+              <article><span>WALLET</span><b>{shortAddress(accountStatus.account?.wallet)}</b></article>
+              <article><span>PORTFOLIO</span><b>{snapshot ? money(Number(snapshot.portfolioValue)) : "—"}</b></article>
+              <article><span>OPEN ORDERS</span><b>{snapshot?.openOrderCount ?? "—"}</b></article>
+              <article><span>REGION</span><b>{accountStatus.geoblock.blocked === false ? `${accountStatus.geoblock.country || "OK"} · ALLOWED` : accountStatus.geoblock.blocked ? "BLOCKED" : "UNVERIFIED"}</b></article>
+              <article><span>TRADING</span><b className={accountStatus.armed ? "sell-text" : "dry-text"}>{accountStatus.armed ? `LIVE · $${accountStatus.maxOrderUsd} CAP` : "DRY"}</b></article>
+              <button onClick={onCancelAll} disabled={!accountStatus.connected}>CANCEL ALL OPEN ORDERS</button>
+            </div>
+          )}
+          {activeTab === "TRADE LOG" && (
+            <div className="trade-log">
+              {logs.length === 0 && <div className="dock-empty">Session events will appear here.</div>}
+              {logs.map((entry) => <div className={`log-${entry.tone}`} key={entry.id}><time>{entry.time}</time><span>{entry.message}</span></div>)}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function App() {
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [leagues, setLeagues] = useState<MarketLeague[]>([]);
@@ -703,6 +949,16 @@ export function App() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const [accountLoading, setAccountLoading] = useState(false);
+  const [sessionOrders, setSessionOrders] = useState<OrderResult[]>([]);
+  const [tradeLog, setTradeLog] = useState<TradeLogEntry[]>([]);
+  const [activeWorkspace, setActiveWorkspace] = useState<(typeof WORKSPACE_SLOTS)[number]>(() => {
+    const stored = localStorage.getItem(ACTIVE_WORKSPACE_KEY);
+    return WORKSPACE_SLOTS.includes(stored as (typeof WORKSPACE_SLOTS)[number]) ? stored as (typeof WORKSPACE_SLOTS)[number] : "SCALP 1";
+  });
+  const [navigatorWidth, setNavigatorWidth] = useState(() => Math.max(240, Math.min(520, readStoredNumber(NAV_WIDTH_KEY, 326))));
+  const [dockHeight, setDockHeight] = useState(() => Math.max(100, Math.min(360, readStoredNumber(DOCK_HEIGHT_KEY, 156))));
+  const [dockCollapsed, setDockCollapsed] = useState(true);
+  const [dockTab, setDockTab] = useState<DockTab>("ORDERS");
   const dragIndex = useRef<number | undefined>(undefined);
   const booksWorkspaceRef = useRef<HTMLElement>(null);
   const initializedLeagueTree = useRef(false);
@@ -759,7 +1015,8 @@ export function App() {
         if (!active) return;
         setInstruments(items);
         setLeagues(leagueItems);
-        const savedIds = readStoredIds(STORAGE_KEY);
+        const workspaceIds = readStoredIds(`${WORKSPACE_KEY}:${activeWorkspace}`);
+        const savedIds = workspaceIds.length ? workspaceIds : readStoredIds(STORAGE_KEY);
         const restored = savedIds
           .map((assetId) => items.find((item) => item.assetId === assetId))
           .filter((item): item is Instrument => Boolean(item))
@@ -794,7 +1051,25 @@ export function App() {
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(openInstruments.map((item) => item.assetId)));
-  }, [openInstruments]);
+    localStorage.setItem(`${WORKSPACE_KEY}:${activeWorkspace}`, JSON.stringify(openInstruments.map((item) => item.assetId)));
+  }, [activeWorkspace, openInstruments]);
+
+  useEffect(() => {
+    localStorage.setItem(ACTIVE_WORKSPACE_KEY, activeWorkspace);
+    localStorage.setItem(`${WORKSPACE_KEY}:${activeWorkspace}:layout`, layoutMode);
+  }, [activeWorkspace, layoutMode]);
+
+  useEffect(() => {
+    localStorage.setItem(NAV_WIDTH_KEY, String(navigatorWidth));
+  }, [navigatorWidth]);
+
+  useEffect(() => {
+    localStorage.setItem(DOCK_HEIGHT_KEY, String(dockHeight));
+  }, [dockHeight]);
+
+  useEffect(() => {
+    setTradeLog((current) => prependTradeLog(current, connection === "live" ? "good" : connection === "error" ? "bad" : "info", `Market data ${connection}`));
+  }, [connection]);
 
   useEffect(() => {
     localStorage.setItem(FAVORITE_LEAGUES_KEY, JSON.stringify([...favoriteLeagueIds]));
@@ -857,6 +1132,10 @@ export function App() {
     return Math.min(count, 3, Math.max(1, Math.floor((available + 9) / 369)));
   }, [displayedOpenInstruments.length, focusedAssetId, layoutMode, workspaceWidth]);
   const gridRows = Math.max(1, Math.ceil(displayedOpenInstruments.length / gridColumns));
+  const publicTape = useMemo<TapeExecution[]>(() => openInstruments
+    .flatMap((instrument) => (books.get(instrument.assetId)?.recentTrades ?? []).map((trade) => ({ instrument, trade })))
+    .sort((a, b) => tradeTime(b.trade.timestamp) - tradeTime(a.trade.timestamp))
+    .slice(0, 150), [books, openInstruments]);
 
   const refreshAccount = useCallback(async () => {
     if (!accountStatus.connected) return;
@@ -875,8 +1154,8 @@ export function App() {
   }, [accountStatus.connected]);
 
   useEffect(() => {
-    if (accountOpen && accountStatus.connected && !accountSnapshot) refreshAccount();
-  }, [accountOpen, accountSnapshot, accountStatus.connected, refreshAccount]);
+    if (accountStatus.connected && !accountSnapshot) refreshAccount();
+  }, [accountSnapshot, accountStatus.connected, refreshAccount]);
 
   const openBook = useCallback(
     async (instrument: Instrument) => {
@@ -907,6 +1186,52 @@ export function App() {
     await bridge.unsubscribeAssets([instrument.assetId]);
   };
 
+  const switchWorkspace = async (nextWorkspace: (typeof WORKSPACE_SLOTS)[number]) => {
+    if (nextWorkspace === activeWorkspace) return;
+    const savedIds = readStoredIds(`${WORKSPACE_KEY}:${nextWorkspace}`);
+    const target = savedIds
+      .map((assetId) => instruments.find((instrument) => instrument.assetId === assetId))
+      .filter((instrument): instrument is Instrument => Boolean(instrument))
+      .slice(0, MAX_OPEN_BOOKS);
+    const oldIds = openInstruments.map((instrument) => instrument.assetId);
+    if (oldIds.length) await bridge.unsubscribeAssets(oldIds);
+    setOpenInstruments(target);
+    setBooks(new Map(target.map((instrument) => [instrument.assetId, freshBook(instrument)])));
+    setFocusedAssetId(undefined);
+    setActiveWorkspace(nextWorkspace);
+    const savedLayout = localStorage.getItem(`${WORKSPACE_KEY}:${nextWorkspace}:layout`);
+    if (savedLayout === "AUTO" || savedLayout === "1" || savedLayout === "2" || savedLayout === "3") setLayoutMode(savedLayout);
+    if (target.length) await bridge.subscribeAssets(target.map((instrument) => instrument.assetId));
+    setTradeLog((current) => prependTradeLog(current, "info", `Workspace changed to ${nextWorkspace}`));
+  };
+
+  const resizeNavigator = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = navigatorWidth;
+    const move = (moveEvent: PointerEvent) => setNavigatorWidth(Math.max(240, Math.min(520, startWidth + moveEvent.clientX - startX)));
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+  };
+
+  const resizeDock = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    if (dockCollapsed) setDockCollapsed(false);
+    const startY = event.clientY;
+    const startHeight = dockHeight;
+    const move = (moveEvent: PointerEvent) => setDockHeight(Math.max(100, Math.min(360, startHeight + startY - moveEvent.clientY)));
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+  };
+
   const toggleLeagueFavorite = useCallback((seriesId: string) => {
     setFavoriteLeagueIds((current) => {
       const next = new Set(current);
@@ -930,17 +1255,22 @@ export function App() {
   const submitOrder = async (draft: OrderDraft) => {
     try {
       const result = await bridge.submitOrder(draft);
+      setSessionOrders((current) => [result, ...current].slice(0, 250));
+      setTradeLog((current) => prependTradeLog(current, result.status.includes("ACCEPTED") ? "good" : "bad", `${result.status} · ${draft.side} ${draft.size} ${draft.sizeUnit} ${draft.outcome} @ ${priceLabel(draft.price)} ${draft.execution}`));
       setToast({
         id: Date.now(),
         tone: result.status.includes("ACCEPTED") ? "good" : "bad",
         message: `${result.status}: ${draft.side} ${draft.size} ${draft.sizeUnit} ${draft.outcome} @ ${priceLabel(draft.price)} ${draft.execution}${result.message ? ` · ${result.message}` : ""}`,
       });
       if (draft.mode === "LIVE") refreshAccount();
+      return result;
     } catch (error) {
+      const message = error instanceof Error ? error.message : "Order rejected";
+      setTradeLog((current) => prependTradeLog(current, "bad", message));
       setToast({
         id: Date.now(),
         tone: "bad",
-        message: error instanceof Error ? error.message : "Order rejected",
+        message,
       });
     }
   };
@@ -951,12 +1281,14 @@ export function App() {
     setAccountSnapshot(undefined);
     setLoginOpen(false);
     setAccountOpen(true);
+    setTradeLog((current) => prependTradeLog(current, "good", `Account connected ${shortAddress(status.account?.wallet)} · live disarmed`));
     setToast({ id: Date.now(), tone: "good", message: `CONNECTED: ${shortAddress(status.account?.wallet)} · live remains disarmed` });
   };
 
   const disconnectAccount = async () => {
     setAccountStatus(await bridge.disconnectAccount());
     setAccountSnapshot(undefined);
+    setTradeLog((current) => prependTradeLog(current, "info", "Account disconnected and session key cleared"));
     setToast({ id: Date.now(), tone: "good", message: "Account disconnected; key removed from app memory" });
   };
 
@@ -974,6 +1306,7 @@ export function App() {
     try {
       const status = await bridge.setTradingArmed(!accountStatus.armed);
       setAccountStatus(status);
+      setTradeLog((current) => prependTradeLog(current, status.armed ? "bad" : "info", status.armed ? `Live trading armed · $${status.maxOrderUsd} order cap` : "Live trading disarmed"));
       setToast({
         id: Date.now(),
         tone: status.armed ? "bad" : "good",
@@ -989,6 +1322,8 @@ export function App() {
     try {
       const result = await bridge.cancelAllOrders();
       setAccountStatus(await bridge.getAccountStatus());
+      setSessionOrders((current) => current.map((order) => order.mode === "LIVE" && order.execution === "GTC" && order.status.includes("ACCEPTED") ? { ...order, status: "CANCELED" } : order));
+      setTradeLog((current) => prependTradeLog(current, "good", `${result.status} · ${result.canceled.length} orders canceled`));
       setToast({ id: Date.now(), tone: "good", message: `${result.status}: ${result.canceled.length} orders canceled` });
       refreshAccount();
     } catch (error) {
@@ -1009,7 +1344,7 @@ export function App() {
 
   return (
     <main className="terminal-shell">
-      <header className="topbar">
+      <header className="topbar" style={{ gridTemplateColumns: `${drawerCollapsed ? 72 : navigatorWidth}px minmax(280px, 1fr) auto` }}>
         <div className="brand">
           <button className={`navigator-toggle ${drawerCollapsed ? "collapsed" : ""}`} onClick={() => setDrawerCollapsed((value) => !value)} aria-label="Toggle market navigator">☰</button>
           <div className="brand-mark">PM</div>
@@ -1020,8 +1355,10 @@ export function App() {
         </div>
         <div className="top-stats">
           <span className={`status status-${connection}`}><i />{connection}</span>
-          <span>{openInstruments.length} books</span>
-          <span>{gridColumns}×{gridRows} workspace</span>
+          <div className="workspace-tabs" aria-label="Saved workspaces">
+            {WORKSPACE_SLOTS.map((slot) => <button key={slot} className={activeWorkspace === slot ? "active" : ""} onClick={() => void switchWorkspace(slot)}>{slot}</button>)}
+          </div>
+          <span>{openInstruments.length} DOM · {gridColumns}×{gridRows}</span>
           <button className={`mode-pill ${accountStatus.armed ? "mode-live" : ""}`} onClick={toggleArmed}>
             {accountStatus.armed ? "LIVE ARMED" : "DRY MODE"}
           </button>
@@ -1040,7 +1377,7 @@ export function App() {
         </div>
       </header>
 
-      <div className={`workspace ${drawerCollapsed ? "drawer-collapsed" : ""}`}>
+      <div className={`workspace ${drawerCollapsed ? "drawer-collapsed" : ""}`} style={{ gridTemplateColumns: drawerCollapsed ? "0 minmax(0, 1fr)" : `${navigatorWidth}px minmax(0, 1fr)` }}>
         <aside className="market-drawer">
           <div className="drawer-heading">
             <span>SPORTS NAVIGATOR</span>
@@ -1182,6 +1519,7 @@ export function App() {
               </section>
             )}
           </div>
+          <div className="navigator-resizer" onPointerDown={resizeNavigator} title="Drag to resize navigator" />
         </aside>
 
         <section ref={booksWorkspaceRef} className="books-workspace">
@@ -1211,6 +1549,8 @@ export function App() {
                   book={books.get(instrument.assetId) ?? freshBook(instrument)}
                   connection={connection}
                   accountStatus={accountStatus}
+                  position={accountSnapshot?.openPositions.find((position) => position.assetId === instrument.assetId)}
+                  sessionOrders={sessionOrders}
                   leagueFavorite={Boolean(instrument.leagueId && favoriteLeagueIds.has(instrument.leagueId))}
                   focused={focusedAssetId === instrument.assetId}
                   onClose={() => closeBook(instrument)}
@@ -1228,6 +1568,21 @@ export function App() {
           )}
         </section>
       </div>
+
+      <BottomDock
+        activeTab={dockTab}
+        height={dockHeight}
+        collapsed={dockCollapsed}
+        accountStatus={accountStatus}
+        snapshot={accountSnapshot}
+        orders={sessionOrders}
+        tape={publicTape}
+        logs={tradeLog}
+        onTab={setDockTab}
+        onToggle={() => setDockCollapsed((value) => !value)}
+        onResizeStart={resizeDock}
+        onCancelAll={cancelAllOrders}
+      />
 
       {accountOpen && (
         <AccountDrawer

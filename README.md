@@ -12,9 +12,13 @@ Local Electron workstation for opening several Polymarket order books and placin
 - Sports hierarchy backed by Gamma `/sports` and `series_id`: league/tournament → scheduled event → market → outcome.
 - Persisted league-level Favorites (for example NBA, not one Celtics/Nets outcome), expandable schedules, local game-start times, global loaded-market search and Recent outcomes.
 - AUTO workspace that derives a 1/2/3-column grid from the available window, plus manual column modes, drag-to-reorder, focus mode and persisted open books.
+- Three persistent SCALP workspace slots and a width-resizable/collapsible league navigator.
 - Full-book bid/ask imbalance and heat bars for resting depth.
 - Continuous, fixed-price DOM rows with 1/2/5-tick compression, wheel panning, explicit recentering and responsive visible depth.
+- Three historical time-cluster columns with Volume, Delta and Bid×Ask modes, 5/15/60-second buckets, independent 18/22/26-pixel rows and configurable depth normalization.
 - Executed-trade bubbles driven by `last_trade_price` and aligned to their price rows, with size filters and rolling print volume. Resting liquidity stays in separate heat-bar columns.
+- Per-book position size, average entry, PnL and spread strip, plus session working-order markers in the outer DOM rails.
+- A resizable bottom dock for session Orders, clearly labeled public Market Tape, Positions, Account state and Trade Log.
 - Quick working-size presets (5/10/25/100) beside the editable dollars/shares quantity.
 - In-memory private-key connection, portfolio value, open positions, PnL and open-order count.
 - DRY mode by default. Live orders require an authenticated account, explicit session arming, a passing location check and a per-order notional cap.
