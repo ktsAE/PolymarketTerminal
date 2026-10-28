@@ -18,6 +18,14 @@ export interface PriceLevel {
   size: string;
 }
 
+export interface TradePrint {
+  id: string;
+  price: string;
+  size: string;
+  side: "BUY" | "SELL";
+  timestamp: string;
+}
+
 export interface BookState {
   assetId: string;
   bids: Map<string, string>;
@@ -26,6 +34,9 @@ export interface BookState {
   bestBid?: string;
   bestAsk?: string;
   lastTrade?: string;
+  lastTradeSize?: string;
+  lastTradeSide?: "BUY" | "SELL";
+  recentTrades: TradePrint[];
   timestamp?: string;
   ready: boolean;
 }
@@ -45,6 +56,9 @@ export interface MarketEvent {
     best_ask?: string;
   }>;
   price?: string;
+  size?: string;
+  side?: "BUY" | "SELL";
+  transaction_hash?: string;
   new_tick_size?: string;
   best_bid?: string;
   best_ask?: string;

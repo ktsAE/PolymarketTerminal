@@ -9,9 +9,11 @@ Local Electron workstation for opening several Polymarket order books and placin
 - Full book snapshots, price-level deltas, tick-size changes, BBO and last-trade updates.
 - Click ASK liquidity for a protected taker BUY (FAK); click BID liquidity for a protected taker SELL (FAK).
 - Click the outer BUY/SELL lanes for post-only resting limit orders.
-- Categorized market discovery with tag-aware search.
-- Responsive 1/2/3-column workspace, drag-to-reorder, resize handles and persisted open books.
-- Depth bars and proportional liquidity bubbles at every visible level.
+- Categorized, tag-aware market search with persisted Favorites and Recent views.
+- AUTO workspace that derives a 1/2/3-column grid from the available window, plus manual column modes, drag-to-reorder, focus mode and persisted open books.
+- Full-book bid/ask imbalance and heat bars for resting depth.
+- A separate executed-trade rail driven by `last_trade_price`, with size-scaled BUY/SELL bubbles and rolling print volume.
+- Quick working-size presets (5/10/25/100) beside the editable dollars/shares quantity.
 - In-memory private-key connection, portfolio value, open positions, PnL and open-order count.
 - DRY mode by default. Live orders require an authenticated account, explicit session arming, a passing location check and a per-order notional cap.
 
@@ -45,6 +47,8 @@ The browser-only preview uses demo markets and synthetic books:
 ```sh
 npm run dev:web
 ```
+
+The visual reference audit and implementation tokens are documented in [`DESIGN.md`](DESIGN.md).
 
 ## Connect an account
 

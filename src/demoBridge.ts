@@ -57,6 +57,30 @@ const instruments: Instrument[] = [
     category: "Tech & AI",
     tags: ["Tech", "AI"],
   },
+  {
+    assetId: "10005",
+    conditionId: "demo-4",
+    eventTitle: "Will the home team win the championship final?",
+    marketTitle: "Home team wins the championship final?",
+    outcome: "Yes",
+    tickSize: "0.01",
+    minOrderSize: "5",
+    volume24hr: 740_000,
+    category: "Sports",
+    tags: ["Sports", "Final"],
+  },
+  {
+    assetId: "10006",
+    conditionId: "demo-5",
+    eventTitle: "Will the leading candidate win the next election?",
+    marketTitle: "Leading candidate wins the next election?",
+    outcome: "Yes",
+    tickSize: "0.01",
+    minOrderSize: "5",
+    volume24hr: 690_000,
+    category: "Politics",
+    tags: ["Politics", "Election"],
+  },
 ];
 
 const listeners = new Set<(event: MarketEvent) => void>();
@@ -64,14 +88,14 @@ const statusListeners = new Set<(status: "live") => void>();
 
 function levels(mid: number) {
   return {
-    bids: Array.from({ length: 9 }, (_, index) => ({
+    bids: Array.from({ length: 28 }, (_, index) => ({
       price: (mid - 0.01 * (index + 1)).toFixed(2),
       size: String(Math.round(70 + Math.random() * 850)),
-    })),
-    asks: Array.from({ length: 9 }, (_, index) => ({
+    })).filter((level) => Number(level.price) > 0),
+    asks: Array.from({ length: 28 }, (_, index) => ({
       price: (mid + 0.01 * (index + 1)).toFixed(2),
       size: String(Math.round(70 + Math.random() * 850)),
-    })),
+    })).filter((level) => Number(level.price) < 1),
   };
 }
 
@@ -83,7 +107,8 @@ export const demoBridge: TerminalBridge = {
     queueMicrotask(() => {
       statusListeners.forEach((listener) => listener("live"));
       assetIds.forEach((assetId, index) => {
-        const snapshot = levels(0.48 + index * 0.04);
+        const mid = 0.48 + index * 0.04;
+        const snapshot = levels(mid);
         listeners.forEach((listener) =>
           listener({
             event_type: "book",
@@ -92,6 +117,30 @@ export const demoBridge: TerminalBridge = {
             timestamp: String(Date.now()),
           }),
         );
+        [
+          { side: "BUY" as const, size: "46", offset: 0.01 },
+          { side: "SELL" as const, size: "128", offset: -0.01 },
+          { side: "BUY" as const, size: "360", offset: 0.01 },
+          { side: "BUY" as const, size: "84", offset: 0.02 },
+          { side: "SELL" as const, size: "215", offset: -0.01 },
+          { side: "BUY" as const, size: "52", offset: 0 },
+          { side: "SELL" as const, size: "620", offset: -0.02 },
+          { side: "BUY" as const, size: "175", offset: 0.01 },
+          { side: "SELL" as const, size: "96", offset: -0.01 },
+          { side: "BUY" as const, size: "410", offset: 0.02 },
+        ].forEach((trade, tradeIndex) => {
+          listeners.forEach((listener) =>
+            listener({
+              event_type: "last_trade_price",
+              asset_id: assetId,
+              price: (mid + trade.offset).toFixed(2),
+              size: trade.size,
+              side: trade.side,
+              timestamp: String(Date.now() - tradeIndex * 850),
+              transaction_hash: `demo-${assetId}-${tradeIndex}`,
+            }),
+          );
+        });
       });
     });
     return { subscribed: assetIds };

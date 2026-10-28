@@ -12,6 +12,9 @@ import type {
 
 const bridge = window.polymarketTerminal ?? demoBridge;
 const STORAGE_KEY = "pm-terminal:open-instruments";
+const FAVORITES_KEY = "pm-terminal:favorites";
+const RECENTS_KEY = "pm-terminal:recent-instruments";
+const MAX_OPEN_BOOKS = 6;
 const INITIAL_ACCOUNT_STATUS: AccountStatus = {
   connected: false,
   armed: false,
@@ -26,6 +29,7 @@ function freshBook(instrument: Instrument): BookState {
     bids: new Map(),
     asks: new Map(),
     tickSize: instrument.tickSize,
+    recentTrades: [],
     ready: false,
   };
 }
@@ -84,10 +88,20 @@ function applyMarketEvent(current: Map<string, BookState>, event: MarketEvent) {
         timestamp: event.timestamp,
       });
     } else if (event.event_type === "last_trade_price" && event.price) {
+      const timestamp = event.timestamp ?? String(Date.now());
+      const size = event.size ?? "0";
+      const side = event.side ?? "BUY";
+      const id = event.transaction_hash ?? `${timestamp}-${event.price}-${size}-${side}`;
+      const recentTrades = previous.recentTrades.some((trade) => trade.id === id)
+        ? previous.recentTrades
+        : [{ id, price: event.price, size, side, timestamp }, ...previous.recentTrades].slice(0, 40);
       next.set(event.asset_id, {
         ...previous,
         lastTrade: event.price,
-        timestamp: event.timestamp,
+        lastTradeSize: size,
+        lastTradeSide: side,
+        recentTrades,
+        timestamp,
       });
     }
   }
@@ -101,6 +115,22 @@ function money(value: number) {
     currency: "USD",
     maximumFractionDigits: 1,
   }).format(value);
+}
+
+function compactNumber(value: number) {
+  return new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function readStoredIds(key: string) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || "[]");
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 function priceLabel(value: string) {
@@ -133,7 +163,11 @@ interface BookPanelProps {
   book: BookState;
   connection: ConnectionStatus;
   accountStatus: AccountStatus;
+  favorite: boolean;
+  focused: boolean;
   onClose(): void;
+  onToggleFavorite(): void;
+  onToggleFocus(): void;
   onOrder(draft: OrderDraft): Promise<void>;
   onDragStart(): void;
   onDrop(): void;
@@ -144,7 +178,11 @@ function BookPanel({
   book,
   connection,
   accountStatus,
+  favorite,
+  focused,
   onClose,
+  onToggleFavorite,
+  onToggleFocus,
   onOrder,
   onDragStart,
   onDrop,
@@ -158,7 +196,7 @@ function BookPanel({
   useEffect(() => {
     if (!panelRef.current || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(([entry]) => {
-      const levels = Math.max(5, Math.min(18, Math.floor((entry.contentRect.height - 195) / 42)));
+      const levels = Math.max(2, Math.min(26, Math.floor((entry.contentRect.height - 176) / 40)));
       setVisibleLevels(levels);
     });
     observer.observe(panelRef.current);
@@ -181,6 +219,12 @@ function BookPanel({
     [book.bids, visibleLevels],
   );
   const maxDepth = Math.max(1, ...asks.map(([, value]) => Number(value)), ...bids.map(([, value]) => Number(value)));
+  const bidDepth = [...book.bids.values()].reduce((sum, value) => sum + Number(value), 0);
+  const askDepth = [...book.asks.values()].reduce((sum, value) => sum + Number(value), 0);
+  const totalDepth = bidDepth + askDepth;
+  const bidShare = totalDepth > 0 ? (bidDepth / totalDepth) * 100 : 50;
+  const maxPrint = Math.max(1, ...book.recentTrades.map((trade) => Number(trade.size)));
+  const rollingPrintVolume = book.recentTrades.reduce((sum, trade) => sum + Number(trade.size), 0);
   const disabled = pending || connection !== "live" || !book.ready || Number(size) <= 0;
 
   const place = async (side: "BUY" | "SELL", price: string, execution: "GTC" | "FAK") => {
@@ -206,7 +250,6 @@ function BookPanel({
   const row = (side: "bid" | "ask", [price, levelSize]: [string, string]) => {
     const isBid = side === "bid";
     const depth = Math.min(100, (Number(levelSize) / maxDepth) * 100);
-    const bubbleSize = 7 + Math.sqrt(depth / 100) * 17;
     return (
       <div className={`book-row ${side}`} key={`${side}-${price}`}>
         <button
@@ -224,7 +267,6 @@ function BookPanel({
           onClick={() => isBid && place("SELL", price, "FAK")}
         >
           {isBid && <span className="depth" style={{ width: `${depth}%` }} />}
-          {isBid && <i className="volume-bubble" style={{ width: bubbleSize, height: bubbleSize }} />}
           <span className="level-value">{isBid ? Number(levelSize).toLocaleString() : ""}</span>
         </button>
         <div className="price-cell">{priceLabel(price)}</div>
@@ -235,7 +277,6 @@ function BookPanel({
           onClick={() => !isBid && place("BUY", price, "FAK")}
         >
           {!isBid && <span className="depth" style={{ width: `${depth}%` }} />}
-          {!isBid && <i className="volume-bubble" style={{ width: bubbleSize, height: bubbleSize }} />}
           <span className="level-value">{!isBid ? Number(levelSize).toLocaleString() : ""}</span>
         </button>
         <button
@@ -255,7 +296,7 @@ function BookPanel({
   return (
     <section
       ref={panelRef}
-      className="book-panel"
+      className={`book-panel ${focused ? "focused" : ""}`}
       draggable
       onDragStart={onDragStart}
       onDragOver={(event) => event.preventDefault()}
@@ -269,9 +310,12 @@ function BookPanel({
             <span className={`outcome outcome-${instrument.outcome.toLowerCase()}`}>{instrument.outcome}</span>
           </div>
         </div>
-        <button className="icon-button" onClick={onClose} aria-label="Close order book">
-          ×
-        </button>
+        <div className="book-header-meta">
+          <span><b>{money(instrument.volume24hr)}</b> 24H</span>
+          <button className={`icon-button star-button ${favorite ? "active" : ""}`} onClick={onToggleFavorite} aria-label={favorite ? "Remove favorite" : "Add favorite"}>★</button>
+          <button className={`icon-button focus-button ${focused ? "active" : ""}`} onClick={onToggleFocus} aria-label={focused ? "Exit focus" : "Focus order book"}>{focused ? "↙" : "↗"}</button>
+          <button className="icon-button" onClick={onClose} aria-label="Close order book">×</button>
+        </div>
       </header>
 
       <div className="trade-strip">
@@ -283,36 +327,67 @@ function BookPanel({
           <button className={sizeUnit === "USD" ? "active" : ""} onClick={() => setSizeUnit("USD")}>$</button>
           <button className={sizeUnit === "SHARES" ? "active" : ""} onClick={() => setSizeUnit("SHARES")}>SH</button>
         </div>
+        <div className="size-presets" aria-label="Quick order size">
+          {[5, 10, 25, 100].map((value) => <button key={value} className={size === String(value) ? "active" : ""} onClick={() => setSize(String(value))}>{value}</button>)}
+        </div>
         <div className="quote">
           <span>BID {book.bestBid ? priceLabel(book.bestBid) : "—"}</span>
           <span>ASK {book.bestAsk ? priceLabel(book.bestAsk) : "—"}</span>
           <span>SPR {spread !== undefined ? `${(spread * 100).toFixed(1)}¢` : "—"}</span>
         </div>
-      </div>
-
-      <div className="book-columns">
-        <span>MY BUY</span>
-        <span>BID</span>
-        <span>PRICE</span>
-        <span>ASK</span>
-        <span>MY SELL</span>
-      </div>
-
-      <div className="book-ladder">
-        {!book.ready && <div className="book-loading">Waiting for book snapshot…</div>}
-        {asks.map((level) => row("ask", level))}
-        <div className="spread-row">
-          <span>LAST {book.lastTrade ? priceLabel(book.lastTrade) : "—"}</span>
-          <span>{connection === "live" ? "LIVE FEED" : connection.toUpperCase()}</span>
+        <div className="depth-summary" title={`Full visible book: ${compactNumber(bidDepth)} bid shares / ${compactNumber(askDepth)} ask shares`}>
+          <span style={{ width: `${bidShare}%` }} />
+          <b>B {bidShare.toFixed(0)}%</b>
+          <b>A {(100 - bidShare).toFixed(0)}%</b>
         </div>
-        {bids.map((level) => row("bid", level))}
+      </div>
+
+      <div className="book-body">
+        <div className="ladder-stack">
+          <div className="book-columns">
+            <span>REST</span>
+            <span>BID SH</span>
+            <span>PRICE</span>
+            <span>ASK SH</span>
+            <span>REST</span>
+          </div>
+          <div className="book-ladder">
+            {!book.ready && <div className="book-loading">Waiting for book snapshot…</div>}
+            {asks.map((level) => row("ask", level))}
+            <div className="spread-row">
+              <span>LAST {book.lastTrade ? priceLabel(book.lastTrade) : "—"}</span>
+              <span>{connection === "live" ? "LIVE" : connection.toUpperCase()}</span>
+            </div>
+            {bids.map((level) => row("bid", level))}
+          </div>
+        </div>
+
+        <aside className="prints-rail" aria-label="Live executed trades">
+          <header>
+            <span>PRINTS</span>
+            <b>{compactNumber(rollingPrintVolume)} sh</b>
+          </header>
+          <div className="prints-list">
+            {book.recentTrades.length === 0 && <div className="prints-empty">Awaiting live trades</div>}
+            {book.recentTrades.slice(0, Math.max(5, visibleLevels)).map((trade) => {
+              const bubbleSize = 16 + Math.sqrt(Number(trade.size) / maxPrint) * 24;
+              return (
+                <div className={`trade-print trade-${trade.side.toLowerCase()}`} key={trade.id} title={`${trade.side} ${Number(trade.size).toLocaleString()} shares at ${priceLabel(trade.price)}`}>
+                  <i style={{ width: bubbleSize, height: bubbleSize }}><span>{compactNumber(Number(trade.size))}</span></i>
+                  <div><b>{priceLabel(trade.price)}</b><span>{trade.side}</span></div>
+                </div>
+              );
+            })}
+          </div>
+        </aside>
       </div>
 
       <footer className="book-footer">
         <span>Tick {book.tickSize}</span>
         <span>Min {instrument.minOrderSize} sh</span>
+        <span>Depth {compactNumber(totalDepth)} sh</span>
         <span className={accountStatus.armed ? "live-label" : "dry-label"}>
-          {accountStatus.armed ? `LIVE · max $${accountStatus.maxOrderUsd}` : "DRY · clicks are logged, never posted"}
+          {accountStatus.armed ? `LIVE · max $${accountStatus.maxOrderUsd}` : "DRY · no order sent"}
         </span>
       </footer>
     </section>
@@ -511,9 +586,15 @@ export function App() {
   const [connection, setConnection] = useState<ConnectionStatus>("idle");
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("All");
+  const [marketView, setMarketView] = useState<"All" | "Favorites" | "Recent">("All");
+  const [favoriteIds, setFavoriteIds] = useState<Set<string>>(() => new Set(readStoredIds(FAVORITES_KEY)));
+  const [recentIds, setRecentIds] = useState<string[]>(() => readStoredIds(RECENTS_KEY));
   const [loading, setLoading] = useState(true);
   const [marketError, setMarketError] = useState<string>();
-  const [columns, setColumns] = useState(2);
+  const [layoutMode, setLayoutMode] = useState<"AUTO" | "1" | "2" | "3">("AUTO");
+  const [focusedAssetId, setFocusedAssetId] = useState<string>();
+  const [drawerCollapsed, setDrawerCollapsed] = useState(false);
+  const [workspaceWidth, setWorkspaceWidth] = useState(0);
   const [toast, setToast] = useState<Toast>();
   const [accountStatus, setAccountStatus] = useState<AccountStatus>(INITIAL_ACCOUNT_STATUS);
   const [accountSnapshot, setAccountSnapshot] = useState<AccountSnapshot>();
@@ -521,6 +602,7 @@ export function App() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [accountLoading, setAccountLoading] = useState(false);
   const dragIndex = useRef<number | undefined>(undefined);
+  const booksWorkspaceRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     const offEvent = bridge.onMarketEvent((event) => {
@@ -534,6 +616,13 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (!booksWorkspaceRef.current || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => setWorkspaceWidth(entry.contentRect.width));
+    observer.observe(booksWorkspaceRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
     bridge.getAccountStatus().then(setAccountStatus).catch(() => undefined);
   }, []);
 
@@ -544,13 +633,17 @@ export function App() {
       .then((items) => {
         if (!active) return;
         setInstruments(items);
-        const savedIds = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]") as string[];
+        const savedIds = readStoredIds(STORAGE_KEY);
         const restored = savedIds
           .map((assetId) => items.find((item) => item.assetId === assetId))
           .filter((item): item is Instrument => Boolean(item))
           .slice(0, 6);
         const initial = restored.length ? restored : items.slice(0, 2);
         setOpenInstruments(initial);
+        setRecentIds((current) => [
+          ...initial.map((instrument) => instrument.assetId),
+          ...current.filter((assetId) => !initial.some((instrument) => instrument.assetId === assetId)),
+        ].slice(0, 30));
         setBooks(new Map(initial.map((instrument) => [instrument.assetId, freshBook(instrument)])));
         if (initial.length) bridge.subscribeAssets(initial.map((instrument) => instrument.assetId));
       })
@@ -568,6 +661,14 @@ export function App() {
   }, [openInstruments]);
 
   useEffect(() => {
+    localStorage.setItem(FAVORITES_KEY, JSON.stringify([...favoriteIds]));
+  }, [favoriteIds]);
+
+  useEffect(() => {
+    localStorage.setItem(RECENTS_KEY, JSON.stringify(recentIds));
+  }, [recentIds]);
+
+  useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(undefined), 3600);
     return () => clearTimeout(timer);
@@ -581,18 +682,40 @@ export function App() {
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return instruments
+    const result = instruments
       .filter(
         (item) =>
+          (marketView === "All" ||
+            (marketView === "Favorites" && favoriteIds.has(item.assetId)) ||
+            (marketView === "Recent" && recentIds.includes(item.assetId))) &&
           (category === "All" || item.category === category) &&
           (!needle ||
             item.marketTitle.toLowerCase().includes(needle) ||
             item.eventTitle.toLowerCase().includes(needle) ||
             item.outcome.toLowerCase().includes(needle) ||
             item.tags.some((tag) => tag.toLowerCase().includes(needle))),
-      )
-      .slice(0, 60);
-  }, [category, instruments, query]);
+      );
+    return result
+      .sort((a, b) => {
+        if (marketView === "Recent") return recentIds.indexOf(a.assetId) - recentIds.indexOf(b.assetId);
+        const favoriteDelta = Number(favoriteIds.has(b.assetId)) - Number(favoriteIds.has(a.assetId));
+        return favoriteDelta || b.volume24hr - a.volume24hr;
+      })
+      .slice(0, 80);
+  }, [category, favoriteIds, instruments, marketView, query, recentIds]);
+
+  const displayedOpenInstruments = useMemo(
+    () => focusedAssetId ? openInstruments.filter((item) => item.assetId === focusedAssetId) : openInstruments,
+    [focusedAssetId, openInstruments],
+  );
+  const gridColumns = useMemo(() => {
+    const count = displayedOpenInstruments.length;
+    if (count <= 1 || focusedAssetId) return 1;
+    if (layoutMode !== "AUTO") return Math.min(count, Number(layoutMode));
+    const available = Math.max(340, workspaceWidth - 2);
+    return Math.min(count, 3, Math.max(1, Math.floor((available + 9) / 369)));
+  }, [displayedOpenInstruments.length, focusedAssetId, layoutMode, workspaceWidth]);
+  const gridRows = Math.max(1, Math.ceil(displayedOpenInstruments.length / gridColumns));
 
   const refreshAccount = useCallback(async () => {
     if (!accountStatus.connected) return;
@@ -616,9 +739,13 @@ export function App() {
 
   const openBook = useCallback(
     async (instrument: Instrument) => {
-      if (openInstruments.some((item) => item.assetId === instrument.assetId)) return;
-      if (openInstruments.length >= 6) {
-        setToast({ id: Date.now(), tone: "bad", message: "MVP limit: six simultaneous books" });
+      setRecentIds((current) => [instrument.assetId, ...current.filter((assetId) => assetId !== instrument.assetId)].slice(0, 30));
+      if (openInstruments.some((item) => item.assetId === instrument.assetId)) {
+        setFocusedAssetId(instrument.assetId);
+        return;
+      }
+      if (openInstruments.length >= MAX_OPEN_BOOKS) {
+        setToast({ id: Date.now(), tone: "bad", message: `Workspace limit: ${MAX_OPEN_BOOKS} simultaneous books` });
         return;
       }
       setOpenInstruments((current) => [...current, instrument]);
@@ -629,6 +756,7 @@ export function App() {
   );
 
   const closeBook = async (instrument: Instrument) => {
+    if (focusedAssetId === instrument.assetId) setFocusedAssetId(undefined);
     setOpenInstruments((current) => current.filter((item) => item.assetId !== instrument.assetId));
     setBooks((current) => {
       const next = new Map(current);
@@ -637,6 +765,15 @@ export function App() {
     });
     await bridge.unsubscribeAssets([instrument.assetId]);
   };
+
+  const toggleFavorite = useCallback((assetId: string) => {
+    setFavoriteIds((current) => {
+      const next = new Set(current);
+      if (next.has(assetId)) next.delete(assetId);
+      else next.add(assetId);
+      return next;
+    });
+  }, []);
 
   const submitOrder = async (draft: OrderDraft) => {
     try {
@@ -722,15 +859,17 @@ export function App() {
     <main className="terminal-shell">
       <header className="topbar">
         <div className="brand">
+          <button className={`navigator-toggle ${drawerCollapsed ? "collapsed" : ""}`} onClick={() => setDrawerCollapsed((value) => !value)} aria-label="Toggle market navigator">☰</button>
           <div className="brand-mark">PM</div>
           <div>
-            <strong>ORDERBOOK</strong>
-            <span>local workstation</span>
+            <strong>POLYSCALP</strong>
+            <span>orderflow workstation</span>
           </div>
         </div>
         <div className="top-stats">
           <span className={`status status-${connection}`}><i />{connection}</span>
           <span>{openInstruments.length} books</span>
+          <span>{gridColumns}×{gridRows} workspace</span>
           <button className={`mode-pill ${accountStatus.armed ? "mode-live" : ""}`} onClick={toggleArmed}>
             {accountStatus.armed ? "LIVE ARMED" : "DRY MODE"}
           </button>
@@ -740,27 +879,39 @@ export function App() {
             <i /> {shortAddress(accountStatus.account?.wallet)}
           </button>
           <div className="layout-switcher" aria-label="Grid columns">
-            {[1, 2, 3].map((count) => (
-              <button key={count} className={columns === count ? "active" : ""} onClick={() => setColumns(count)}>
-                {count}C
+            {(["AUTO", "1", "2", "3"] as const).map((mode) => (
+              <button key={mode} className={layoutMode === mode ? "active" : ""} onClick={() => { setFocusedAssetId(undefined); setLayoutMode(mode); }}>
+                {mode === "AUTO" ? "AUTO" : `${mode}C`}
               </button>
             ))}
           </div>
         </div>
       </header>
 
-      <div className="workspace">
+      <div className={`workspace ${drawerCollapsed ? "drawer-collapsed" : ""}`}>
         <aside className="market-drawer">
           <div className="drawer-heading">
-            <span>MARKETS</span>
-            <span>{instruments.length}</span>
+            <span>MARKET NAVIGATOR</span>
+            <span>{filtered.length}/{instruments.length}</span>
           </div>
-          <input
-            className="market-search"
-            placeholder="Search market or outcome…"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
+          <div className="search-wrap">
+            <span>⌕</span>
+            <input
+              className="market-search"
+              placeholder="Search question, tag, outcome…"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+            {query && <button onClick={() => setQuery("")} aria-label="Clear search">×</button>}
+          </div>
+          <div className="market-view-tabs">
+            {(["All", "Favorites", "Recent"] as const).map((view) => (
+              <button key={view} className={marketView === view ? "active" : ""} onClick={() => setMarketView(view)}>
+                {view === "Favorites" ? "★ Favorites" : view}
+                {view === "Favorites" && <b>{favoriteIds.size}</b>}
+              </button>
+            ))}
+          </div>
           <div className="category-strip">
             {categories.map((item) => (
               <button key={item} className={category === item ? "active" : ""} onClick={() => setCategory(item)}>
@@ -771,32 +922,45 @@ export function App() {
           <div className="market-list">
             {loading && <div className="drawer-message">Loading active markets…</div>}
             {marketError && <div className="drawer-message error">{marketError}</div>}
+            {!loading && !marketError && filtered.length === 0 && <div className="drawer-message">No markets in this view. Star a market to keep it here.</div>}
             {filtered.map((instrument) => {
               const isOpen = openInstruments.some((item) => item.assetId === instrument.assetId);
+              const isFavorite = favoriteIds.has(instrument.assetId);
               return (
-                <button
+                <div
+                  role="button"
+                  tabIndex={0}
                   className={`market-item ${isOpen ? "open" : ""}`}
                   key={instrument.assetId}
                   onClick={() => openBook(instrument)}
-                  disabled={isOpen}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") openBook(instrument);
+                  }}
                 >
-                  <span className="market-name">{instrument.marketTitle}</span>
+                  <div className="market-item-top">
+                    <span className="market-name">{instrument.marketTitle}</span>
+                    <button
+                      className={`market-star ${isFavorite ? "active" : ""}`}
+                      aria-label={isFavorite ? "Remove favorite" : "Add favorite"}
+                      onClick={(event) => { event.stopPropagation(); toggleFavorite(instrument.assetId); }}
+                    >★</button>
+                  </div>
                   <span className="market-meta">
                     <b>{instrument.outcome}</b>
-                    <span>{money(instrument.volume24hr)} vol</span>
-                    <i>{isOpen ? "OPEN" : "+ BOOK"}</i>
+                    <span>{money(instrument.volume24hr)} 24H</span>
+                    <i>{isOpen ? "● OPEN" : "+ OPEN"}</i>
                   </span>
                   <span className="market-category">{instrument.category}</span>
-                </button>
+                </div>
               );
             })}
           </div>
         </aside>
 
-        <section className="books-workspace">
+        <section ref={booksWorkspaceRef} className="books-workspace">
           <div className="workspace-hint">
-            <span>Click ASK to buy · click BID to sell · outer lanes place post-only limits</span>
-            <span>Drag panels · resize from the bottom-right corner</span>
+            <span>Click ASK to buy · BID to sell · outer lanes rest post-only orders</span>
+            <span className="workspace-legend"><i className="legend-depth" /> resting depth <i className="legend-print" /> executed prints · AUTO fits panels to available space</span>
           </div>
           {openInstruments.length === 0 ? (
             <div className="empty-state">
@@ -804,22 +968,35 @@ export function App() {
               <span>Select a market outcome from the left.</span>
             </div>
           ) : (
-            <div className="book-grid" style={{ gridTemplateColumns: `repeat(${columns}, minmax(360px, 1fr))` }}>
-              {openInstruments.map((instrument, index) => (
+            <div
+              className={`book-grid layout-${layoutMode.toLowerCase()} ${focusedAssetId ? "has-focus" : ""}`}
+              style={{
+                gridTemplateColumns: `repeat(${gridColumns}, minmax(340px, 1fr))`,
+                gridTemplateRows: `repeat(${gridRows}, minmax(230px, 1fr))`,
+              }}
+            >
+              {displayedOpenInstruments.map((instrument) => {
+                const index = openInstruments.findIndex((item) => item.assetId === instrument.assetId);
+                return (
                 <BookPanel
                   key={instrument.assetId}
                   instrument={instrument}
                   book={books.get(instrument.assetId) ?? freshBook(instrument)}
                   connection={connection}
                   accountStatus={accountStatus}
+                  favorite={favoriteIds.has(instrument.assetId)}
+                  focused={focusedAssetId === instrument.assetId}
                   onClose={() => closeBook(instrument)}
+                  onToggleFavorite={() => toggleFavorite(instrument.assetId)}
+                  onToggleFocus={() => setFocusedAssetId((current) => current === instrument.assetId ? undefined : instrument.assetId)}
                   onOrder={submitOrder}
                   onDragStart={() => {
                     dragIndex.current = index;
                   }}
                   onDrop={() => reorder(index)}
                 />
-              ))}
+                );
+              })}
             </div>
           )}
         </section>

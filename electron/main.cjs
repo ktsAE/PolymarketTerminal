@@ -7,6 +7,7 @@ const { z } = require("zod");
 const MARKET_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
 const GAMMA_EVENTS_URL =
   "https://gamma-api.polymarket.com/events?active=true&closed=false&limit=100&order=volume24hr&ascending=false";
+const GAMMA_EVENT_PAGES = 5;
 
 let mainWindow;
 let marketSocket;
@@ -215,11 +216,16 @@ function createWindow() {
 }
 
 ipcMain.handle("markets:list", async () => {
-  const response = await fetch(GAMMA_EVENTS_URL, {
-    headers: { accept: "application/json", "user-agent": "pm-orderbook-terminal/0.1" },
-  });
-  if (!response.ok) throw new Error(`Market discovery failed (${response.status})`);
-  return normalizeEvents(await response.json());
+  const pages = await Promise.all(
+    Array.from({ length: GAMMA_EVENT_PAGES }, async (_, page) => {
+      const response = await fetch(`${GAMMA_EVENTS_URL}&offset=${page * 100}`, {
+        headers: { accept: "application/json", "user-agent": "pm-orderbook-terminal/0.1" },
+      });
+      if (!response.ok) throw new Error(`Market discovery failed (${response.status})`);
+      return response.json();
+    }),
+  );
+  return normalizeEvents(pages.flat());
 });
 
 ipcMain.handle("books:subscribe", (_event, assetIds) => {
