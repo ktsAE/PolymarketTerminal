@@ -23,17 +23,26 @@ app.whenReady().then(async () => {
   const output = path.join("/tmp", "polymarket-terminal-mvp.png");
   fs.writeFileSync(output, image.toPNG());
   await window.webContents.executeJavaScript(`
-    [...document.querySelectorAll('.market-item')].slice(2).forEach((item) => item.click());
+    const input = document.querySelector('.market-search');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'e');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  `);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await window.webContents.executeJavaScript(`
+    [...document.querySelectorAll('.search-results > button')].slice(2, 6).forEach((item) => item.click());
   `);
   await new Promise((resolve) => setTimeout(resolve, 250));
   const uiStats = await window.webContents.executeJavaScript(`
     (() => ({
       books: document.querySelectorAll('.book-panel').length,
-      prints: document.querySelectorAll('.trade-print').length,
+      bubbles: document.querySelectorAll('.volume-bubble').length,
+      domRows: document.querySelectorAll('.dom-row').length,
+      leagues: document.querySelectorAll('.league-node').length,
       autoActive: document.querySelector('.layout-switcher button.active')?.textContent?.trim(),
     }))()
   `);
-  if (uiStats.books !== 6 || uiStats.prints < 12 || uiStats.autoActive !== "AUTO") {
+  if (uiStats.books !== 6 || uiStats.bubbles < 10 || uiStats.domRows < 18 || uiStats.leagues < 1 || uiStats.autoActive !== "AUTO") {
     throw new Error(`Workspace QA failed: ${JSON.stringify(uiStats)}`);
   }
   const autoLayoutImage = await window.webContents.capturePage();
@@ -49,13 +58,13 @@ app.whenReady().then(async () => {
   `);
   if (!compactVisible) throw new Error("AUTO layout did not fit all books inside the compact viewport");
   await window.webContents.executeJavaScript(`
-    const star = document.querySelector('.market-star');
+    const star = document.querySelector('.league-star');
     if (star && !star.classList.contains('active')) star.click();
     [...document.querySelectorAll('.market-view-tabs button')].find((button) => button.textContent.includes('Favorites'))?.click();
   `);
   await new Promise((resolve) => setTimeout(resolve, 100));
-  const favoriteCount = await window.webContents.executeJavaScript(`document.querySelectorAll('.market-item').length`);
-  if (favoriteCount < 1) throw new Error("Favorite filter did not retain the starred market");
+  const favoriteCount = await window.webContents.executeJavaScript(`document.querySelectorAll('.league-node').length`);
+  if (favoriteCount < 1) throw new Error("Favorite filter did not retain the starred league");
   window.setSize(1440, 960);
   await new Promise((resolve) => setTimeout(resolve, 150));
   await window.webContents.executeJavaScript(`document.querySelector('.account-button')?.click()`);

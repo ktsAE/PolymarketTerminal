@@ -6,13 +6,14 @@ import type {
   BookState,
   ConnectionStatus,
   Instrument,
+  MarketLeague,
   MarketEvent,
   OrderDraft,
 } from "./types";
 
 const bridge = window.polymarketTerminal ?? demoBridge;
 const STORAGE_KEY = "pm-terminal:open-instruments";
-const FAVORITES_KEY = "pm-terminal:favorites";
+const FAVORITE_LEAGUES_KEY = "pm-terminal:favorite-leagues";
 const RECENTS_KEY = "pm-terminal:recent-instruments";
 const MAX_OPEN_BOOKS = 6;
 const INITIAL_ACCOUNT_STATUS: AccountStatus = {
@@ -152,6 +153,47 @@ function signedMoney(value: number) {
   }).format(value)}`;
 }
 
+function startLabel(value?: string) {
+  if (!value) return "START TBA";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "START TBA";
+  const now = new Date();
+  const diff = date.getTime() - now.getTime();
+  const time = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(date);
+  if (diff <= 0 && diff > -6 * 60 * 60 * 1000) return `LIVE · ${time}`;
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const day = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  if (day === today) return `TODAY · ${time}`;
+  if (day === today + 86_400_000) return `TOMORROW · ${time}`;
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date).toUpperCase();
+}
+
+function eventGroups(items: Instrument[]) {
+  const groups = new Map<string, Instrument[]>();
+  for (const item of items) {
+    const key = item.eventId || item.eventTitle;
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  }
+  return [...groups.entries()]
+    .map(([id, instruments]) => ({ id, instruments }))
+    .sort((a, b) => {
+      const aTime = a.instruments[0]?.startTime ? new Date(a.instruments[0].startTime!).getTime() : Number.MAX_SAFE_INTEGER;
+      const bTime = b.instruments[0]?.startTime ? new Date(b.instruments[0].startTime!).getTime() : Number.MAX_SAFE_INTEGER;
+      return aTime - bTime || b.instruments[0].volume24hr - a.instruments[0].volume24hr;
+    });
+}
+
+function mergeInstruments(current: Instrument[], incoming: Instrument[]) {
+  const merged = new Map(current.map((item) => [item.assetId, item]));
+  incoming.forEach((item) => merged.set(item.assetId, item));
+  return [...merged.values()];
+}
+
 interface Toast {
   id: number;
   tone: "good" | "bad";
@@ -163,10 +205,10 @@ interface BookPanelProps {
   book: BookState;
   connection: ConnectionStatus;
   accountStatus: AccountStatus;
-  favorite: boolean;
+  leagueFavorite: boolean;
   focused: boolean;
   onClose(): void;
-  onToggleFavorite(): void;
+  onToggleLeagueFavorite(): void;
   onToggleFocus(): void;
   onOrder(draft: OrderDraft): Promise<void>;
   onDragStart(): void;
@@ -178,10 +220,10 @@ function BookPanel({
   book,
   connection,
   accountStatus,
-  favorite,
+  leagueFavorite,
   focused,
   onClose,
-  onToggleFavorite,
+  onToggleLeagueFavorite,
   onToggleFocus,
   onOrder,
   onDragStart,
@@ -190,40 +232,76 @@ function BookPanel({
   const [size, setSize] = useState("10");
   const [sizeUnit, setSizeUnit] = useState<"USD" | "SHARES">("USD");
   const [pending, setPending] = useState(false);
-  const [visibleLevels, setVisibleLevels] = useState(8);
+  const [visibleRows, setVisibleRows] = useState(15);
+  const [groupTicks, setGroupTicks] = useState<1 | 2 | 5>(1);
+  const [autoCenter, setAutoCenter] = useState(true);
+  const [manualCenter, setManualCenter] = useState<number>();
+  const [printThreshold, setPrintThreshold] = useState(0);
   const panelRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     if (!panelRef.current || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(([entry]) => {
-      const levels = Math.max(2, Math.min(26, Math.floor((entry.contentRect.height - 176) / 40)));
-      setVisibleLevels(levels);
+      let rows = Math.max(3, Math.min(39, Math.floor((entry.contentRect.height - 164) / 22)));
+      if (rows % 2 === 0) rows -= 1;
+      setVisibleRows(rows);
     });
     observer.observe(panelRef.current);
     return () => observer.disconnect();
   }, []);
 
-  const asks = useMemo(
-    () =>
-      [...book.asks.entries()]
-        .sort((a, b) => Number(a[0]) - Number(b[0]))
-        .slice(0, visibleLevels)
-        .reverse(),
-    [book.asks, visibleLevels],
-  );
-  const bids = useMemo(
-    () =>
-      [...book.bids.entries()]
-        .sort((a, b) => Number(b[0]) - Number(a[0]))
-        .slice(0, visibleLevels),
-    [book.bids, visibleLevels],
-  );
-  const maxDepth = Math.max(1, ...asks.map(([, value]) => Number(value)), ...bids.map(([, value]) => Number(value)));
+  const nativeTick = Math.max(0.001, Number(book.tickSize || instrument.tickSize || 0.01));
+  const step = nativeTick * groupTicks;
+  const marketCenter = useMemo(() => {
+    if (book.bestBid && book.bestAsk) return (Number(book.bestBid) + Number(book.bestAsk)) / 2;
+    if (book.lastTrade) return Number(book.lastTrade);
+    if (book.bestBid) return Number(book.bestBid) + step;
+    if (book.bestAsk) return Number(book.bestAsk) - step;
+    return 0.5;
+  }, [book.bestAsk, book.bestBid, book.lastTrade, step]);
+  const center = autoCenter ? marketCenter : (manualCenter ?? marketCenter);
+  const bucket = (price: number) => Math.round(price / step) * step;
+  const groupedBids = useMemo(() => {
+    const result = new Map<number, number>();
+    book.bids.forEach((value, price) => {
+      const key = bucket(Number(price));
+      result.set(key, (result.get(key) ?? 0) + Number(value));
+    });
+    return result;
+  }, [book.bids, step]);
+  const groupedAsks = useMemo(() => {
+    const result = new Map<number, number>();
+    book.asks.forEach((value, price) => {
+      const key = bucket(Number(price));
+      result.set(key, (result.get(key) ?? 0) + Number(value));
+    });
+    return result;
+  }, [book.asks, step]);
+  const rowPrices = useMemo(() => {
+    const centerIndex = Math.round(center / step);
+    const half = Math.floor(visibleRows / 2);
+    return Array.from({ length: visibleRows }, (_, index) => (centerIndex + half - index) * step)
+      .filter((price) => price > 0 && price < 1);
+  }, [center, step, visibleRows]);
+  const prints = useMemo(() => {
+    const result = new Map<number, { buy: number; sell: number; count: number }>();
+    book.recentTrades.forEach((trade) => {
+      const sizeValue = Number(trade.size);
+      if (sizeValue < printThreshold) return;
+      const key = bucket(Number(trade.price));
+      const current = result.get(key) ?? { buy: 0, sell: 0, count: 0 };
+      current[trade.side === "BUY" ? "buy" : "sell"] += sizeValue;
+      current.count += 1;
+      result.set(key, current);
+    });
+    return result;
+  }, [book.recentTrades, printThreshold, step]);
+  const maxDepth = Math.max(1, ...groupedBids.values(), ...groupedAsks.values());
+  const maxPrint = Math.max(1, ...[...prints.values()].map((print) => print.buy + print.sell));
   const bidDepth = [...book.bids.values()].reduce((sum, value) => sum + Number(value), 0);
   const askDepth = [...book.asks.values()].reduce((sum, value) => sum + Number(value), 0);
   const totalDepth = bidDepth + askDepth;
   const bidShare = totalDepth > 0 ? (bidDepth / totalDepth) * 100 : 50;
-  const maxPrint = Math.max(1, ...book.recentTrades.map((trade) => Number(trade.size)));
   const rollingPrintVolume = book.recentTrades.reduce((sum, trade) => sum + Number(trade.size), 0);
   const disabled = pending || connection !== "live" || !book.ready || Number(size) <= 0;
 
@@ -247,46 +325,64 @@ function BookPanel({
     }
   };
 
-  const row = (side: "bid" | "ask", [price, levelSize]: [string, string]) => {
-    const isBid = side === "bid";
-    const depth = Math.min(100, (Number(levelSize) / maxDepth) * 100);
+  const row = (numericPrice: number) => {
+    const key = bucket(numericPrice);
+    const bidSize = groupedBids.get(key) ?? 0;
+    const askSize = groupedAsks.get(key) ?? 0;
+    const bidBar = Math.min(100, (bidSize / maxDepth) * 100);
+    const askBar = Math.min(100, (askSize / maxDepth) * 100);
+    const price = numericPrice.toFixed(Math.max(2, String(nativeTick).split(".")[1]?.length ?? 2));
+    const print = prints.get(key);
+    const printSize = print ? print.buy + print.sell : 0;
+    const bubbleSize = print ? 17 + Math.sqrt(printSize / maxPrint) * 23 : 0;
+    const printSide = !print ? "" : print.buy > print.sell ? "buy" : print.sell > print.buy ? "sell" : "mixed";
+    const atLast = book.lastTrade && Math.abs(bucket(Number(book.lastTrade)) - key) < step / 2;
     return (
-      <div className={`book-row ${side}`} key={`${side}-${price}`}>
+      <div className={`dom-row ${atLast ? "last-price" : ""}`} key={price}>
         <button
           className="order-lane buy-lane"
-          disabled={disabled || !isBid}
+          disabled={disabled}
           title={`Rest BUY ${size} ${sizeUnit.toLowerCase()} at ${priceLabel(price)}`}
-          onClick={() => isBid && place("BUY", price, "GTC")}
+          onClick={() => place("BUY", price, "GTC")}
         >
-          {isBid ? "+ BUY" : ""}
+          BUY
         </button>
         <button
           className="liquidity bid-size"
-          disabled={disabled || !isBid}
-          title={isBid ? `Take bid: SELL at ${priceLabel(price)} or better` : undefined}
-          onClick={() => isBid && place("SELL", price, "FAK")}
+          disabled={disabled || bidSize <= 0}
+          title={bidSize > 0 ? `Hit bid: SELL at ${priceLabel(price)} or better` : "No resting bids at this tick"}
+          onClick={() => bidSize > 0 && place("SELL", price, "FAK")}
         >
-          {isBid && <span className="depth" style={{ width: `${depth}%` }} />}
-          <span className="level-value">{isBid ? Number(levelSize).toLocaleString() : ""}</span>
+          {bidSize > 0 && <span className="depth" style={{ width: `${bidBar}%` }} />}
+          <span className="level-value">{bidSize > 0 ? compactNumber(bidSize) : ""}</span>
         </button>
         <div className="price-cell">{priceLabel(price)}</div>
         <button
           className="liquidity ask-size"
-          disabled={disabled || isBid}
-          title={!isBid ? `Take ask: BUY at ${priceLabel(price)} or better` : undefined}
-          onClick={() => !isBid && place("BUY", price, "FAK")}
+          disabled={disabled || askSize <= 0}
+          title={askSize > 0 ? `Lift ask: BUY at ${priceLabel(price)} or better` : "No resting asks at this tick"}
+          onClick={() => askSize > 0 && place("BUY", price, "FAK")}
         >
-          {!isBid && <span className="depth" style={{ width: `${depth}%` }} />}
-          <span className="level-value">{!isBid ? Number(levelSize).toLocaleString() : ""}</span>
+          {askSize > 0 && <span className="depth" style={{ width: `${askBar}%` }} />}
+          <span className="level-value">{askSize > 0 ? compactNumber(askSize) : ""}</span>
         </button>
         <button
           className="order-lane sell-lane"
-          disabled={disabled || isBid}
+          disabled={disabled}
           title={`Rest SELL ${size} ${sizeUnit.toLowerCase()} at ${priceLabel(price)}`}
-          onClick={() => !isBid && place("SELL", price, "GTC")}
+          onClick={() => place("SELL", price, "GTC")}
         >
-          {!isBid ? "SELL +" : ""}
+          SELL
         </button>
+        <div className="print-cell">
+          {print && (
+            <i
+              className={`volume-bubble bubble-${printSide}`}
+              style={{ width: bubbleSize, height: bubbleSize }}
+              title={`${print.count} prints · ${compactNumber(print.buy)} buy / ${compactNumber(print.sell)} sell shares`}
+            >{compactNumber(printSize)}</i>
+          )}
+        </div>
       </div>
     );
   };
@@ -307,18 +403,19 @@ function BookPanel({
           <span className="drag-handle">⠿</span>
           <div>
             <strong>{instrument.marketTitle}</strong>
-            <span className={`outcome outcome-${instrument.outcome.toLowerCase()}`}>{instrument.outcome}</span>
+            <span className="book-context">{instrument.leagueName ?? instrument.category} · {startLabel(instrument.startTime)}</span>
           </div>
+          <span className={`outcome outcome-${instrument.outcome.toLowerCase()}`}>{instrument.outcome}</span>
         </div>
         <div className="book-header-meta">
           <span><b>{money(instrument.volume24hr)}</b> 24H</span>
-          <button className={`icon-button star-button ${favorite ? "active" : ""}`} onClick={onToggleFavorite} aria-label={favorite ? "Remove favorite" : "Add favorite"}>★</button>
+          {instrument.leagueId && <button className={`icon-button star-button ${leagueFavorite ? "active" : ""}`} onClick={onToggleLeagueFavorite} aria-label={leagueFavorite ? `Remove ${instrument.leagueName} favorite` : `Favorite ${instrument.leagueName}`}>★</button>}
           <button className={`icon-button focus-button ${focused ? "active" : ""}`} onClick={onToggleFocus} aria-label={focused ? "Exit focus" : "Focus order book"}>{focused ? "↙" : "↗"}</button>
           <button className="icon-button" onClick={onClose} aria-label="Close order book">×</button>
         </div>
       </header>
 
-      <div className="trade-strip">
+      <div className="trade-strip dom-toolbar">
         <label>
           QTY
           <input value={size} inputMode="decimal" onChange={(event) => setSize(event.target.value)} />
@@ -330,10 +427,17 @@ function BookPanel({
         <div className="size-presets" aria-label="Quick order size">
           {[5, 10, 25, 100].map((value) => <button key={value} className={size === String(value) ? "active" : ""} onClick={() => setSize(String(value))}>{value}</button>)}
         </div>
-        <div className="quote">
-          <span>BID {book.bestBid ? priceLabel(book.bestBid) : "—"}</span>
-          <span>ASK {book.bestAsk ? priceLabel(book.bestAsk) : "—"}</span>
-          <span>SPR {spread !== undefined ? `${(spread * 100).toFixed(1)}¢` : "—"}</span>
+        <div className="dom-controls">
+          <div className="tick-groups" aria-label="Price aggregation">
+            {([1, 2, 5] as const).map((value) => <button className={groupTicks === value ? "active" : ""} key={value} onClick={() => setGroupTicks(value)}>{value}T</button>)}
+          </div>
+          <button className={`center-button ${autoCenter ? "active" : ""}`} onClick={() => { setAutoCenter(true); setManualCenter(undefined); }} title="Recenter price ladder (C)">◎ C</button>
+          <select value={printThreshold} onChange={(event) => setPrintThreshold(Number(event.target.value))} title="Minimum executed trade size shown">
+            <option value={0}>ALL PRINTS</option>
+            <option value={50}>≥50</option>
+            <option value={200}>≥200</option>
+            <option value={500}>≥500</option>
+          </select>
         </div>
         <div className="depth-summary" title={`Full visible book: ${compactNumber(bidDepth)} bid shares / ${compactNumber(askDepth)} ask shares`}>
           <span style={{ width: `${bidShare}%` }} />
@@ -342,50 +446,44 @@ function BookPanel({
         </div>
       </div>
 
-      <div className="book-body">
+      <div className="book-body dom-body">
         <div className="ladder-stack">
-          <div className="book-columns">
-            <span>REST</span>
-            <span>BID SH</span>
+          <div className="dom-columns">
+            <span>BUY</span>
+            <span>BID DEPTH</span>
             <span>PRICE</span>
-            <span>ASK SH</span>
-            <span>REST</span>
+            <span>ASK DEPTH</span>
+            <span>SELL</span>
+            <span>EXECUTED</span>
           </div>
-          <div className="book-ladder">
+          <div
+            className={`book-ladder ${autoCenter ? "auto-centered" : "manual-centered"}`}
+            onWheel={(event) => {
+              event.preventDefault();
+              const next = Math.max(step, Math.min(1 - step, center - Math.sign(event.deltaY) * step * 3));
+              setAutoCenter(false);
+              setManualCenter(next);
+            }}
+            tabIndex={0}
+            onKeyDown={(event) => {
+              if (event.key.toLowerCase() === "c") {
+                setAutoCenter(true);
+                setManualCenter(undefined);
+              }
+            }}
+          >
             {!book.ready && <div className="book-loading">Waiting for book snapshot…</div>}
-            {asks.map((level) => row("ask", level))}
-            <div className="spread-row">
-              <span>LAST {book.lastTrade ? priceLabel(book.lastTrade) : "—"}</span>
-              <span>{connection === "live" ? "LIVE" : connection.toUpperCase()}</span>
-            </div>
-            {bids.map((level) => row("bid", level))}
+            {rowPrices.map(row)}
           </div>
         </div>
-
-        <aside className="prints-rail" aria-label="Live executed trades">
-          <header>
-            <span>PRINTS</span>
-            <b>{compactNumber(rollingPrintVolume)} sh</b>
-          </header>
-          <div className="prints-list">
-            {book.recentTrades.length === 0 && <div className="prints-empty">Awaiting live trades</div>}
-            {book.recentTrades.slice(0, Math.max(5, visibleLevels)).map((trade) => {
-              const bubbleSize = 16 + Math.sqrt(Number(trade.size) / maxPrint) * 24;
-              return (
-                <div className={`trade-print trade-${trade.side.toLowerCase()}`} key={trade.id} title={`${trade.side} ${Number(trade.size).toLocaleString()} shares at ${priceLabel(trade.price)}`}>
-                  <i style={{ width: bubbleSize, height: bubbleSize }}><span>{compactNumber(Number(trade.size))}</span></i>
-                  <div><b>{priceLabel(trade.price)}</b><span>{trade.side}</span></div>
-                </div>
-              );
-            })}
-          </div>
-        </aside>
       </div>
 
       <footer className="book-footer">
         <span>Tick {book.tickSize}</span>
+        <span>Group {groupTicks}T</span>
         <span>Min {instrument.minOrderSize} sh</span>
         <span>Depth {compactNumber(totalDepth)} sh</span>
+        <span>Prints {compactNumber(rollingPrintVolume)} sh</span>
         <span className={accountStatus.armed ? "live-label" : "dry-label"}>
           {accountStatus.armed ? `LIVE · max $${accountStatus.maxOrderUsd}` : "DRY · no order sent"}
         </span>
@@ -581,13 +679,17 @@ function AccountDrawer({
 
 export function App() {
   const [instruments, setInstruments] = useState<Instrument[]>([]);
+  const [leagues, setLeagues] = useState<MarketLeague[]>([]);
   const [openInstruments, setOpenInstruments] = useState<Instrument[]>([]);
   const [books, setBooks] = useState<Map<string, BookState>>(new Map());
   const [connection, setConnection] = useState<ConnectionStatus>("idle");
   const [query, setQuery] = useState("");
-  const [category, setCategory] = useState("All");
-  const [marketView, setMarketView] = useState<"All" | "Favorites" | "Recent">("All");
-  const [favoriteIds, setFavoriteIds] = useState<Set<string>>(() => new Set(readStoredIds(FAVORITES_KEY)));
+  const [marketView, setMarketView] = useState<"Leagues" | "Favorites" | "Recent">("Leagues");
+  const [favoriteLeagueIds, setFavoriteLeagueIds] = useState<Set<string>>(() => new Set(readStoredIds(FAVORITE_LEAGUES_KEY)));
+  const [expandedLeagueIds, setExpandedLeagueIds] = useState<Set<string>>(new Set());
+  const [loadedLeagueIds, setLoadedLeagueIds] = useState<Set<string>>(new Set());
+  const [loadingLeagueIds, setLoadingLeagueIds] = useState<Set<string>>(new Set());
+  const [leagueErrors, setLeagueErrors] = useState<Map<string, string>>(new Map());
   const [recentIds, setRecentIds] = useState<string[]>(() => readStoredIds(RECENTS_KEY));
   const [loading, setLoading] = useState(true);
   const [marketError, setMarketError] = useState<string>();
@@ -603,6 +705,30 @@ export function App() {
   const [accountLoading, setAccountLoading] = useState(false);
   const dragIndex = useRef<number | undefined>(undefined);
   const booksWorkspaceRef = useRef<HTMLElement>(null);
+  const initializedLeagueTree = useRef(false);
+
+  const loadLeague = useCallback(async (seriesId: string) => {
+    if (loadedLeagueIds.has(seriesId) || loadingLeagueIds.has(seriesId)) return;
+    setLoadingLeagueIds((current) => new Set(current).add(seriesId));
+    setLeagueErrors((current) => {
+      const next = new Map(current);
+      next.delete(seriesId);
+      return next;
+    });
+    try {
+      const items = await bridge.listLeagueMarkets(seriesId);
+      setInstruments((current) => mergeInstruments(current, items));
+      setLoadedLeagueIds((current) => new Set(current).add(seriesId));
+    } catch (error) {
+      setLeagueErrors((current) => new Map(current).set(seriesId, error instanceof Error ? error.message : "Could not load league"));
+    } finally {
+      setLoadingLeagueIds((current) => {
+        const next = new Set(current);
+        next.delete(seriesId);
+        return next;
+      });
+    }
+  }, [loadedLeagueIds, loadingLeagueIds]);
 
   useEffect(() => {
     const offEvent = bridge.onMarketEvent((event) => {
@@ -628,11 +754,11 @@ export function App() {
 
   useEffect(() => {
     let active = true;
-    bridge
-      .listMarkets()
-      .then((items) => {
+    Promise.all([bridge.listMarkets(), bridge.listLeagues()])
+      .then(([items, leagueItems]) => {
         if (!active) return;
         setInstruments(items);
+        setLeagues(leagueItems);
         const savedIds = readStoredIds(STORAGE_KEY);
         const restored = savedIds
           .map((assetId) => items.find((item) => item.assetId === assetId))
@@ -657,12 +783,22 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (initializedLeagueTree.current || leagues.length === 0) return;
+    initializedLeagueTree.current = true;
+    const favoriteTargets = leagues.filter((league) => favoriteLeagueIds.has(league.seriesId));
+    const fallback = leagues.find((league) => league.slug === "nba") ?? leagues[0];
+    const targets = favoriteTargets.length ? favoriteTargets : fallback ? [fallback] : [];
+    setExpandedLeagueIds(new Set(targets.map((league) => league.seriesId)));
+    targets.forEach((league) => void loadLeague(league.seriesId));
+  }, [favoriteLeagueIds, leagues, loadLeague]);
+
+  useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(openInstruments.map((item) => item.assetId)));
   }, [openInstruments]);
 
   useEffect(() => {
-    localStorage.setItem(FAVORITES_KEY, JSON.stringify([...favoriteIds]));
-  }, [favoriteIds]);
+    localStorage.setItem(FAVORITE_LEAGUES_KEY, JSON.stringify([...favoriteLeagueIds]));
+  }, [favoriteLeagueIds]);
 
   useEffect(() => {
     localStorage.setItem(RECENTS_KEY, JSON.stringify(recentIds));
@@ -674,35 +810,40 @@ export function App() {
     return () => clearTimeout(timer);
   }, [toast]);
 
-  const categories = useMemo(() => {
-    const preferred = ["Politics", "Crypto", "Sports", "Economy", "Tech & AI", "World", "Culture", "Other"];
-    const available = new Set(instruments.map((instrument) => instrument.category));
-    return ["All", ...preferred.filter((item) => available.has(item))];
-  }, [instruments]);
-
-  const filtered = useMemo(() => {
+  const filteredLeagues = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    const result = instruments
-      .filter(
-        (item) =>
-          (marketView === "All" ||
-            (marketView === "Favorites" && favoriteIds.has(item.assetId)) ||
-            (marketView === "Recent" && recentIds.includes(item.assetId))) &&
-          (category === "All" || item.category === category) &&
-          (!needle ||
-            item.marketTitle.toLowerCase().includes(needle) ||
-            item.eventTitle.toLowerCase().includes(needle) ||
-            item.outcome.toLowerCase().includes(needle) ||
-            item.tags.some((tag) => tag.toLowerCase().includes(needle))),
-      );
-    return result
-      .sort((a, b) => {
-        if (marketView === "Recent") return recentIds.indexOf(a.assetId) - recentIds.indexOf(b.assetId);
-        const favoriteDelta = Number(favoriteIds.has(b.assetId)) - Number(favoriteIds.has(a.assetId));
-        return favoriteDelta || b.volume24hr - a.volume24hr;
+    const major = ["nba", "nfl", "nhl", "mlb", "epl", "mls", "ufc", "wnba"];
+    return leagues
+      .filter((league) => marketView !== "Favorites" || favoriteLeagueIds.has(league.seriesId))
+      .filter((league) => {
+        if (!needle) return true;
+        if (`${league.name} ${league.slug}`.toLowerCase().includes(needle)) return true;
+        return instruments.some((item) => item.leagueId === league.seriesId && `${item.eventTitle} ${item.marketTitle} ${item.outcome}`.toLowerCase().includes(needle));
       })
-      .slice(0, 80);
-  }, [category, favoriteIds, instruments, marketView, query, recentIds]);
+      .sort((a, b) => {
+        const favoriteDelta = Number(favoriteLeagueIds.has(b.seriesId)) - Number(favoriteLeagueIds.has(a.seriesId));
+        if (favoriteDelta) return favoriteDelta;
+        const aMajor = major.indexOf(a.slug);
+        const bMajor = major.indexOf(b.slug);
+        if (aMajor >= 0 || bMajor >= 0) return (aMajor < 0 ? 999 : aMajor) - (bMajor < 0 ? 999 : bMajor);
+        return a.name.localeCompare(b.name);
+      })
+      .slice(0, 100);
+  }, [favoriteLeagueIds, instruments, leagues, marketView, query]);
+
+  const recentInstruments = useMemo(
+    () => recentIds.map((assetId) => instruments.find((item) => item.assetId === assetId)).filter((item): item is Instrument => Boolean(item)),
+    [instruments, recentIds],
+  );
+
+  const searchResults = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle || marketView === "Recent") return [];
+    return instruments
+      .filter((item) => `${item.leagueName ?? ""} ${item.eventTitle} ${item.marketTitle} ${item.outcome} ${item.tags.join(" ")}`.toLowerCase().includes(needle))
+      .sort((a, b) => b.volume24hr - a.volume24hr)
+      .slice(0, 24);
+  }, [instruments, marketView, query]);
 
   const displayedOpenInstruments = useMemo(
     () => focusedAssetId ? openInstruments.filter((item) => item.assetId === focusedAssetId) : openInstruments,
@@ -766,14 +907,25 @@ export function App() {
     await bridge.unsubscribeAssets([instrument.assetId]);
   };
 
-  const toggleFavorite = useCallback((assetId: string) => {
-    setFavoriteIds((current) => {
+  const toggleLeagueFavorite = useCallback((seriesId: string) => {
+    setFavoriteLeagueIds((current) => {
       const next = new Set(current);
-      if (next.has(assetId)) next.delete(assetId);
-      else next.add(assetId);
+      if (next.has(seriesId)) next.delete(seriesId);
+      else next.add(seriesId);
       return next;
     });
   }, []);
+
+  const toggleLeagueExpanded = (seriesId: string) => {
+    const opening = !expandedLeagueIds.has(seriesId);
+    setExpandedLeagueIds((current) => {
+      const next = new Set(current);
+      if (next.has(seriesId)) next.delete(seriesId);
+      else next.add(seriesId);
+      return next;
+    });
+    if (opening) void loadLeague(seriesId);
+  };
 
   const submitOrder = async (draft: OrderDraft) => {
     try {
@@ -891,76 +1043,151 @@ export function App() {
       <div className={`workspace ${drawerCollapsed ? "drawer-collapsed" : ""}`}>
         <aside className="market-drawer">
           <div className="drawer-heading">
-            <span>MARKET NAVIGATOR</span>
-            <span>{filtered.length}/{instruments.length}</span>
+            <span>SPORTS NAVIGATOR</span>
+            <span>{leagues.length} LEAGUES</span>
           </div>
           <div className="search-wrap">
             <span>⌕</span>
             <input
               className="market-search"
-              placeholder="Search question, tag, outcome…"
+              placeholder="Search league, game, market…"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
             {query && <button onClick={() => setQuery("")} aria-label="Clear search">×</button>}
           </div>
           <div className="market-view-tabs">
-            {(["All", "Favorites", "Recent"] as const).map((view) => (
+            {(["Leagues", "Favorites", "Recent"] as const).map((view) => (
               <button key={view} className={marketView === view ? "active" : ""} onClick={() => setMarketView(view)}>
                 {view === "Favorites" ? "★ Favorites" : view}
-                {view === "Favorites" && <b>{favoriteIds.size}</b>}
-              </button>
-            ))}
-          </div>
-          <div className="category-strip">
-            {categories.map((item) => (
-              <button key={item} className={category === item ? "active" : ""} onClick={() => setCategory(item)}>
-                {item}
+                {view === "Favorites" && <b>{favoriteLeagueIds.size}</b>}
               </button>
             ))}
           </div>
           <div className="market-list">
-            {loading && <div className="drawer-message">Loading active markets…</div>}
+            {loading && <div className="drawer-message">Loading leagues and active markets…</div>}
             {marketError && <div className="drawer-message error">{marketError}</div>}
-            {!loading && !marketError && filtered.length === 0 && <div className="drawer-message">No markets in this view. Star a market to keep it here.</div>}
-            {filtered.map((instrument) => {
-              const isOpen = openInstruments.some((item) => item.assetId === instrument.assetId);
-              const isFavorite = favoriteIds.has(instrument.assetId);
+            {!loading && !marketError && marketView !== "Recent" && filteredLeagues.length === 0 && (
+              <div className="drawer-message">No leagues in this view. Star a league such as NBA to keep its whole schedule here.</div>
+            )}
+
+            {marketView !== "Recent" && filteredLeagues.map((league) => {
+              const expanded = expandedLeagueIds.has(league.seriesId);
+              const favorite = favoriteLeagueIds.has(league.seriesId);
+              const loadingLeague = loadingLeagueIds.has(league.seriesId);
+              const leagueItems = instruments.filter((item) => item.leagueId === league.seriesId);
+              const groupedEvents = eventGroups(leagueItems);
+              const recentCutoff = Date.now() - 6 * 60 * 60 * 1000;
+              const relevantEvents = groupedEvents.filter((group) => {
+                const time = group.instruments[0]?.startTime;
+                return !time || new Date(time).getTime() >= recentCutoff;
+              });
+              const shownEvents = (relevantEvents.length ? relevantEvents : groupedEvents).slice(0, 14);
               return (
-                <div
-                  role="button"
-                  tabIndex={0}
-                  className={`market-item ${isOpen ? "open" : ""}`}
-                  key={instrument.assetId}
-                  onClick={() => openBook(instrument)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") openBook(instrument);
-                  }}
-                >
-                  <div className="market-item-top">
-                    <span className="market-name">{instrument.marketTitle}</span>
+                <section className={`league-node ${expanded ? "expanded" : ""}`} key={league.seriesId}>
+                  <div
+                    className="league-header"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => toggleLeagueExpanded(league.seriesId)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") toggleLeagueExpanded(league.seriesId);
+                    }}
+                  >
+                    <span className="league-chevron">{expanded ? "▾" : "▸"}</span>
+                    {league.image ? <img src={league.image} alt="" /> : <i>{league.name.slice(0, 2).toUpperCase()}</i>}
+                    <div>
+                      <strong>{league.name}</strong>
+                      <span>{loadedLeagueIds.has(league.seriesId) ? `${groupedEvents.length} upcoming events` : "Open schedule"}</span>
+                    </div>
                     <button
-                      className={`market-star ${isFavorite ? "active" : ""}`}
-                      aria-label={isFavorite ? "Remove favorite" : "Add favorite"}
-                      onClick={(event) => { event.stopPropagation(); toggleFavorite(instrument.assetId); }}
+                      className={`league-star ${favorite ? "active" : ""}`}
+                      aria-label={favorite ? `Remove ${league.name} from favorites` : `Favorite ${league.name}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleLeagueFavorite(league.seriesId);
+                        if (!loadedLeagueIds.has(league.seriesId)) void loadLeague(league.seriesId);
+                      }}
                     >★</button>
                   </div>
-                  <span className="market-meta">
-                    <b>{instrument.outcome}</b>
-                    <span>{money(instrument.volume24hr)} 24H</span>
-                    <i>{isOpen ? "● OPEN" : "+ OPEN"}</i>
-                  </span>
-                  <span className="market-category">{instrument.category}</span>
-                </div>
+
+                  {expanded && (
+                    <div className="league-events">
+                      {loadingLeague && <div className="league-state">Loading {league.name} schedule…</div>}
+                      {leagueErrors.has(league.seriesId) && <div className="league-state error">{leagueErrors.get(league.seriesId)}</div>}
+                      {!loadingLeague && loadedLeagueIds.has(league.seriesId) && shownEvents.length === 0 && <div className="league-state">No active events.</div>}
+                      {shownEvents.map((group) => {
+                        const eventInstrument = group.instruments[0];
+                        const contracts = new Map<string, Instrument[]>();
+                        group.instruments.forEach((item) => contracts.set(item.conditionId, [...(contracts.get(item.conditionId) ?? []), item]));
+                        return (
+                          <details className="event-node" key={group.id}>
+                            <summary>
+                              <div>
+                                <strong>{eventInstrument.eventTitle}</strong>
+                                <time title={eventInstrument.startTime ? new Date(eventInstrument.startTime).toLocaleString() : "Start time not published"}>{startLabel(eventInstrument.startTime)}</time>
+                              </div>
+                              <span>{contracts.size} MKT</span>
+                            </summary>
+                            <div className="event-contracts">
+                              {[...contracts.values()].slice(0, 12).map((contract) => {
+                                const first = contract[0];
+                                const label = first.marketTitle === first.eventTitle
+                                  ? (first.sportsMarketType || "Moneyline").replaceAll("_", " ")
+                                  : first.marketTitle.replace(`${first.eventTitle}: `, "");
+                                return (
+                                  <div className="contract-row" key={first.conditionId}>
+                                    <span title={first.marketTitle}>{label}</span>
+                                    <div>
+                                      {contract.map((instrument) => {
+                                        const isOpen = openInstruments.some((item) => item.assetId === instrument.assetId);
+                                        return <button className={isOpen ? "open" : ""} key={instrument.assetId} onClick={() => openBook(instrument)}>{instrument.outcome}<b>{isOpen ? "●" : "+"}</b></button>;
+                                      })}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </details>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
               );
             })}
+
+            {marketView === "Recent" && recentInstruments.length === 0 && <div className="drawer-message">Open a market outcome and it will appear here.</div>}
+            {marketView === "Recent" && recentInstruments.map((instrument) => {
+              const isOpen = openInstruments.some((item) => item.assetId === instrument.assetId);
+              return (
+                <button className={`recent-market ${isOpen ? "open" : ""}`} key={instrument.assetId} onClick={() => openBook(instrument)}>
+                  <span>{instrument.leagueName ?? instrument.category} · {startLabel(instrument.startTime)}</span>
+                  <strong>{instrument.marketTitle}</strong>
+                  <i>{instrument.outcome} {isOpen ? "●" : "+"}</i>
+                </button>
+              );
+            })}
+
+            {searchResults.length > 0 && (
+              <section className="search-results">
+                <header>MARKET MATCHES <b>{searchResults.length}</b></header>
+                {searchResults.map((instrument) => (
+                  <button key={instrument.assetId} onClick={() => openBook(instrument)}>
+                    <span>{instrument.leagueName ?? instrument.category} · {startLabel(instrument.startTime)}</span>
+                    <strong>{instrument.marketTitle}</strong>
+                    <i>{instrument.outcome} · {money(instrument.volume24hr)}</i>
+                  </button>
+                ))}
+              </section>
+            )}
           </div>
         </aside>
 
         <section ref={booksWorkspaceRef} className="books-workspace">
           <div className="workspace-hint">
-            <span>Click ASK to buy · BID to sell · outer lanes rest post-only orders</span>
-            <span className="workspace-legend"><i className="legend-depth" /> resting depth <i className="legend-print" /> executed prints · AUTO fits panels to available space</span>
+            <span>BUY/SELL lanes rest limits · click ASK/BID depth to take · wheel pans · C recenters</span>
+            <span className="workspace-legend"><i className="legend-depth" /> resting liquidity <i className="legend-print" /> executed volume · local time</span>
           </div>
           {openInstruments.length === 0 ? (
             <div className="empty-state">
@@ -972,7 +1199,7 @@ export function App() {
               className={`book-grid layout-${layoutMode.toLowerCase()} ${focusedAssetId ? "has-focus" : ""}`}
               style={{
                 gridTemplateColumns: `repeat(${gridColumns}, minmax(340px, 1fr))`,
-                gridTemplateRows: `repeat(${gridRows}, minmax(230px, 1fr))`,
+                gridTemplateRows: `repeat(${gridRows}, minmax(220px, 1fr))`,
               }}
             >
               {displayedOpenInstruments.map((instrument) => {
@@ -984,10 +1211,10 @@ export function App() {
                   book={books.get(instrument.assetId) ?? freshBook(instrument)}
                   connection={connection}
                   accountStatus={accountStatus}
-                  favorite={favoriteIds.has(instrument.assetId)}
+                  leagueFavorite={Boolean(instrument.leagueId && favoriteLeagueIds.has(instrument.leagueId))}
                   focused={focusedAssetId === instrument.assetId}
                   onClose={() => closeBook(instrument)}
-                  onToggleFavorite={() => toggleFavorite(instrument.assetId)}
+                  onToggleLeagueFavorite={() => instrument.leagueId && toggleLeagueFavorite(instrument.leagueId)}
                   onToggleFocus={() => setFocusedAssetId((current) => current === instrument.assetId ? undefined : instrument.assetId)}
                   onOrder={submitOrder}
                   onDragStart={() => {

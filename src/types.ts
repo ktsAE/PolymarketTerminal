@@ -3,6 +3,8 @@ export type ConnectionStatus = "idle" | "connecting" | "live" | "reconnecting" |
 export interface Instrument {
   assetId: string;
   conditionId: string;
+  eventId: string;
+  eventSlug: string;
   eventTitle: string;
   marketTitle: string;
   outcome: string;
@@ -11,6 +13,22 @@ export interface Instrument {
   volume24hr: number;
   category: string;
   tags: string[];
+  leagueId?: string;
+  leagueSlug?: string;
+  leagueName?: string;
+  leagueImage?: string;
+  startTime?: string;
+  sportsMarketType?: string;
+}
+
+export interface MarketLeague {
+  id: string;
+  slug: string;
+  name: string;
+  image?: string;
+  seriesId: string;
+  primaryTagId?: string;
+  ordering?: "home" | "away";
 }
 
 export interface PriceLevel {
@@ -134,6 +152,8 @@ export interface OrderResult extends OrderDraft {
 
 export interface TerminalBridge {
   listMarkets(): Promise<Instrument[]>;
+  listLeagues(): Promise<MarketLeague[]>;
+  listLeagueMarkets(seriesId: string): Promise<Instrument[]>;
   subscribeAssets(assetIds: string[]): Promise<{ subscribed: string[] }>;
   unsubscribeAssets(assetIds: string[]): Promise<{ subscribed: string[] }>;
   submitOrder(draft: OrderDraft): Promise<OrderResult>;

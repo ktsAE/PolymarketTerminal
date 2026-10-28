@@ -2,6 +2,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("polymarketTerminal", {
   listMarkets: () => ipcRenderer.invoke("markets:list"),
+  listLeagues: () => ipcRenderer.invoke("markets:leagues"),
+  listLeagueMarkets: (seriesId) => ipcRenderer.invoke("markets:league", seriesId),
   subscribeAssets: (assetIds) => ipcRenderer.invoke("books:subscribe", assetIds),
   unsubscribeAssets: (assetIds) => ipcRenderer.invoke("books:unsubscribe", assetIds),
   submitOrder: (draft) => ipcRenderer.invoke("orders:submit", draft),

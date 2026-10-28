@@ -7,7 +7,9 @@ const { z } = require("zod");
 const MARKET_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
 const GAMMA_EVENTS_URL =
   "https://gamma-api.polymarket.com/events?active=true&closed=false&limit=100&order=volume24hr&ascending=false";
+const GAMMA_SPORTS_URL = "https://gamma-api.polymarket.com/sports";
 const GAMMA_EVENT_PAGES = 5;
+const GAMMA_LEAGUE_EVENT_PAGES = 3;
 
 let mainWindow;
 let marketSocket;
@@ -145,6 +147,48 @@ function parseStringArray(value) {
   }
 }
 
+function normalizeDate(value) {
+  if (!value) return undefined;
+  const raw = String(value).trim();
+  const normalized = raw.includes(" ") ? raw.replace(" ", "T").replace(/\+00$/, "Z") : raw;
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+function normalizeLeague(item) {
+  const seriesId = String(item?.series || "");
+  if (!seriesId || !/^\d+$/.test(seriesId)) return undefined;
+  return {
+    id: String(item?.id || seriesId),
+    slug: String(item?.sport || item?.name || seriesId).toLowerCase(),
+    name: String(item?.name || item?.sport || `League ${seriesId}`),
+    image: item?.image ? String(item.image) : undefined,
+    seriesId,
+    primaryTagId: item?.primaryTagId ? String(item.primaryTagId) : undefined,
+    ordering: item?.ordering === "away" ? "away" : "home",
+  };
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url, {
+    headers: { accept: "application/json", "user-agent": "pm-orderbook-terminal/0.2" },
+  });
+  if (!response.ok) throw new Error(`Market discovery failed (${response.status})`);
+  return response.json();
+}
+
+async function listLeagues() {
+  const payload = await fetchJson(GAMMA_SPORTS_URL);
+  const normalized = (Array.isArray(payload) ? payload : [])
+    .map(normalizeLeague)
+    .filter(Boolean);
+  const unique = new Map();
+  normalized.forEach((league) => {
+    if (!unique.has(league.seriesId)) unique.set(league.seriesId, league);
+  });
+  return [...unique.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
 const categoryRules = [
   ["Politics", ["politics", "elections", "global-elections", "us-politics"]],
   ["Crypto", ["crypto", "bitcoin", "ethereum", "solana"]],
@@ -163,12 +207,14 @@ function marketCategory(tags) {
   return "Other";
 }
 
-function normalizeEvents(events) {
+function normalizeEvents(events, requestedLeague, leaguesBySeries = new Map()) {
   const instruments = [];
   for (const event of Array.isArray(events) ? events : []) {
     const tags = Array.isArray(event.tags) ? event.tags : [];
     const tagLabels = tags.map((tag) => String(tag?.label || "")).filter(Boolean);
     const category = marketCategory(tags);
+    const eventSeries = Array.isArray(event.series) ? event.series[0] : undefined;
+    const league = requestedLeague || leaguesBySeries.get(String(eventSeries?.id || ""));
     for (const market of Array.isArray(event.markets) ? event.markets : []) {
       if (!market.acceptingOrders || market.closed) continue;
       const outcomes = parseStringArray(market.outcomes);
@@ -177,6 +223,8 @@ function normalizeEvents(events) {
         instruments.push({
           assetId: assetIds[index],
           conditionId: String(market.conditionId || ""),
+          eventId: String(event.id || ""),
+          eventSlug: String(event.slug || ""),
           eventTitle: String(event.title || market.question || "Untitled market"),
           marketTitle: String(market.question || event.title || "Untitled market"),
           outcome: outcomes[index],
@@ -185,6 +233,12 @@ function normalizeEvents(events) {
           volume24hr: Number(market.volume24hr || event.volume24hr || 0),
           category,
           tags: tagLabels,
+          leagueId: league?.seriesId,
+          leagueSlug: league?.slug,
+          leagueName: league?.name,
+          leagueImage: league?.image,
+          startTime: normalizeDate(market.gameStartTime || event.gameStartTime),
+          sportsMarketType: market.sportsMarketType ? String(market.sportsMarketType) : undefined,
         });
       }
     }
@@ -216,16 +270,36 @@ function createWindow() {
 }
 
 ipcMain.handle("markets:list", async () => {
+  const [pages, leagues] = await Promise.all([
+    Promise.all(
+      Array.from({ length: GAMMA_EVENT_PAGES }, (_, page) =>
+        fetchJson(`${GAMMA_EVENTS_URL}&offset=${page * 100}`),
+      ),
+    ),
+    listLeagues().catch(() => []),
+  ]);
+  const leaguesBySeries = new Map(leagues.map((league) => [league.seriesId, league]));
+  return normalizeEvents(pages.flat(), undefined, leaguesBySeries);
+});
+
+ipcMain.handle("markets:leagues", async () => listLeagues());
+
+ipcMain.handle("markets:league", async (_event, rawSeriesId) => {
+  const seriesId = z.string().regex(/^\d+$/).parse(rawSeriesId);
+  const leagues = await listLeagues();
+  const league = leagues.find((item) => item.seriesId === seriesId);
+  if (!league) throw new Error("Unknown sports league");
+  const base = `https://gamma-api.polymarket.com/events?active=true&closed=false&limit=100&series_id=${seriesId}`;
   const pages = await Promise.all(
-    Array.from({ length: GAMMA_EVENT_PAGES }, async (_, page) => {
-      const response = await fetch(`${GAMMA_EVENTS_URL}&offset=${page * 100}`, {
-        headers: { accept: "application/json", "user-agent": "pm-orderbook-terminal/0.1" },
-      });
-      if (!response.ok) throw new Error(`Market discovery failed (${response.status})`);
-      return response.json();
-    }),
+    Array.from({ length: GAMMA_LEAGUE_EVENT_PAGES }, (_, page) =>
+      fetchJson(`${base}&offset=${page * 100}`),
+    ),
   );
-  return normalizeEvents(pages.flat());
+  return normalizeEvents(pages.flat(), league).sort((a, b) => {
+    const aTime = a.startTime ? new Date(a.startTime).getTime() : Number.MAX_SAFE_INTEGER;
+    const bTime = b.startTime ? new Date(b.startTime).getTime() : Number.MAX_SAFE_INTEGER;
+    return aTime - bTime || b.volume24hr - a.volume24hr;
+  });
 });
 
 ipcMain.handle("books:subscribe", (_event, assetIds) => {

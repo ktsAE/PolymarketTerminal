@@ -1,4 +1,4 @@
-import type { AccountStatus, Instrument, MarketEvent, OrderDraft, TerminalBridge } from "./types";
+import type { AccountStatus, Instrument, MarketEvent, MarketLeague, OrderDraft, TerminalBridge } from "./types";
 
 const disconnectedStatus: AccountStatus = {
   connected: false,
@@ -12,6 +12,8 @@ const instruments: Instrument[] = [
   {
     assetId: "10001",
     conditionId: "demo-1",
+    eventId: "demo-event-1",
+    eventSlug: "fed-rate-cut-demo",
     eventTitle: "Will the Fed cut rates at the next meeting?",
     marketTitle: "Fed rate cut at the next meeting?",
     outcome: "Yes",
@@ -24,6 +26,8 @@ const instruments: Instrument[] = [
   {
     assetId: "10002",
     conditionId: "demo-1",
+    eventId: "demo-event-1",
+    eventSlug: "fed-rate-cut-demo",
     eventTitle: "Will the Fed cut rates at the next meeting?",
     marketTitle: "Fed rate cut at the next meeting?",
     outcome: "No",
@@ -36,6 +40,8 @@ const instruments: Instrument[] = [
   {
     assetId: "10003",
     conditionId: "demo-2",
+    eventId: "demo-event-2",
+    eventSlug: "btc-150k-demo",
     eventTitle: "Will BTC trade above $150k this year?",
     marketTitle: "BTC above $150k this year?",
     outcome: "Yes",
@@ -48,6 +54,8 @@ const instruments: Instrument[] = [
   {
     assetId: "10004",
     conditionId: "demo-3",
+    eventId: "demo-event-3",
+    eventSlug: "ai-launch-demo",
     eventTitle: "Will the next major AI model launch before December?",
     marketTitle: "Major AI model launch before December?",
     outcome: "Yes",
@@ -60,18 +68,27 @@ const instruments: Instrument[] = [
   {
     assetId: "10005",
     conditionId: "demo-4",
-    eventTitle: "Will the home team win the championship final?",
-    marketTitle: "Home team wins the championship final?",
-    outcome: "Yes",
+    eventId: "demo-event-4",
+    eventSlug: "nba-bos-bkn-demo",
+    eventTitle: "Boston Celtics vs. Brooklyn Nets",
+    marketTitle: "Celtics vs. Nets",
+    outcome: "Celtics",
     tickSize: "0.01",
     minOrderSize: "5",
     volume24hr: 740_000,
     category: "Sports",
-    tags: ["Sports", "Final"],
+    tags: ["Sports", "Basketball", "NBA"],
+    leagueId: "10345",
+    leagueSlug: "nba",
+    leagueName: "NBA",
+    startTime: new Date(Date.now() + 5_400_000).toISOString(),
+    sportsMarketType: "moneyline",
   },
   {
     assetId: "10006",
     conditionId: "demo-5",
+    eventId: "demo-event-5",
+    eventSlug: "election-demo",
     eventTitle: "Will the leading candidate win the next election?",
     marketTitle: "Leading candidate wins the next election?",
     outcome: "Yes",
@@ -81,6 +98,12 @@ const instruments: Instrument[] = [
     category: "Politics",
     tags: ["Politics", "Election"],
   },
+];
+
+const leagues: MarketLeague[] = [
+  { id: "34", slug: "nba", name: "NBA", seriesId: "10345", primaryTagId: "745", ordering: "away" },
+  { id: "10", slug: "nfl", name: "NFL", seriesId: "12185", primaryTagId: "450", ordering: "away" },
+  { id: "2", slug: "epl", name: "Premier League", seriesId: "10188", primaryTagId: "306", ordering: "home" },
 ];
 
 const listeners = new Set<(event: MarketEvent) => void>();
@@ -102,6 +125,12 @@ function levels(mid: number) {
 export const demoBridge: TerminalBridge = {
   async listMarkets() {
     return instruments;
+  },
+  async listLeagues() {
+    return leagues;
+  },
+  async listLeagueMarkets(seriesId) {
+    return instruments.filter((instrument) => instrument.leagueId === seriesId);
   },
   async subscribeAssets(assetIds) {
     queueMicrotask(() => {

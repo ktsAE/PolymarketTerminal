@@ -9,10 +9,12 @@ Local Electron workstation for opening several Polymarket order books and placin
 - Full book snapshots, price-level deltas, tick-size changes, BBO and last-trade updates.
 - Click ASK liquidity for a protected taker BUY (FAK); click BID liquidity for a protected taker SELL (FAK).
 - Click the outer BUY/SELL lanes for post-only resting limit orders.
-- Categorized, tag-aware market search with persisted Favorites and Recent views.
+- Sports hierarchy backed by Gamma `/sports` and `series_id`: league/tournament → scheduled event → market → outcome.
+- Persisted league-level Favorites (for example NBA, not one Celtics/Nets outcome), expandable schedules, local game-start times, global loaded-market search and Recent outcomes.
 - AUTO workspace that derives a 1/2/3-column grid from the available window, plus manual column modes, drag-to-reorder, focus mode and persisted open books.
 - Full-book bid/ask imbalance and heat bars for resting depth.
-- A separate executed-trade rail driven by `last_trade_price`, with size-scaled BUY/SELL bubbles and rolling print volume.
+- Continuous, fixed-price DOM rows with 1/2/5-tick compression, wheel panning, explicit recentering and responsive visible depth.
+- Executed-trade bubbles driven by `last_trade_price` and aligned to their price rows, with size filters and rolling print volume. Resting liquidity stays in separate heat-bar columns.
 - Quick working-size presets (5/10/25/100) beside the editable dollars/shares quantity.
 - In-memory private-key connection, portfolio value, open positions, PnL and open-order count.
 - DRY mode by default. Live orders require an authenticated account, explicit session arming, a passing location check and a per-order notional cap.
@@ -34,6 +36,12 @@ Check the real public market-discovery and order-book feed without placing an or
 
 ```sh
 npm run smoke:live
+```
+
+Check real league discovery, NBA series grouping, `gameStartTime`, outcomes and CLOB asset IDs:
+
+```sh
+npm run smoke:leagues
 ```
 
 Check that the authenticated trading module loads under Electron's Node runtime without connecting a wallet:

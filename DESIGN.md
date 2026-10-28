@@ -1,69 +1,88 @@
 # PolyScalp terminal design system
 
-Capture date: 2026-10-28. Target: the local Electron/React Polymarket terminal in this repository.
+Research date: 2026-10-28. Product: local Electron/React Polymarket order-flow terminal.
 
-## Reference evidence
+## Evidence and interpretation
 
-- [Rung Terminal](https://rungterminal.com/) — inspected the full desktop landing capture at 1440 px and the published [ladder screenshot](https://rungterminal.com/docs/img/ladder.png). Observed: near-black workspace, one-row price ladders, separate buy/price/sell columns, compact order size controls, tape beside the ladder, and direct click-on-price trading. Extracted landing tokens included `#0B0E14` background, `#11151F` input, `#1C2230` border, `#2F6DF6` primary, system UI type, and 6 px input radius.
-- [Tiger.com Windows terminal](https://www.tiger.com/terminal) — inspected the full page and the published [Dynamic DOM screenshot](https://cdn-se.tiger.trade/img/why-us-slider/why-us_2.png?auto=format&fit=max&w=3840). Observed: multi-DOM workspace with several equal-width panels, persistent platform chrome, dense 20-ish px ladder rows, heat/depth blocks, execution bubbles over the ladder, and bottom account/order tabs. Extracted site tokens included `#0D0D11` background and `#FF721C` accent; the terminal screenshot itself uses mostly neutral black/gray with blue/red/orange data layers.
-- [MetaScalp](https://metascalp.io/en) — inspected the full 1440 px page and a representative [terminal screenshot](https://fsr-develop.com/wp-content/uploads/2024/10/unnamed-1024x576.png). The product describes order book, tape, clusters, working position sizes and real-time PnL in one window. The screenshot shows large size-scaled green/red trade circles alongside a heat-colored order book and several books on one canvas.
+This UI is based on behavior documented by the products below, not a copy of their trade dress.
 
-These references inform interaction density and information hierarchy only. Their logos, exact layouts, assets and trade dress are not copied.
+- [Tiger Dynamic DOM](https://support.tiger.com/english/windows/dom), [DOM settings](https://support.tiger.com/english/windows/dom/dom-settings/main), [price-scale adjustment](https://support.tiger.com/english/windows/dom/how-to-adjust-dom-scale), [workspaces](https://support.tiger.com/english/settings/workspace), and [watchlists](https://support.tiger.com/english/windows/watchlist). Observed in official documentation: a fixed price ladder, proportional resting-depth shading, separate executed-trade clusters/feed, configurable filters, own-order area, auto-scroll threshold, tick aggregation, docked workspaces, and grouped/linked watchlists. The official multi-DOM screenshot was inspected at full resolution; its books keep price centered and put depth, historical clusters, and executed circles on separate layers.
+- [MetaScalp order book](https://metascalp.gitbook.io/english/orderbook), [tick settings](https://metascalp.gitbook.io/english/orderbook/setting/ticks), [cluster settings](https://metascalp.gitbook.io/english/orderbook/setting/clusters), and [current product page](https://app.metascalp.io/). Official material distinguishes resting book liquidity, real-time executed tape, and price/time clusters. It documents minimum-size filters, millisecond aggregation, large-print emphasis, compression, auto-centering, row-height controls, linked books/charts/watchlists, and multi-book workspaces.
+- [Rung ladder](https://rungterminal.com/docs/en/ladder/) and [Rung grid/tree](https://rungterminal.com/docs/en/grid/). Official documentation describes one fixed row per tick; row-level BUY/SELL placement; right-click cancel; drag-to-replace; `C` to recenter; a Grid for many markets; and a navigator grouped by Date or League with LIVE and Favorites. Its published ladder screenshot was inspected at full resolution.
+- [Polymarket market discovery](https://docs.polymarket.com/market-data/discover-markets), [Gamma API](https://gamma-api.polymarket.com/docs), and [order-book data](https://docs.polymarket.com/market-data/prices-order-books). The implemented hierarchy uses `/sports`, stable `series` IDs, `/events?series_id=…`, event IDs/slugs, market `gameStartTime`, condition IDs, outcomes and CLOB token IDs.
 
-## Product principles
+Unknowns remain explicit: the reviewed products do not publish a universal bubble-radius formula, fade duration, or canonical way to combine every Polymarket multi-outcome event into one DOM. PolyScalp therefore opens one outcome asset per DOM and labels bubble behavior as an implementation choice.
 
-1. Discovery stays visible. Search, categories, favorites and recent markets live in one persistent navigator.
-2. The workspace owns sizing. Panels fill an automatically computed 1–3 column grid; individual native resize handles are not used.
-3. One click means one obvious action. The bid/ask liquidity cells take liquidity; outer lanes rest post-only orders. Live trading remains explicitly armed and capped.
-4. Do not conflate data. Ladder bars are resting depth. Circular prints are executed trades from Polymarket's `last_trade_price` stream.
-5. Dense, not decorative. Borders, spacing and type are compact; color is reserved for state, side, depth and action.
+## Information architecture
 
-## Tokens
+```text
+Sports
+└── League / tournament (favorite this: NBA)
+    └── Scheduled event (Nets vs Celtics, local start time)
+        └── Market (moneyline, overtime, team to score first…)
+            └── Outcome asset (open this as a DOM)
+```
 
-Implementation choices adapted from the observed systems:
+League favorites persist the Gamma sports `series` ID. They never depend only on display text. Expanding a league loads its active series events. Event times come from `market.gameStartTime`; `startDate` is not treated as game time because it can be the market creation/open timestamp.
+
+Global search and tree navigation have different jobs: search finds loaded matching leagues/events/markets/outcomes; the tree preserves league → event → contract context. Recent contains outcome assets that were actually opened.
+
+## DOM semantics
+
+Each panel is a continuous probability ladder, high price at the top and low price at the bottom. A row is never moved merely because it has no liquidity.
+
+Columns, left to right:
+
+1. BUY action lane — rests a GTC buy at the displayed price.
+2. Bid depth — resting shares, with a proportional green heat bar; clicking populated depth sends a taking SELL/FAK.
+3. Price — probability in cents; current/last traded bucket is explicitly highlighted.
+4. Ask depth — resting shares, with a proportional red heat bar; clicking populated depth sends a taking BUY/FAK.
+5. SELL action lane — rests a GTC sell at the displayed price.
+6. Executed volume — live trade prints aggregated into their displayed price bucket.
+
+Resting depth and executed volume are never derived from each other. Bubbles use square-root area scaling so one outlier does not make all other prints invisible. Green means reported BUY, red SELL, and split color means both sides aggregated at the same displayed price. The visible minimum-size filter is `ALL`, `≥50`, `≥200`, or `≥500` shares.
+
+`1T`, `2T`, and `5T` change semantic price aggregation. Wheel movement pans the ladder and visibly pauses auto-centering. `C`/the center control returns to live automatic centering. Panel height independently controls how many rows are rendered.
+
+## Workspace behavior
+
+- AUTO calculates 1–3 equal-width columns and enough equal-height rows to fit every open book in the viewport. At 1440×960, six books form a 3×2 layout; at 1100×800, they form 2×3.
+- Focus expands one book without closing or unsubscribing the others.
+- Panels can be reordered by dragging their header handle.
+- The navigator can collapse, returning its width to the books.
+- Manual 1C/2C/3C modes remain available.
+- Up to six visible DOMs are an intentional MVP limit; Tiger/MetaScalp-style arbitrary docking and saved named workspaces are a later phase.
+
+## Readability and visual tokens
+
+Dense does not mean microscopic. Navigational names are 10–11 px, DOM prices are 10 px bold monospace, depth values are 9 px monospace, and only tertiary labels fall to 7–8 px. Numbers align through a monospace stack. Column headers are persistent. Color always has a text/shape companion.
 
 - Canvas: `#080A0E`
-- Primary panel: `#0D1117`
-- Raised panel: `#111720`
-- Border: `#222A35`
+- Panel: `#0A0F15`
+- Raised/header: `#10161E`
+- Border: `#293544`
 - Primary text: `#E6E9EF`
 - Muted text: `#768295`
-- Focus/action blue: `#2F6DF6`
+- Focus/action: `#2F6DF6`
 - Bid/buy: `#19C98A`
 - Ask/sell: `#F35F78`
 - Warning/dry/favorite: `#EAB44F`
-- UI font: Inter/system UI; numbers: SFMono/Consolas fallback
-- Radius: 2–4 px for terminal controls and panels, 50% only for trade prints/status lights
-- Spacing rhythm: 4 px base, usually 6–12 px around dense controls
+- Spacing rhythm: 4 px base; DOM row: 22 px; radius: 2–4 px
 
-## Layout
+## Trading guardrails retained
 
-- Top chrome: 52 px.
-- Navigator: 310 px desktop, 260 px compact, collapsible to 0.
-- Workspace gap: 8 px.
-- AUTO layout target: minimum 340 px per book, maximum three columns, rows derived from book count. Each book fills its grid cell and internally recomputes visible depth levels.
-- Focus mode: one book occupies the complete workspace without closing or unsubscribing the other books.
+- The application starts in DRY mode; clicks produce audited dry orders only.
+- Live orders require a connected signer and an explicit session-level ARM action.
+- The arm dialog states that subsequent DOM clicks are real and shows the per-order USD cap.
+- Submit remains disabled until the WebSocket is live and an initial book snapshot is ready.
+- The main process validates asset ID, side, tick-bounded price, positive size, execution type, and mode.
+- Private keys remain in Electron main-process memory for the session and are not stored by this app.
 
-## Components
+## Verified acceptance snapshot
 
-### Market navigator
-
-- Search covers event title, market title, outcome and tags.
-- All / Favorites / Recent views precede category filters.
-- A star is an independent target and persists the outcome asset ID locally.
-- Open markets remain selectable; selecting one focuses that book.
-
-### Order-book panel
-
-- Header: drag handle, truncated question, outcome chip, 24 h volume, favorite, focus and close.
-- Working-size strip: editable quantity, dollars/shares unit, 5/10/25/100 presets, best bid/ask/spread, and full-book bid/ask imbalance.
-- Ladder: outer resting-order lanes, resting bid size, price, resting ask size, and mirrored heat bars.
-- Prints rail: recent executed trades, scaled with square-root sizing so outliers remain legible. Green is reported BUY; red is reported SELL.
-- Footer: tick, minimum size, total current resting depth and live/dry status.
-
-## Fidelity and unresolved details
-
-- Rung's published screenshot supports its ladder/tape structure, but does not establish all responsive, hover or keyboard behavior.
-- Tiger's screenshots show its Windows terminal rather than its website's extracted brand system; spacing values in this implementation are visual estimates.
-- MetaScalp's representative screenshot is a third-party published capture. Its circle sizing and exact aggregation formula are unknown, so this terminal uses a documented square-root scale.
-- Polymarket WebSocket trade prints arrive live and are not historical backfill. A quiet market can show an empty prints rail until the next execution.
+- League favorite uses a series ID and survives reload.
+- NBA expands into scheduled events and displays the user's local start time.
+- Outcome buttons open independent CLOB token books.
+- Six books auto-fit at 1440×960 and 1100×800.
+- Tick aggregation, manual pan, recenter, depth heat bars, and price-aligned print bubbles render together.
+- Compact QA observed 6 panels, 54 DOM rows and 30 executed-volume bubbles.

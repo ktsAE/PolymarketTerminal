@@ -13,6 +13,7 @@
     "start": "npm run build && electron .",
     "typecheck": "tsc --noEmit",
     "smoke:live": "node scripts/smoke-live.cjs",
+    "smoke:leagues": "node scripts/smoke-league-discovery.cjs",
     "smoke:trading-module": "ELECTRON_RUN_AS_NODE=1 electron scripts/smoke-trading-module.mjs",
     "test:orders": "ELECTRON_RUN_AS_NODE=1 electron scripts/trading-orders.test.mjs"
   },
