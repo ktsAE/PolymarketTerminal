@@ -20,6 +20,8 @@ interface BottomDockProps {
   snapshot?: AccountSnapshot;
   orders: OrderResult[];
   tape: TapeExecution[];
+  /** Cheap count for the tab badge; `tape` is only populated while the tape tab is visible. */
+  tapeCount: number;
   logs: TradeLogEntry[];
   onTab(tab: DockTab): void;
   onToggle(): void;
@@ -35,6 +37,7 @@ export function BottomDock({
   snapshot,
   orders,
   tape,
+  tapeCount,
   logs,
   onTab,
   onToggle,
@@ -44,7 +47,7 @@ export function BottomDock({
 }: BottomDockProps) {
   const tabs: Array<{ id: DockTab; count?: number }> = [
     { id: "ORDERS", count: orders.length },
-    { id: "MARKET TAPE", count: tape.length },
+    { id: "MARKET TAPE", count: tapeCount },
     { id: "POSITIONS", count: snapshot?.openPositions.length ?? 0 },
     { id: "ACCOUNT" },
     { id: "TRADE LOG", count: logs.length },

@@ -2,6 +2,8 @@ import type { AssetHealth, BookState, ConnectionStatus, Instrument, MarketEvent,
 import { ClusterStore, type GapReason } from '../domain/clusters';
 import { normalizeExecution, qualifyingPrints, type Execution } from '../domain/executions';
 import { parseShares, parseUnits, formatUnits, formatShares } from '../../shared/decimal.cjs';
+/** Max UI publish rate (10 Hz). Order-book rendering above this is not perceptible and burns CPU. */
+export const PUBLISH_INTERVAL_MS = 100;
 type FeedBook = BookState & { generation?: number; tickVersion?: number; bookReceivedAt?: number };
 type Gap = { start: number; end: number };
 interface Asset {
@@ -79,7 +81,7 @@ export class MarketStore {
       this.queued = false; if (this.disposed) return;
       if (!this.active.size && !this.listeners.size) { this.lastPublished = -Infinity; this.publish(); return; }
       const elapsed = this.clock() - this.lastPublished;
-      const delay = elapsed < 0 ? 0 : 50 - elapsed;
+      const delay = elapsed < 0 ? 0 : PUBLISH_INTERVAL_MS - elapsed;
       if (delay > 0) this.publishTimer = setTimeout(() => { this.publishTimer = undefined; this.publish(); }, delay);
       else this.publish();
     });

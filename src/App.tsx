@@ -16,7 +16,7 @@ import { readWorkspace, saveWorkspace, readPanelSettings, DEFAULT_FILTERS, stora
 import { MarketNavigator } from './components/MarketNavigator';
 import { marketStore } from './state/marketStore';
 import { priceLabel, shortAddress, tradeTime } from './lib/format';
-import { BookPanel } from './components/BookPanel';
+import { BookPanelSlot, type BookPanelHandlers } from './components/BookPanelSlot';
 import { LoginModal } from './components/LoginModal';
 import { AccountDrawer } from './components/AccountDrawer';
 import { BottomDock, type DockTab, type TapeExecution } from './components/BottomDock';
@@ -47,17 +47,6 @@ const INITIAL_ACCOUNT_STATUS: AccountStatus = {
   closedOnly: null,
   geoblock: { blocked: null, country: "", region: "", checkedAt: null, error: "Not checked" },
 };
-
-function freshBook(instrument: Instrument): BookState {
-  return {
-    assetId: instrument.assetId,
-    bids: new Map(),
-    asks: new Map(),
-    tickSize: instrument.tickSize,
-    recentTrades: [],
-    ready: false,
-  };
-}
 
 function readStoredIds(key: string) {
   try {
@@ -254,10 +243,13 @@ export function App() {
   const gridLayout = calculateWorkspaceLayout({ width: workspaceWidth, height: Math.max(0, workspaceHeight - 29), panelCount: displayedOpenInstruments.length, columns: focusedAssetId ? 1 : layoutMode === 'AUTO' ? 'AUTO' : Number(layoutMode) as 1 | 2 | 3, rowHeight: 22, chromeHeights: displayedOpenInstruments.map(item => geometry[item.assetId]?.chrome ?? 218), rowHeights: displayedOpenInstruments.map(item => geometry[item.assetId]?.rowHeight ?? readPanelSettings(activeWorkspace, item.assetId).rowHeight) });
   const gridColumns = gridLayout.columns;
   const gridRows = gridLayout.rows;
-  const publicTape = useMemo<TapeExecution[]>(() => openInstruments
+  // Flattening and sorting up to 1000 prints on every publish is wasted work unless the tape is visible.
+  const tapeVisible = !dockCollapsed && dockTab === "MARKET TAPE";
+  const publicTape = useMemo<TapeExecution[]>(() => !tapeVisible ? [] : openInstruments
     .flatMap((instrument) => (books.get(instrument.assetId)?.recentTrades ?? []).map((trade) => ({ instrument, trade })))
     .sort((a, b) => tradeTime(b.trade.timestamp) - tradeTime(a.trade.timestamp))
-    .slice(0, 150), [books, openInstruments]);
+    .slice(0, 150), [books, openInstruments, tapeVisible]);
+  const tapeCount = Math.min(150, openInstruments.reduce((sum, instrument) => sum + (books.get(instrument.assetId)?.recentTrades.length ?? 0), 0));
 
   const refreshAccount = useCallback(async () => {
     if (!accountStatus.connected) return;
@@ -484,6 +476,17 @@ export function App() {
     dragIndex.current = undefined;
   };
 
+  const latestHandlers = useRef({ closeBook, toggleLeagueFavorite, submitOrder, reorder });
+  latestHandlers.current = { closeBook, toggleLeagueFavorite, submitOrder, reorder };
+  const bookHandlers = useMemo<BookPanelHandlers>(() => ({
+    close: (instrument) => void latestHandlers.current.closeBook(instrument),
+    toggleLeagueFavorite: (leagueId) => latestHandlers.current.toggleLeagueFavorite(leagueId),
+    toggleFocus: (assetId) => setFocusedAssetId((current) => current === assetId ? undefined : assetId),
+    order: (draft) => latestHandlers.current.submitOrder(draft),
+    dragStart: (index) => { dragIndex.current = index; },
+    drop: (index) => latestHandlers.current.reorder(index),
+  }), []);
+
   return (
     <main className="terminal-shell">
       <header className="topbar" style={{ gridTemplateColumns: `${drawerCollapsed ? 72 : navigatorWidth}px minmax(280px, 1fr) auto` }}>
@@ -553,27 +556,21 @@ export function App() {
               {displayedOpenInstruments.map((instrument) => {
                 const index = openInstruments.findIndex((item) => item.assetId === instrument.assetId);
                 return (
-                <BookPanel
+                <BookPanelSlot
                   key={`${activeWorkspace}:${instrument.assetId}`}
                   workspace={activeWorkspace}
+                  index={index}
                   onGeometry={reportGeometry}
                   layoutGeneration={`${layoutMode}:${workspaceWidth}:${workspaceHeight}:${openInstruments.map(item => item.assetId).join(',')}`}
                   instrument={instrument}
-                  book={books.get(instrument.assetId) ?? freshBook(instrument)}
+                  book={books.get(instrument.assetId)}
                   connection={connection}
                   accountStatus={accountStatus}
                   position={accountSnapshot?.openPositions.find((position) => position.assetId === instrument.assetId)}
                   sessionOrders={sessionOrders}
                   leagueFavorite={Boolean(instrument.leagueId && favoriteLeagueIds.has(instrument.leagueId))}
                   focused={focusedAssetId === instrument.assetId}
-                  onClose={() => closeBook(instrument)}
-                  onToggleLeagueFavorite={() => instrument.leagueId && toggleLeagueFavorite(instrument.leagueId)}
-                  onToggleFocus={() => setFocusedAssetId((current) => current === instrument.assetId ? undefined : instrument.assetId)}
-                  onOrder={submitOrder}
-                  onDragStart={() => {
-                    dragIndex.current = index;
-                  }}
-                  onDrop={() => reorder(index)}
+                  handlers={bookHandlers}
                 />
                 );
               })}
@@ -590,6 +587,7 @@ export function App() {
         snapshot={accountSnapshot}
         orders={sessionOrders}
         tape={publicTape}
+        tapeCount={tapeCount}
         logs={tradeLog}
         onTab={setDockTab}
         onToggle={() => setDockCollapsed((value) => !value)}

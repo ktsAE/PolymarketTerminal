@@ -103,19 +103,19 @@ describe('external market store', () => {
   });
   it('has stable published snapshots and synchronous book reads', async () => {
     let now = 10000; const s = new MarketStore(() => now); s.setActive([instrument()]);
-    await Promise.resolve(); const before = s.getSnapshot(); now += 50;
+    await Promise.resolve(); const before = s.getSnapshot(); now += 100;
     s.ingest(snapshot); expect(s.getBook('a')?.ready).toBe(true);
     expect(s.getSnapshot()).toBe(before); await Promise.resolve();
     expect(s.getSnapshot()).not.toBe(before); expect(s.getSnapshot()).toBe(s.getSnapshot()); s.dispose();
   });
-  it('is lazy, preserves old published books and throttles publication to twenty Hz', async () => {
+  it('is lazy, preserves old published books and throttles publication to ten Hz', async () => {
     vi.useFakeTimers(); let now = 10000; const s = new MarketStore(() => now);
     expect(vi.getTimerCount()).toBe(0); s.setActive([instrument()]);
     const listener = vi.fn(); const off = s.subscribe(listener); await Promise.resolve();
     const oldBook = s.getSnapshot().get('a'); expect(oldBook?.ready).toBe(false);
     for (let i = 0; i < 20; i++) { s.ingest(snapshot); await Promise.resolve(); }
     expect(listener).toHaveBeenCalledTimes(1); expect(oldBook?.ready).toBe(false);
-    now += 50; await vi.advanceTimersByTimeAsync(50); expect(listener).toHaveBeenCalledTimes(2);
+    now += 100; await vi.advanceTimersByTimeAsync(100); expect(listener).toHaveBeenCalledTimes(2);
     expect(s.getSnapshot().get('a')?.ready).toBe(true); off(); s.dispose(); expect(vi.getTimerCount()).toBe(0);
   });
   it('handles BBO without making an unsnapshotted book ready', () => {

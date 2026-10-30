@@ -1,19 +1,25 @@
 import { parseUnits } from '../../shared/decimal.cjs';
 
+// Intl.NumberFormat construction is expensive; build each formatter once.
+const moneyFormat = new Intl.NumberFormat('en-US', {
+  notation: 'compact',
+  style: 'currency',
+  currency: 'USD',
+  maximumFractionDigits: 1,
+});
+const compactFormat = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
+const signedMoneyFormat = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  maximumFractionDigits: 2,
+});
+
 export function money(value: number) {
-  return new Intl.NumberFormat("en-US", {
-    notation: "compact",
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 1,
-  }).format(value);
+  return moneyFormat.format(value);
 }
 
 export function compactNumber(value: number) {
-  return new Intl.NumberFormat("en-US", {
-    notation: "compact",
-    maximumFractionDigits: 1,
-  }).format(value);
+  return compactFormat.format(value);
 }
 
 export function priceLabel(value: string) {
@@ -26,12 +32,8 @@ export function shortAddress(value?: string) {
 }
 
 export function signedMoney(value: number) {
-  const prefix = value > 0 ? "+" : "";
-  return `${prefix}${new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 2,
-  }).format(value)}`;
+  const prefix = value > 0 ? '+' : '';
+  return `${prefix}${signedMoneyFormat.format(value)}`;
 }
 
 export function tradeTime(value: string) {

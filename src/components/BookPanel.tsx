@@ -154,6 +154,7 @@ export function BookPanel({
   const clusterColumns = analysis.clusters.project({ nowMs: analysis.nowMs, intervalSeconds: clusterPeriod, tickUnits, compression: groupTicks, assetId: instrument.assetId }).map(column => ({
     ...column,
     label: `[${new Date(column.startMs).toLocaleTimeString()}, ${new Date(column.endMs).toLocaleTimeString()}) ${analysis.nowMs < column.endMs ? 'LIVE' : 'CLOSED'}${column.quality.partial ? ' PARTIAL' : ''}${column.quality.gap ? ' GAP' : ''}${column.quality.approximate ? ' APPROXIMATE' : ''}${column.quality.unavailable ? ' UNAVAILABLE' : ''}${(column.correctedUntil ?? 0) > analysis.nowMs ? ' CORRECTED' : ''}`,
+    shortLabel: `${new Date(column.startMs).toLocaleTimeString([], { hour12: false })}${analysis.nowMs < column.endMs ? ' ●' : ''}${column.quality.gap ? ' GAP' : column.quality.partial ? ' PART' : ''}`,
     levels: new Map(column.rows.map(row => [row.priceUnits / 1_000_000, row])),
   }));
   const ownOrders = useMemo(
@@ -405,7 +406,7 @@ export function BookPanel({
       <div className="book-body dom-body">
         <div className="ladder-stack" style={{ '--dom-columns': `${settings.showClusters ? `repeat(${clusterColumns.length}, minmax(30px, 1fr)) ` : ''}30px minmax(38px, 1fr) 58px minmax(38px, 1fr) 30px 54px` } as React.CSSProperties}>
           <div className="dom-columns">
-            {settings.showClusters && clusterColumns.map((column) => <span className="cluster-heading" title={column.label} key={column.startMs}>{column.label}</span>)}
+            {settings.showClusters && clusterColumns.map((column) => <span className="cluster-heading" title={column.label} aria-label={column.label} key={column.startMs}>{column.shortLabel}</span>)}
             <span>BUY</span>
             <span>BID DEPTH</span>
             <span>PRICE</span>
