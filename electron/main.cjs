@@ -18,6 +18,27 @@ let reconnectTimer;
 let reconnectAttempt = 0;
 const subscriptions = new Set();
 let tradingModulePromise;
+const { createRegistry, createTradingService, assertMainSender } = require('./safety.cjs');
+const { createDiscovery } = require('./discovery.cjs');
+const publish = (channel, payload) => {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+};
+const registry = createRegistry({ publish: health => publish('asset:health', health) });
+const maxUsd = process.env.PM_TERMINAL_MAX_ORDER_USD || '25';
+const tradingService = createTradingService({
+  registry,
+  liveEnabled: process.env.PM_TERMINAL_ENABLE_REVIEWED_LIVE === '1',
+  maxOrderUsd: /^\d+(\.\d{1,6})?$/.test(maxUsd) && Number(maxUsd) > 0 ? maxUsd : '25',
+  createClient: async input => (await getTradingModule()).createAccountClient(input),
+  publish: status => publish('account:status', status),
+});
+const discovery = createDiscovery({ fetchJson, cache: items => registry.cache(items) });
+function handle(channel, listener) {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) throw new Error('Unauthorized IPC sender');
+    return listener(event, ...args);
+  });
+}
 
 const authRequestSchema = z.object({
   privateKey: z.string().regex(/^0x[0-9a-fA-F]{64}$/, "Private key must be 0x plus 64 hex characters"),
@@ -38,6 +59,10 @@ const orderDraftSchema = z.object({
   sizeUnit: z.enum(["USD", "SHARES"]),
   execution: z.enum(["GTC", "FAK"]),
   mode: z.enum(["DRY", "LIVE"]),
+  requestId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+  bookGeneration: z.number().int().nonnegative(),
+  tickVersion: z.number().int().nonnegative(),
+  armEpoch: z.number().int().nonnegative(),
 });
 
 function getTradingModule() {
@@ -98,8 +123,9 @@ function connectMarketSocket() {
 
   sendStatus("connecting");
   marketSocket = new WebSocket(MARKET_WS_URL);
-
+  const socket = marketSocket;
   marketSocket.on("open", () => {
+    if (marketSocket !== socket) return;
     reconnectAttempt = 0;
     sendStatus("live");
     sendSubscription("initial", [...subscriptions]);
@@ -110,28 +136,48 @@ function connectMarketSocket() {
   });
 
   marketSocket.on("message", (raw) => {
+    if (marketSocket !== socket) return;
     const text = raw.toString();
     if (text === "PONG") return;
     try {
       const decoded = JSON.parse(text);
       const messages = Array.isArray(decoded) ? decoded : [decoded];
+      if (!messages.length) registry.invalidate();
       for (const message of messages) {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send("market:event", message);
+        const validAsset = typeof message?.asset_id === 'string' && /^\d{1,100}$/.test(message.asset_id);
+        const invalidateMessage = () => registry.invalidate(validAsset ? [message.asset_id] : undefined);
+        if (!message || typeof message !== 'object' || Array.isArray(message) ||
+            typeof message.event_type !== 'string' || !message.event_type ||
+            (['book', 'tick_size_change'].includes(message.event_type) && !validAsset)) {
+          invalidateMessage();
+          continue;
+        }
+        try {
+          const accepted = registry.event(message);
+          if (accepted) publish("market:event", accepted);
+        } catch {
+          // A malformed member must not suppress subsequent independent events.
+          if (message.event_type === 'price_change') registry.invalidate();
+          else invalidateMessage();
         }
       }
     } catch {
-      // Ignore non-JSON protocol frames.
+      // Unparseable frames have no trustworthy asset identity.
+      registry.invalidate();
     }
   });
 
   marketSocket.on("close", () => {
+    if (marketSocket !== socket) return;
+    registry.invalidate(); tradingService.disarm();
     stopHeartbeat();
     marketSocket = undefined;
     scheduleReconnect();
   });
 
   marketSocket.on("error", () => {
+    if (marketSocket !== socket) return;
+    registry.invalidate(); tradingService.disarm();
     sendStatus("error");
   });
 }
@@ -171,6 +217,7 @@ function normalizeLeague(item) {
 
 async function fetchJson(url) {
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(10000),
     headers: { accept: "application/json", "user-agent": "pm-orderbook-terminal/0.2" },
   });
   if (!response.ok) throw new Error(`Market discovery failed (${response.status})`);
@@ -228,8 +275,11 @@ function normalizeEvents(events, requestedLeague, leaguesBySeries = new Map()) {
           eventTitle: String(event.title || market.question || "Untitled market"),
           marketTitle: String(market.question || event.title || "Untitled market"),
           outcome: outcomes[index],
-          tickSize: String(market.orderPriceMinTickSize || "0.01"),
-          minOrderSize: String(market.orderMinSize || "5"),
+          tickSize: String(market.orderPriceMinTickSize ?? ''),
+          minOrderSize: String(market.orderMinSize ?? ''),
+          acceptingOrders: market.acceptingOrders === true,
+          closed: market.closed !== false,
+          metadataAt: Date.now(),
           volume24hr: Number(market.volume24hr || event.volume24hr || 0),
           category,
           tags: tagLabels,
@@ -262,6 +312,11 @@ function createWindow() {
     },
   });
 
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, _inPlace, isMainFrame) => {
+    if (isMainFrame) { tradingService.disarm(); registry.invalidate(); }
+  });
+  mainWindow.webContents.on('render-process-gone', () => { tradingService.disarm(); registry.invalidate(); });
+  mainWindow.on('closed', () => { tradingService.disarm(); registry.invalidate(); });
   if (process.argv.includes("--dev")) {
     mainWindow.loadURL("http://127.0.0.1:5173");
     return;
@@ -269,7 +324,7 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"));
 }
 
-ipcMain.handle("markets:list", async () => {
+handle("markets:list", async () => {
   const [pages, leagues] = await Promise.all([
     Promise.all(
       Array.from({ length: GAMMA_EVENT_PAGES }, (_, page) =>
@@ -279,31 +334,26 @@ ipcMain.handle("markets:list", async () => {
     listLeagues().catch(() => []),
   ]);
   const leaguesBySeries = new Map(leagues.map((league) => [league.seriesId, league]));
-  return normalizeEvents(pages.flat(), undefined, leaguesBySeries);
+  const items = normalizeEvents(pages.flat(), undefined, leaguesBySeries);
+  registry.cache(items);
+  return items;
 });
 
-ipcMain.handle("markets:leagues", async () => listLeagues());
+handle("markets:leagues", async () => listLeagues());
 
-ipcMain.handle("markets:league", async (_event, rawSeriesId) => {
-  const seriesId = z.string().regex(/^\d+$/).parse(rawSeriesId);
-  const leagues = await listLeagues();
-  const league = leagues.find((item) => item.seriesId === seriesId);
-  if (!league) throw new Error("Unknown sports league");
-  const base = `https://gamma-api.polymarket.com/events?active=true&closed=false&limit=100&series_id=${seriesId}`;
-  const pages = await Promise.all(
-    Array.from({ length: GAMMA_LEAGUE_EVENT_PAGES }, (_, page) =>
-      fetchJson(`${base}&offset=${page * 100}`),
-    ),
-  );
-  return normalizeEvents(pages.flat(), league).sort((a, b) => {
-    const aTime = a.startTime ? new Date(a.startTime).getTime() : Number.MAX_SAFE_INTEGER;
-    const bTime = b.startTime ? new Date(b.startTime).getTime() : Number.MAX_SAFE_INTEGER;
-    return aTime - bTime || b.volume24hr - a.volume24hr;
-  });
+handle('markets:league', async (_event, seriesId) => {
+  const items = []; let cursor = null;
+  do {
+    const page = await discovery.page({ seriesId, cursor });
+    if (page.completeness === 'UNKNOWN') throw new Error('League discovery incomplete');
+    items.push(...page.items); cursor = page.nextCursor;
+  } while (cursor);
+  return [...new Map(items.map(item => [item.assetId, item])).values()];
 });
 
-ipcMain.handle("books:subscribe", (_event, assetIds) => {
+handle("books:subscribe", (_event, assetIds) => {
   const validated = z.array(z.string().regex(/^\d+$/)).max(24).parse(assetIds);
+  registry.subscribe(validated);
   const added = validated.filter((assetId) => !subscriptions.has(assetId));
   added.forEach((assetId) => subscriptions.add(assetId));
   if (!marketSocket || marketSocket.readyState !== WebSocket.OPEN) connectMarketSocket();
@@ -311,8 +361,9 @@ ipcMain.handle("books:subscribe", (_event, assetIds) => {
   return { subscribed: [...subscriptions] };
 });
 
-ipcMain.handle("books:unsubscribe", (_event, assetIds) => {
+handle("books:unsubscribe", (_event, assetIds) => {
   const validated = z.array(z.string().regex(/^\d+$/)).max(24).parse(assetIds);
+  registry.unsubscribe(validated);
   const removed = validated.filter((assetId) => subscriptions.delete(assetId));
   sendSubscription("unsubscribe", removed);
   if (subscriptions.size === 0) {
@@ -322,47 +373,44 @@ ipcMain.handle("books:unsubscribe", (_event, assetIds) => {
   return { subscribed: [...subscriptions] };
 });
 
-ipcMain.handle("orders:submit", async (_event, draft) => {
-  const order = orderDraftSchema.parse(draft);
-  if (order.mode === "LIVE") {
-    const trading = await getTradingModule();
-    const entry = await trading.submitLiveOrder(order);
-    appendOrderAudit(entry);
-    return entry;
-  }
-  const entry = {
-    ...order,
-    status: "DRY_ACCEPTED",
-    createdAt: new Date().toISOString(),
-  };
+handle('orders:submit', async (_event, draft) => {
+  const entry = await tradingService.submit(orderDraftSchema.parse(draft));
   appendOrderAudit(entry);
   return entry;
 });
-
-ipcMain.handle("auth:status", async () => (await getTradingModule()).getAccountStatus());
-
-ipcMain.handle("auth:connect", async (_event, request) => {
-  const input = authRequestSchema.parse(request);
-  const trading = await getTradingModule();
-  return trading.connectAccount({
-    privateKey: input.privateKey,
-    walletAddress: input.walletAddress || undefined,
-  });
+handle('auth:status', () => tradingService.status());
+handle('auth:connect', (_event, request) => tradingService.connect(authRequestSchema.parse(request)));
+handle('auth:disconnect', () => tradingService.disconnect());
+handle('trading:arm', (_event, armed) => tradingService.arm(z.boolean().parse(armed)));
+handle('account:snapshot', () => tradingService.snapshot());
+handle('orders:cancel-all', () => tradingService.cancelAll());
+handle('markets:resolve', (_event, request) => discovery.resolve(request));
+handle('markets:league-page', (_event, request) => discovery.page(request));
+const refreshTimes = new Map();
+handle('books:refresh', async (_event, request) => {
+  const assetId = z.string().regex(/^\d+$/).parse(request?.assetId);
+  if (!registry.health(assetId).active) throw new Error('Asset is not ACTIVE');
+  const now = Date.now();
+  if (now - (refreshTimes.get(assetId) ?? -Infinity) < 5000) throw new Error('Snapshot refresh rate limited');
+  refreshTimes.set(assetId, now);
+  const { generation, tickVersion } = registry.health(assetId);
+  const bookRevision = registry.bookRevision(assetId);
+  const book = await fetchJson(`https://clob.polymarket.com/book?token_id=${assetId}`);
+  const health = registry.health(assetId);
+  if (!health.active || health.generation !== generation || health.tickVersion !== tickVersion || registry.bookRevision(assetId) !== bookRevision) throw new Error('Snapshot superseded');
+  if (String(book.asset_id) !== assetId) throw new Error('Snapshot identity mismatch');
+  const accepted = registry.event({ ...book, event_type: 'book', asset_id: assetId });
+  if (!accepted) throw new Error('Snapshot rejected');
+  publish('market:event', accepted);
 });
-
-ipcMain.handle("auth:disconnect", async () => (await getTradingModule()).disconnectAccount());
-
-ipcMain.handle("trading:arm", async (_event, nextArmed) => {
-  const armed = z.boolean().parse(nextArmed);
-  return (await getTradingModule()).setTradingArmed(armed);
-});
-
-ipcMain.handle("account:snapshot", async () => (await getTradingModule()).getAccountSnapshot());
-
-ipcMain.handle("orders:cancel-all", async () => (await getTradingModule()).cancelAllOrders());
 
 app.whenReady().then(() => {
   createWindow();
+  const healthTimer = setInterval(() => {
+    for (const assetId of registry.active()) publish('asset:health', registry.health(assetId));
+  }, 1000);
+  healthTimer.unref();
+  app.once('before-quit', () => { clearInterval(healthTimer); tradingService.disarm(); registry.invalidate(); });
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

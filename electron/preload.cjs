@@ -1,6 +1,19 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("polymarketTerminal", {
+  resolveInstruments: (request) => ipcRenderer.invoke('markets:resolve', request),
+  listLeagueMarketsPage: (request) => ipcRenderer.invoke('markets:league-page', request),
+  refreshBook: (request) => ipcRenderer.invoke('books:refresh', request),
+  onAccountStatus: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('account:status', listener);
+    return () => ipcRenderer.removeListener('account:status', listener);
+  },
+  onAssetHealth: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('asset:health', listener);
+    return () => ipcRenderer.removeListener('asset:health', listener);
+  },
   listMarkets: () => ipcRenderer.invoke("markets:list"),
   listLeagues: () => ipcRenderer.invoke("markets:leagues"),
   listLeagueMarkets: (seriesId) => ipcRenderer.invoke("markets:league", seriesId),
