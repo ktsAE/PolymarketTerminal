@@ -1,0 +1,5 @@
+import {it,expect} from 'vitest';
+import {createRequire} from 'node:module';
+const {createDiscovery}=createRequire(import.meta.url)('../electron/discovery.cjs');
+it('paginates events beyond 300 even if no active instruments; tokens bound to league',async()=>{const urls:string[]=[];const d=createDiscovery({fetchJson:async(url:string)=>{urls.push(url);return url.includes('offset=400')?[]:Array.from({length:100},()=>({markets:[]}));}});let cursor=null;for(let n=0;n<4;n++){const p=await d.page({seriesId:'1',cursor});expect(p.completeness).toBe('MORE');expect(p.eventCount).toBe(100);cursor=p.nextCursor;}const last=await d.page({seriesId:'1',cursor});expect(last.completeness).toBe('EXHAUSTED');expect(urls[4]).toContain('offset=400');await expect(d.page({seriesId:'2',cursor})).rejects.toThrow(/cursor/i);});
+it('reports malformed upstream as UNKNOWN, not exhausted',async()=>{const d=createDiscovery({fetchJson:async()=>({})});expect((await d.page({seriesId:'1'})).completeness).toBe('UNKNOWN');});

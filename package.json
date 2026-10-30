@@ -6,6 +6,8 @@
   "description": "Local multi-order-book desktop terminal for Polymarket",
   "main": "electron/main.cjs",
   "scripts": {
+    "agent": "HERMES_HOME=\"$PWD/.hermes\" \"$HOME/.local/bin/hermes\"",
+    "agent:doctor": "HERMES_HOME=\"$PWD/.hermes\" \"$HOME/.local/bin/omh\" --scope project doctor",
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron . --dev\"",
     "dev:web": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
@@ -15,25 +17,36 @@
     "smoke:live": "node scripts/smoke-live.cjs",
     "smoke:leagues": "node scripts/smoke-league-discovery.cjs",
     "smoke:trading-module": "ELECTRON_RUN_AS_NODE=1 electron scripts/smoke-trading-module.mjs",
-    "test:orders": "ELECTRON_RUN_AS_NODE=1 electron scripts/trading-orders.test.mjs"
+    "test:orders": "ELECTRON_RUN_AS_NODE=1 electron scripts/trading-orders.test.mjs",
+    "test:unit": "vitest run --project unit --project ui",
+    "test:ui": "vitest run --project ui",
+    "qa:terminal": "npm run build && electron scripts/qa-screenshot.cjs",
+    "test": "npm run test:unit && npm run test:orders",
+    "format": "prettier --write electron shared"
   },
   "dependencies": {
     "@polymarket/client": "^0.14.0",
-    "@vitejs/plugin-react": "latest",
-    "react": "latest",
-    "react-dom": "latest",
+    "@vitejs/plugin-react": "^6.1.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "viem": "^2.57.12",
-    "ws": "latest",
-    "zod": "latest"
+    "ws": "^8.22.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/node": "latest",
-    "@types/react": "latest",
-    "@types/react-dom": "latest",
-    "concurrently": "latest",
-    "electron": "latest",
-    "typescript": "latest",
-    "vite": "latest",
-    "wait-on": "latest"
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.8",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "concurrently": "^10.0.6",
+    "electron": "^45.1.0",
+    "jsdom": "^29.1.1",
+    "prettier": "^3.9.10",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5",
+    "wait-on": "^9.5.1"
   }
 }

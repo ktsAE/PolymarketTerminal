@@ -1,0 +1,64 @@
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { expect, it, vi } from 'vitest';
+import { App } from '../../src/App';
+import { terminalFixture as fixture } from '../fixtures/terminal';
+const save = (slot: string, ids: string[]) => localStorage.setItem(`pm-terminal:v2:workspace:${slot}`, JSON.stringify({ version: 2, assetIds: ids, layout: 'AUTO' }));
+it('does not overwrite saved IDs before hydration, and an explicit empty startup remains empty', async () => {
+ save('SCALP 1', []);
+ const view = render(<App />);
+ await screen.findByText('QA League');
+ await waitFor(() => expect(JSON.parse(localStorage.getItem('pm-terminal:v2:workspace:SCALP 1')!).assetIds).toEqual([]));
+ expect(view.container.querySelectorAll('.book-panel')).toHaveLength(0);
+ view.unmount();
+ save('SCALP 1', ['waiting']);
+ let finish!: (items: never[]) => void;
+ vi.spyOn(fixture.bridge, 'resolveInstruments').mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+ render(<App />);
+ await waitFor(() => expect(finish).toBeDefined());
+ expect(JSON.parse(localStorage.getItem('pm-terminal:v2:workspace:SCALP 1')!).assetIds).toEqual(['waiting']);
+ await act(async () => finish([]));
+ await screen.findByText('Unavailable book · waiting');
+});
+it('keeps date/type filters isolated per SCALP slot', async () => {
+ save('SCALP 1', []); save('SCALP 2', []);
+ render(<App />); await screen.findByText('QA League');
+ fireEvent.change(screen.getByLabelText('Date filter'), { target: { value: 'Tomorrow' } });
+ await waitFor(() => expect(JSON.parse(localStorage.getItem('pm-terminal:v2:workspace:SCALP 1')!).filters.date).toBe('Tomorrow'));
+ fireEvent.click(screen.getByRole('button', { name: 'SCALP 2' }));
+ expect((screen.getByLabelText('Date filter') as HTMLSelectElement).value).toBe('All');
+ fireEvent.click(screen.getByRole('button', { name: 'SCALP 1' }));
+ expect((screen.getByLabelText('Date filter') as HTMLSelectElement).value).toBe('Tomorrow');
+});
+it('retains unresolved cards across startup, retries and removes without losing saved IDs', async () => {
+ save('SCALP 1', ['missing']);
+ const resolve = vi.spyOn(fixture.bridge, 'resolveInstruments').mockResolvedValue([{ assetId: 'missing', status: 'UNRESOLVED' } as never]);
+ const { container } = render(<App />);
+ await screen.findByText('Unavailable book · missing');
+ expect(container.querySelectorAll('.book-panel')).toHaveLength(0);
+ expect(JSON.parse(localStorage.getItem('pm-terminal:v2:workspace:SCALP 1')!).assetIds).toEqual(['missing']);
+ fireEvent.click(screen.getByRole('button', { name: 'Retry missing' }));
+ await waitFor(() => expect(resolve).toHaveBeenCalledTimes(2));
+ fireEvent.click(screen.getByRole('button', { name: 'Remove missing' }));
+ await waitFor(() => expect(JSON.parse(localStorage.getItem('pm-terminal:v2:workspace:SCALP 1')!).assetIds).toEqual([]));
+});
+it('restores instruments outside discovery and keeps an empty slot empty', async () => {
+ save('SCALP 1', ['outside']); save('SCALP 2', []);
+ vi.spyOn(fixture.bridge, 'resolveInstruments').mockResolvedValue([{ assetId: 'outside', status: 'RESOLVED', instrument: { ...fixture.instruments[0], assetId: 'outside' } }]);
+ const { container } = render(<App />);
+ await waitFor(() => expect(container.querySelectorAll('.book-panel')).toHaveLength(1));
+ fireEvent.click(screen.getByRole('button', { name: 'SCALP 2' }));
+ await screen.findByText('No books open');
+ expect(JSON.parse(localStorage.getItem('pm-terminal:v2:workspace:SCALP 2')!).assetIds).toEqual([]);
+});
+it('ignores a late resolver when a second workspace is selected', async () => {
+ save('SCALP 1', []); save('SCALP 2', ['slow']); save('SCALP 3', []);
+ let finish!: (items: never[]) => void;
+ vi.spyOn(fixture.bridge, 'resolveInstruments').mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+ render(<App />); await screen.findByText('No books open');
+ await screen.findByText('QA League');
+ fireEvent.click(screen.getByRole('button', { name: 'SCALP 2' }));
+ fireEvent.click(screen.getByRole('button', { name: 'SCALP 3' }));
+ await act(async () => finish([]));
+ await waitFor(() => expect(localStorage.getItem('pm-terminal:active-workspace')).toBe('SCALP 3'));
+ expect(JSON.parse(localStorage.getItem('pm-terminal:v2:workspace:SCALP 2')!).assetIds).toEqual(['slow']);
+});

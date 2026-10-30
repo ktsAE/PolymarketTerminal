@@ -1,50 +1,12 @@
-import assert from "node:assert/strict";
-import { buildOrderRequest } from "../electron/trading.mjs";
-
-const base = {
-  assetId: "123",
-  marketTitle: "Test market",
-  outcome: "Yes",
-  price: "0.50",
-  mode: "LIVE",
-};
-
-const marketBuy = buildOrderRequest({
-  ...base,
-  side: "BUY",
-  size: "10",
-  sizeUnit: "USD",
-  execution: "FAK",
-});
-assert.equal(marketBuy.kind, "market");
-assert.equal(marketBuy.request.amount, "10");
-assert.equal(marketBuy.request.maxSpend, "10");
-assert.equal(marketBuy.request.maxPrice, "0.50");
-
-const marketSell = buildOrderRequest({
-  ...base,
-  side: "SELL",
-  size: "10",
-  sizeUnit: "USD",
-  execution: "FAK",
-});
-assert.equal(marketSell.request.shares, "20");
-assert.equal(marketSell.request.minPrice, "0.50");
-
-const restingBuy = buildOrderRequest({
-  ...base,
-  side: "BUY",
-  size: "8",
-  sizeUnit: "SHARES",
-  execution: "GTC",
-});
-assert.equal(restingBuy.kind, "limit");
-assert.equal(restingBuy.request.size, "8");
-assert.equal(restingBuy.request.postOnly, true);
-
-assert.throws(
-  () => buildOrderRequest({ ...base, side: "BUY", size: "26", sizeUnit: "USD", execution: "FAK" }),
-  /between \$0 and \$25/,
-);
-
-process.stdout.write("order mapping and risk-cap checks passed\n");
+// Offline regression suite. No SDK import, credentials, account or network.
+import assert from 'node:assert/strict';
+import {buildOrderRequest} from '../electron/order-policy.cjs';
+const metadata={tickSize:'0.01',minOrderSize:'5',acceptingOrders:true,closed:false};
+const order={assetId:'1',side:'BUY',price:'0.50',size:'5',sizeUnit:'SHARES',execution:'GTC',mode:'LIVE'};
+assert.deepEqual(buildOrderRequest(order,metadata).request,{assetId:'1',side:'BUY',price:'0.50',size:'5',postOnly:true});
+assert.equal(buildOrderRequest({...order,execution:'FAK'},metadata).request.maxSpend,'2.5');
+assert.equal(buildOrderRequest({...order,side:'SELL',execution:'FAK'},metadata).request.minPrice,'0.50');
+assert.throws(()=>buildOrderRequest({...order,size:'100'},metadata),/notional/);
+assert.throws(()=>buildOrderRequest({...order,price:'0.501'},metadata),/tick/);
+assert.throws(()=>buildOrderRequest({...order,size:'1',sizeUnit:'USD'},metadata),/minimum/);
+console.log('Offline trading policy checks passed');
