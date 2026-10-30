@@ -19,3 +19,13 @@ setInterval(() => { n++; const id = ids[n % ids.length]; const p = (0.30 + Math.
 Reference result (dev build, 2 books): before optimisation 54.6 % main-thread CPU, 3410 DOM mutations,
 33.7 MB heap; after memoized panels + cached Intl formatters + 10 Hz publish + lazy tape: 6.9 % CPU,
 227 mutations, 9.3 MB heap. A production build (`npm start`) is lighter still (no dev-mode JSX overhead).
+
+## Profiling the real Electron window (live data)
+
+The synthetic benchmark above cannot see problems that only appear with live feed volume. It missed a
+navigator re-render hot loop: 108 % CPU in the real app vs 6 % after the fix.
+
+1. `npm run start:debug` (production build) or `npm run dev:debug` starts Electron with a CDP debug port (9222).
+2. `node scripts/cdp-profile.cjs 15` attaches over CDP, samples a CPU profile for 15 s and prints main-thread CPU,
+   heap, DOM nodes and top self-time functions. It saves a screenshot to `$TMPDIR/electron-shot.png`.
+3. For readable names build with `node node_modules/vite/bin/vite.js build --minify false`, profile, then rebuild normally.

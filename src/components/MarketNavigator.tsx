@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { Instrument, LeagueMarketsPage, MarketLeague, TerminalBridge } from '../types';
 import { DATE_FILTERS, matchesDate, type DiscoveryFilters } from '../state/workspaceStore';
 interface Props {
@@ -15,7 +15,7 @@ export function localStartLabel(value?: string) {
  return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 const eventKey = (item: Instrument) => item.eventId || item.eventTitle;
-export function MarketNavigator({ bridge, instruments, leagues, favoriteIds, recentIds, openIds, filters, onFilters, onItems, onOpen, onFavorite, onClearRecent }: Props) {
+export const MarketNavigator = memo(function MarketNavigator({ bridge, instruments, leagues, favoriteIds, recentIds, openIds, filters, onFilters, onItems, onOpen, onFavorite, onClearRecent }: Props) {
  const [query, setQuery] = useState('');
  const [view, setView] = useState<'Leagues' | 'Favorites' | 'Recent'>('Leagues');
  const [expanded, setExpanded] = useState(new Set<string>());
@@ -101,4 +101,4 @@ export function MarketNavigator({ bridge, instruments, leagues, favoriteIds, rec
    })}
   </div>
  </>;
-}
+});

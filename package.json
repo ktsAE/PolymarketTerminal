@@ -23,7 +23,9 @@
     "qa:terminal": "npm run build && electron scripts/qa-screenshot.cjs",
     "test": "npm run test:unit && npm run test:orders && npm run test:main",
     "format": "prettier --write electron shared",
-    "test:main": "node --test tests/main-feed.test.cjs"
+    "test:main": "node --test tests/main-feed.test.cjs",
+    "dev:debug": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron . --dev --remote-debugging-port=9222\"",
+    "start:debug": "npm run build && electron . --remote-debugging-port=9222"
   },
   "dependencies": {
     "@polymarket/client": "^0.14.0",

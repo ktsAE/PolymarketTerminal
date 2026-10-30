@@ -476,6 +476,11 @@ export function App() {
     dragIndex.current = undefined;
   };
 
+  const openIds = useMemo(() => openInstruments.map(item => item.assetId), [openInstruments]);
+  const openBookRef = useRef(openBook);
+  openBookRef.current = openBook;
+  const stableOpenBook = useCallback((instrument: Instrument) => openBookRef.current(instrument), []);
+  const clearRecent = useCallback(() => setRecentIds([]), []);
   const latestHandlers = useRef({ closeBook, toggleLeagueFavorite, submitOrder, reorder });
   latestHandlers.current = { closeBook, toggleLeagueFavorite, submitOrder, reorder };
   const bookHandlers = useMemo<BookPanelHandlers>(() => ({
@@ -525,7 +530,7 @@ export function App() {
 
       <div className={`workspace ${drawerCollapsed ? "drawer-collapsed" : ""}`} style={{ gridTemplateColumns: drawerCollapsed ? "0 minmax(0, 1fr)" : `${navigatorWidth}px minmax(0, 1fr)` }}>
         <aside className="market-drawer">
-          <MarketNavigator bridge={bridge} instruments={instruments} leagues={leagues} favoriteIds={favoriteLeagueIds} recentIds={recentIds} openIds={openInstruments.map(item => item.assetId)} filters={discoveryFilters} onFilters={setDiscoveryFilters} onItems={mergeLoadedItems} onOpen={openBook} onFavorite={toggleLeagueFavorite} onClearRecent={() => setRecentIds([])} />
+          <MarketNavigator bridge={bridge} instruments={instruments} leagues={leagues} favoriteIds={favoriteLeagueIds} recentIds={recentIds} openIds={openIds} filters={discoveryFilters} onFilters={setDiscoveryFilters} onItems={mergeLoadedItems} onOpen={stableOpenBook} onFavorite={toggleLeagueFavorite} onClearRecent={clearRecent} />
           {loading && <div className="drawer-message">Loading leagues and active markets…</div>}
           {marketError && <div className="drawer-message error">{marketError}</div>}
 
