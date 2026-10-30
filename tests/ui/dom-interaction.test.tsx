@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { BookPanel } from '../../src/App';
+import { BookPanel } from '../../src/components/BookPanel';
 import { marketStore } from '../../src/state/marketStore';
 import type { Instrument, BookState, AccountStatus } from '../../src/types';
 afterEach(cleanup);

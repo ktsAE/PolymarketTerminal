@@ -1,3 +1,4 @@
+import { parseShares } from '../../shared/decimal.cjs';
 import { DEFAULT_PANEL_SETTINGS, type PanelSettingsValue } from '../components/PanelSettings';
 export type Columns = 'AUTO' | '1' | '2' | '3';
 export const DATE_FILTERS = ['All', 'Today', 'Tomorrow', 'Next 7 days'] as const;
@@ -50,3 +51,13 @@ function validatePanel(value: unknown): PanelSettingsValue {
 }
 export function readPanelSettings(slot: string, asset: string): PanelSettingsValue { return validatePanel(parse(panelKey(slot, asset))); }
 export function savePanelSettings(slot: string, asset: string, value: PanelSettingsValue) { storageSet(panelKey(slot, asset), JSON.stringify(validatePanel(value))); }
+
+export function rememberedSize(workspace: string, assetId: string): { size: string; sizeUnit: 'USD' | 'SHARES' } {
+  const fallback = { size: '10', sizeUnit: 'USD' as const };
+  if (!readPanelSettings(workspace, assetId).rememberSize) return fallback;
+  try {
+    const value = JSON.parse(localStorage.getItem(`pm-terminal:v2:size:${workspace}:${assetId}`) ?? 'null');
+    if (typeof value?.size !== 'string' || !/^\d+(\.\d{1,6})?$/.test(value.size) || parseShares(value.size) <= 0n || !['USD', 'SHARES'].includes(value.sizeUnit)) return fallback;
+    return value;
+  } catch { return fallback; }
+}
