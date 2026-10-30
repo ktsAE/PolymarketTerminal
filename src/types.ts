@@ -19,6 +19,9 @@ export interface Instrument {
   leagueImage?: string;
   startTime?: string;
   sportsMarketType?: string;
+  acceptingOrders?: boolean;
+  closed?: boolean;
+  metadataAt?: number;
 }
 
 export interface MarketLeague {
@@ -40,8 +43,12 @@ export interface TradePrint {
   id: string;
   price: string;
   size: string;
-  side: "BUY" | "SELL";
+  side: "BUY" | "SELL" | "UNKNOWN";
   timestamp: string;
+  timeSource?: 'provider' | 'receipt';
+  identity?: 'STRONG' | 'AMBIGUOUS';
+  receivedAt?: number;
+  quality?: string;
 }
 
 export interface BookState {
@@ -53,7 +60,10 @@ export interface BookState {
   bestAsk?: string;
   lastTrade?: string;
   lastTradeSize?: string;
-  lastTradeSide?: "BUY" | "SELL";
+  lastTradeSide?: "BUY" | "SELL" | "UNKNOWN";
+  generation?: number;
+  tickVersion?: number;
+  bookReceivedAt?: number;
   recentTrades: TradePrint[];
   timestamp?: string;
   ready: boolean;
@@ -78,12 +88,19 @@ export interface MarketEvent {
   side?: "BUY" | "SELL";
   transaction_hash?: string;
   new_tick_size?: string;
+  tick_size?: string;
+  min_order_size?: string;
   best_bid?: string;
   best_ask?: string;
   timestamp?: string;
 }
 
 export interface OrderDraft {
+  /** Optional for migration only; main rejects submission without all four fields. */
+  requestId?: string;
+  bookGeneration?: number;
+  tickVersion?: number;
+  armEpoch?: number;
   assetId: string;
   marketTitle: string;
   outcome: string;
@@ -104,6 +121,8 @@ export interface GeoblockStatus {
 }
 
 export interface AccountStatus {
+  armEpoch?: number;
+  liveEnabled?: boolean;
   connected: boolean;
   armed: boolean;
   maxOrderUsd: number;
@@ -150,7 +169,36 @@ export interface OrderResult extends OrderDraft {
   message?: string;
 }
 
+export interface AssetHealth {
+  assetId: string;
+  active: boolean;
+  generation: number;
+  tickVersion: number;
+  initialized: boolean;
+  bookReceivedAt: number | null;
+  fresh: boolean;
+  tickSize?: string;
+}
+
+export interface InstrumentResolution {
+  assetId: string;
+  status: "RESOLVED" | "UNAVAILABLE" | "UNRESOLVED";
+  instrument?: Instrument;
+}
+
+export interface LeagueMarketsPage {
+  items: Instrument[];
+  nextCursor: string | null;
+  completeness: "MORE" | "EXHAUSTED" | "UNKNOWN";
+  eventCount: number;
+}
+
 export interface TerminalBridge {
+  resolveInstruments(request: { assetIds: string[] }): Promise<InstrumentResolution[]>;
+  listLeagueMarketsPage(request: { seriesId: string; cursor?: string | null }): Promise<LeagueMarketsPage>;
+  refreshBook(request: { assetId: string }): Promise<void>;
+  onAccountStatus(callback: (status: AccountStatus) => void): () => void;
+  onAssetHealth(callback: (health: AssetHealth) => void): () => void;
   listMarkets(): Promise<Instrument[]>;
   listLeagues(): Promise<MarketLeague[]>;
   listLeagueMarkets(seriesId: string): Promise<Instrument[]>;

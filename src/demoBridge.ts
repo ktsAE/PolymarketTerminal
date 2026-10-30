@@ -113,11 +113,11 @@ function levels(mid: number) {
   return {
     bids: Array.from({ length: 28 }, (_, index) => ({
       price: (mid - 0.01 * (index + 1)).toFixed(2),
-      size: String(Math.round(70 + Math.random() * 850)),
+      size: String(70 + ((index * 137 + Math.round(mid * 100)) % 850)),
     })).filter((level) => Number(level.price) > 0),
     asks: Array.from({ length: 28 }, (_, index) => ({
       price: (mid + 0.01 * (index + 1)).toFixed(2),
-      size: String(Math.round(70 + Math.random() * 850)),
+      size: String(70 + ((index * 137 + Math.round(mid * 100)) % 850)),
     })).filter((level) => Number(level.price) < 1),
   };
 }
@@ -132,6 +132,15 @@ export const demoBridge: TerminalBridge = {
   async listLeagueMarkets(seriesId) {
     return instruments.filter((instrument) => instrument.leagueId === seriesId);
   },
+  async resolveInstruments({ assetIds }) {
+    return assetIds.map(assetId => { const instrument = instruments.find(item => item.assetId === assetId); return instrument ? { assetId, status: 'RESOLVED' as const, instrument } : { assetId, status: 'UNAVAILABLE' as const }; });
+  },
+  async listLeagueMarketsPage({ seriesId }) {
+    return { items: instruments.filter(item => item.leagueId === seriesId), nextCursor: null, completeness: 'EXHAUSTED', eventCount: 1 };
+  },
+  async refreshBook({ assetId }) { await demoBridge.subscribeAssets([assetId]); },
+  onAccountStatus() { return () => {}; },
+  onAssetHealth() { return () => {}; },
   async subscribeAssets(assetIds) {
     queueMicrotask(() => {
       statusListeners.forEach((listener) => listener("live"));
@@ -178,6 +187,7 @@ export const demoBridge: TerminalBridge = {
     return { subscribed: [] };
   },
   async submitOrder(draft: OrderDraft) {
+    if (draft.mode === 'LIVE') throw new Error('LIVE orders are unavailable in the demo');
     return { ...draft, status: "DRY_ACCEPTED", createdAt: new Date().toISOString() };
   },
   async getAccountStatus() {

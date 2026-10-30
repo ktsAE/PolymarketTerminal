@@ -62,6 +62,22 @@ npm run dev:web
 
 The visual reference audit and implementation tokens are documented in [`DESIGN.md`](DESIGN.md).
 
+## Engineering agent
+
+Hermes with Oh My Hermes is installed as local developer tooling; it is not bundled into the Electron app or shipped to terminal users. Start the project-scoped agent from this repository with:
+
+```sh
+npm run agent
+```
+
+This selects the repository's `.hermes` profile and `.omh` workflow store. Check that integration without starting an AI session with:
+
+```sh
+npm run agent:doctor
+```
+
+Running `hermes` directly uses the user-wide profile instead, so the same engineering workflows remain available from other directories.
+
 ## Connect an account
 
 1. Start the desktop app and click **NOT CONNECTED**.
