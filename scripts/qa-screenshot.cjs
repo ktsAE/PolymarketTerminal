@@ -76,7 +76,7 @@ async function capture(name, width, height, expectedBooks = 6) {
     networkCalls: window.__qa.networkCalls,
     liveCalls: window.__qa.fixture.liveCalls(),
     orders: window.__qa.fixture.orders,
-    public: [...document.querySelectorAll('.status')].some(node => node.textContent.includes('PUBLIC')),
+    public: [...document.querySelectorAll('.top-stats span')].some(node => node.textContent.trim() === 'PUBLIC'),
     panelBounds: [...document.querySelectorAll('.book-panel')].map(panel => {
       const { x, y, width, height, bottom, right } = panel.getBoundingClientRect();
       const rows = [...panel.querySelectorAll('.dom-row')];
