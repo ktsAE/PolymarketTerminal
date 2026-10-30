@@ -21,8 +21,9 @@
     "test:unit": "vitest run --project unit --project ui",
     "test:ui": "vitest run --project ui",
     "qa:terminal": "npm run build && electron scripts/qa-screenshot.cjs",
-    "test": "npm run test:unit && npm run test:orders",
-    "format": "prettier --write electron shared"
+    "test": "npm run test:unit && npm run test:orders && npm run test:main",
+    "format": "prettier --write electron shared",
+    "test:main": "node --test tests/main-feed.test.cjs"
   },
   "dependencies": {
     "@polymarket/client": "^0.14.0",

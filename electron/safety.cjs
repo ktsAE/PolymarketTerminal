@@ -476,6 +476,21 @@ function assertMainSender(event, window) {
   )
     throw Error('Unauthorized IPC sender');
 }
+// The exchange outcome is already known when the audit is written. A persistence failure
+// must never hide that acknowledgment from the caller (it would invite a duplicate order).
+function persistAuditResult(result, persist, log = () => {}) {
+  try {
+    persist(result);
+    return result;
+  } catch {
+    // Deliberately do not forward the raw error: it may contain paths or other local detail.
+    try {
+      log('Order audit persistence failed');
+    } catch {}
+    return { ...result, auditWarning: 'Order result could not be written to the local audit log' };
+  }
+}
+exports.persistAuditResult = persistAuditResult;
 exports.assertMainSender = assertMainSender;
 exports.createRegistry = createRegistry;
 exports.createTradingService = createTradingService;

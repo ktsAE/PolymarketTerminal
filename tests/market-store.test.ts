@@ -171,7 +171,7 @@ describe('external market store', () => {
   it('makes invalid, quarantine and future queue overflow visible', () => {
     const s = new MarketStore(() => 10000); s.setActive([instrument()]); s.ingest({ ...trade(), price: 'bad' });
     s.ingest(trade('a', '14000')); for (let i = 0; i < 1001; i++) s.ingest(trade('a', '11000'));
-    expect(s.getAnalysis('a').quality).toMatch(/GAP/); expect(s.getAnalysis('a').gaps.length).toBeGreaterThan(0); s.dispose();
+    expect(s.getAnalysis('a').quality).toMatch(/^PARTIAL/); expect(s.getAnalysis('a').qualityReason).toBe('OVERFLOW'); expect(s.getAnalysis('a').gaps.length).toBeGreaterThan(0); s.dispose();
   });
   it('processes six assets at 100 events/s for sixty seconds with exact retained aggregates', () => {
     let now = 10000; const s = new MarketStore(() => now); s.setActive(Array.from({ length: 6 }, (_, i) => instrument(String(i))));

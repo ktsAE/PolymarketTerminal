@@ -167,6 +167,7 @@ export interface OrderResult extends OrderDraft {
   createdAt: string;
   orderId?: string;
   message?: string;
+  auditWarning?: string;
 }
 
 export interface AssetHealth {
