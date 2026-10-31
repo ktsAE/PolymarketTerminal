@@ -11,3 +11,6 @@ dist/
 .hermes/
 .omh/
 artifacts/
+
+# Local radar database
+.radar/

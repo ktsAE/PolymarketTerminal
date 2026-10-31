@@ -76,3 +76,25 @@ Tier-2/3 base rates are higher than the all-esports 0.034%, but unknown. Implica
 - Validate on ESIC-labelled matches (NOMERCY Mar 28 2026, ATOX vs Falcons ESL Pro League S20, PlayTime vs Liquid EWC Jul 7 2026) if they exist on Polymarket.
 - Verify RTDS, vendor pricing/ToS (PandaScore, GRID, Pinnacle feeds), HLTV/Liquipedia terms.
 - Months of backfill before wallet-level baselines mean anything.
+
+## 7. First implementation and validation (Oct 31 2026)
+
+Code: `radar/` (evidence ladder, SQLite store, Polymarket client, features, v0 indicator score, CLI). 171 tests pass.
+
+Cases re-checked against on-chain data [measured]:
+- Alliance vs Phantom Academy (United21, Aug 24): the X claim is exact (wallet 0x6d20c3...: 83 fills incl. maker side, 740,994 shares,
+  cost $348,992, avg 0.471, proceeds $740,253). Fix unverified; wallet is an established large bettor (423 markets, 339 positions of $5k+,
+  profit +$6.4M, profit-rate z -2.2). Taker-only data had shown only $47.9k of it.
+- CTRL vs 9INE (organizer ban, market voided 50/50): all flow in play ($40 pre-start), money on the favourite; score 0.
+- NOMERCY x4 (ESIC-proven, Mar 28) and PlayTime vs Liquid (ESIC-proven attempted fix, failed 1-1) exist on Polymarket: score 0 on all five.
+  In NOMERCY's matches the opponent was already a heavy favourite (0.8-0.97) and Polymarket money followed it.
+
+Conclusion: Polymarket flow does not reveal Tier-2 fixes; the fixing money is on sportsbooks. The Radar needs cross-venue odds, in-game
+telemetry and social/news ingestion. Polymarket remains useful as the venue to trade on and for insider flow outside esports.
+
+Evidence tiers observed this month: ESIC final ruling (NOMERCY), organizer ban without documents (United21/CTRL), analyst allegation with bet
+figures (EPL 35 LiXO vs Nemiga), first-hand player allegation without artifacts (6666), community accusation with an on-chain-verifiable bet
+(Alliance). The registry (radar/cases.seed.ts) records each at the tier its sources justify.
+
+Limits: profit-rate z is inflated for scalpers; the 0.03-0.97 band and all thresholds are untuned; X posts and the ICT Academy item were not
+retrieved (no X access configured; ICT Academy not identified).
