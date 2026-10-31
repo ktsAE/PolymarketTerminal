@@ -39,6 +39,8 @@ export interface Anomaly {
   title: string;
   cat: string;
   isGame: boolean;
+  /** Scheduled start (epoch seconds) for games. */
+  startsAt: number | null;
   score: number;
   level: Level;
   reasons: Reason[];
@@ -59,6 +61,8 @@ export interface Anomaly {
     price: number | null;
     ch1h: number | null;
     ch1d: number | null;
+    /** Price change over about the last 30 minutes, from our own snapshots. */
+    dPrice30m: number | null;
   };
   flow: PrintFlow | null;
 }
@@ -128,7 +132,7 @@ function delta(s: SnapRow, past: PastFn, windowSecs: number, field: 'oi'): Delta
   return { abs, pct: p[field] > 0 ? abs / p[field] : 0, spanSecs: span };
 }
 
-export function scoreEvent(s: SnapRow, past: PastFn, flow: PrintFlow | null, now: number): Anomaly | null {
+export function scoreEvent(s: SnapRow, past: PastFn, flow: PrintFlow | null, now: number, opts: { keepEmpty?: boolean } = {}): Anomaly | null {
   // Settled or empty events (liquidity 0 and no open interest) are noise, e.g. finished sports games.
   if (s.liq <= 0 && s.oi < 1_000) return null;
   const reasons: Reason[] = [];
@@ -182,13 +186,13 @@ export function scoreEvent(s: SnapRow, past: PastFn, flow: PrintFlow | null, now
   }
 
   const score = Math.max(0, Math.min(100, reasons.reduce((a, r) => a + r.points, 0)));
-  if (reasons.length === 0) return null;
+  if (reasons.length === 0 && !opts.keepEmpty) return null;
   return {
-    eventId: s.eventId, slug: s.slug, title: s.title, cat: s.cat, isGame: s.isGame, score, level: score >= D.hot ? 'HOT' : score >= D.watch ? 'WATCH' : 'NONE', reasons, notes,
+    eventId: s.eventId, slug: s.slug, title: s.title, cat: s.cat, isGame: s.isGame, startsAt: s.startsAt, score, level: score >= D.hot ? 'HOT' : score >= D.watch ? 'WATCH' : 'NONE', reasons, notes,
     m: {
       oi: s.oi, dOi1h: d1h?.abs ?? null, dOi1hPct: d1h?.pct ?? null, dOi1hSpanMin: d1h ? Math.round(d1h.spanSecs / 60) : null,
       dOi15m: d15m?.abs ?? null, dOi15mPct: d15m?.pct ?? null,
-      dOi24h: d24h?.abs ?? null, dOi24hPct: d24h?.pct ?? null, vol24: s.vol24, accel, turnover, liq: s.liq, price: s.price, ch1h: s.ch1h, ch1d: s.ch1d,
+      dOi24h: d24h?.abs ?? null, dOi24hPct: d24h?.pct ?? null, vol24: s.vol24, accel, turnover, liq: s.liq, price: s.price, ch1h: s.ch1h, ch1d: s.ch1d, dPrice30m: null,
     },
     flow,
   };
@@ -258,8 +262,66 @@ export function flowBySlug(prints: readonly PrintRow[], tags: ReadonlyMap<string
 export function rankAnomalies(snaps: readonly SnapRow[], past: PastFn, flows: ReadonlyMap<string, PrintFlow>, now: number): Anomaly[] {
   const out: Anomaly[] = [];
   for (const s of snaps) {
+    if (s.isGame) continue; // games have their own view and rules (rankGames)
     const a = scoreEvent(s, past, flows.get(s.slug) ?? null, now);
     if (a) out.push(a);
   }
   return out.sort((x, y) => y.score - x.score || y.m.vol24 - x.m.vol24);
+}
+
+// ---------------------------------------------------------------- games ----
+
+export const G = {
+  /** Show games that start within this many seconds ahead, and ones that began less than `liveWindowSecs` ago. */
+  lookaheadSecs: 24 * 3_600,
+  liveWindowSecs: 3 * 3_600,
+  lineMove: 0.05,
+  lineMoveBig: 0.1,
+  lineMoveMinVol: 20_000,
+  /** A live game whose main market trades beyond this (or below 1 minus this) is treated as decided. */
+  decidedPrice: 0.97,
+} as const;
+
+export type GamePhase = 'PRE' | 'LIVE' | 'OVER' | 'UNKNOWN';
+export function gamePhase(startsAt: number | null, now: number): GamePhase {
+  if (startsAt === null) return 'UNKNOWN';
+  if (now < startsAt) return 'PRE';
+  return now - startsAt < G.liveWindowSecs ? 'LIVE' : 'OVER';
+}
+
+/** Games get their own rules: OI and fills as everywhere, plus a pre-game line move (price shifting before the start). */
+export function scoreGame(s: SnapRow, past: PastFn, flow: PrintFlow | null, now: number): Anomaly | null {
+  const phase = gamePhase(s.startsAt, now);
+  if (phase === 'OVER' || (phase === 'PRE' && (s.startsAt as number) - now > G.lookaheadSecs)) return null;
+  if (phase === 'UNKNOWN') return null;
+  // A live game whose main market has settled near 0 or 1 is over; the scheduled-start window cannot know that.
+  if (phase === 'LIVE' && s.price !== null && (s.price >= G.decidedPrice || s.price <= 1 - G.decidedPrice)) return null;
+  const base = scoreEvent(s, past, flow, now, { keepEmpty: true });
+  if (!base) return null;
+  const p = past(s.eventId, s.ts - 1_800);
+  const span = p ? s.ts - p.ts : 0;
+  if (p && span >= 900 && span <= 3_600 && s.price !== null && p.price !== null) {
+    base.m.dPrice30m = s.price - p.price;
+    if (phase === 'PRE' && s.vol24 >= G.lineMoveMinVol && Math.abs(base.m.dPrice30m) >= G.lineMove) {
+      const big = Math.abs(base.m.dPrice30m) >= G.lineMoveBig;
+      base.reasons.push({ code: 'line_move', points: big ? 35 : 25, text: `price moved ${base.m.dPrice30m >= 0 ? '+' : ''}${(base.m.dPrice30m * 100).toFixed(0)} points in ${Math.round(span / 60)}m before the start` });
+    }
+  }
+  base.notes = base.notes.filter((n) => !/live\/game market/.test(n));
+  if (phase === 'LIVE') base.notes.push('live: price and volume swings are expected; only OI and fill signals count');
+  const score = Math.max(0, Math.min(100, base.reasons.reduce((a, r) => a + r.points, 0)));
+  base.score = score;
+  base.level = score >= D.hot ? 'HOT' : score >= D.watch ? 'WATCH' : 'NONE';
+  return base;
+}
+
+/** Upcoming and live games: flagged ones first, then by how soon they start. */
+export function rankGames(snaps: readonly SnapRow[], past: PastFn, flows: ReadonlyMap<string, PrintFlow>, now: number): Anomaly[] {
+  const out: Anomaly[] = [];
+  for (const s of snaps) {
+    if (!s.isGame) continue;
+    const a = scoreGame(s, past, flows.get(s.slug) ?? null, now);
+    if (a) out.push(a);
+  }
+  return out.sort((x, y) => y.score - x.score || (x.startsAt ?? Infinity) - (y.startsAt ?? Infinity) || y.m.vol24 - x.m.vol24);
 }

@@ -76,6 +76,8 @@ export interface SnapRow {
   endDate: number | null; // epoch seconds
   isGame: boolean;
   cat: string;
+  /** Earliest scheduled start of any market in the event (epoch seconds), for games. */
+  startsAt: number | null;
 }
 
 export interface PrintRow {
@@ -91,6 +93,21 @@ export interface PrintRow {
   size: number;
   usd: number;
   name: string | null;
+}
+
+export interface HolderProfile {
+  wallet: string;
+  fetchedAt: number; // epoch seconds
+  name: string | null;
+  cls: 'BOT' | 'ALGO' | 'MM' | 'HUMAN' | 'LOW_DATA';
+  confidence: 'high' | 'medium' | 'low';
+  reasons: string[];
+  perDay: number | null;
+  traded: number | null;
+  vol: number | null;
+  ageDays: number | null;
+  pnlAll: number | null;
+  pnlWeek: number | null;
 }
 
 export interface SignalRow {
@@ -130,13 +147,16 @@ CREATE INDEX IF NOT EXISTS signals_cid ON signals(cid, computed_at);
 CREATE TABLE IF NOT EXISTS snapshots(
   event_id TEXT NOT NULL, ts INTEGER NOT NULL, slug TEXT NOT NULL, title TEXT NOT NULL, oi REAL NOT NULL, vol24 REAL NOT NULL,
   vol1w REAL NOT NULL, liq REAL NOT NULL, price REAL, ch1h REAL, ch1d REAL, created INTEGER, end_date INTEGER,
-  is_game INTEGER NOT NULL DEFAULT 0, cat TEXT NOT NULL DEFAULT '',
+  is_game INTEGER NOT NULL DEFAULT 0, cat TEXT NOT NULL DEFAULT '', starts_at INTEGER,
   PRIMARY KEY(event_id, ts));
 CREATE TABLE IF NOT EXISTS prints(
   key TEXT PRIMARY KEY, ts INTEGER NOT NULL, wallet TEXT NOT NULL, cid TEXT NOT NULL, event_slug TEXT NOT NULL, title TEXT NOT NULL,
   outcome TEXT, side TEXT NOT NULL, price REAL NOT NULL, size REAL NOT NULL, usd REAL NOT NULL, name TEXT);
 CREATE INDEX IF NOT EXISTS prints_ts ON prints(ts);
 CREATE INDEX IF NOT EXISTS prints_slug ON prints(event_slug, ts);
+CREATE TABLE IF NOT EXISTS holder_profiles(
+  wallet TEXT PRIMARY KEY, fetched_at INTEGER NOT NULL, name TEXT, cls TEXT NOT NULL, confidence TEXT NOT NULL, reasons TEXT NOT NULL,
+  per_day REAL, traded INTEGER, vol REAL, age_days REAL, pnl_all REAL, pnl_week REAL);
 CREATE TABLE IF NOT EXISTS news_items(
   url TEXT PRIMARY KEY, feed_id TEXT NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL, published_at INTEGER, first_seen INTEGER NOT NULL,
   relevant INTEGER NOT NULL, category TEXT NOT NULL, matched TEXT NOT NULL, tier_hint TEXT, note TEXT NOT NULL,
@@ -342,10 +362,10 @@ export class RadarStore {
   }
 
   insertSnapshots(rows: readonly SnapRow[]): number {
-    const stmt = this.db.prepare('INSERT OR IGNORE INTO snapshots(event_id,ts,slug,title,oi,vol24,vol1w,liq,price,ch1h,ch1d,created,end_date,is_game,cat) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+    const stmt = this.db.prepare('INSERT OR IGNORE INTO snapshots(event_id,ts,slug,title,oi,vol24,vol1w,liq,price,ch1h,ch1d,created,end_date,is_game,cat,starts_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
     return this.tx(() => {
       let n = 0;
-      for (const r of rows) n += Number(stmt.run(r.eventId, r.ts, r.slug, r.title, r.oi, r.vol24, r.vol1w, r.liq, r.price, r.ch1h, r.ch1d, r.created, r.endDate, r.isGame ? 1 : 0, r.cat).changes);
+      for (const r of rows) n += Number(stmt.run(r.eventId, r.ts, r.slug, r.title, r.oi, r.vol24, r.vol1w, r.liq, r.price, r.ch1h, r.ch1d, r.created, r.endDate, r.isGame ? 1 : 0, r.cat, r.startsAt).changes);
       return n;
     });
   }
@@ -355,7 +375,7 @@ export class RadarStore {
       eventId: x.event_id as string, ts: x.ts as number, slug: x.slug as string, title: x.title as string, oi: x.oi as number, vol24: x.vol24 as number,
       vol1w: x.vol1w as number, liq: x.liq as number, price: (x.price as number | null) ?? null, ch1h: (x.ch1h as number | null) ?? null,
       ch1d: (x.ch1d as number | null) ?? null, created: (x.created as number | null) ?? null, endDate: (x.end_date as number | null) ?? null,
-      isGame: x.is_game === 1, cat: (x.cat as string | null) ?? '',
+      isGame: x.is_game === 1, cat: (x.cat as string | null) ?? '', startsAt: (x.starts_at as number | null) ?? null,
     };
   }
 
@@ -412,6 +432,28 @@ export class RadarStore {
       });
   }
 
+  upsertHolderProfile(h: HolderProfile): void {
+    this.db
+      .prepare(
+        `INSERT INTO holder_profiles(wallet,fetched_at,name,cls,confidence,reasons,per_day,traded,vol,age_days,pnl_all,pnl_week) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(wallet) DO UPDATE SET fetched_at=excluded.fetched_at,name=excluded.name,cls=excluded.cls,confidence=excluded.confidence,reasons=excluded.reasons,
+           per_day=excluded.per_day,traded=excluded.traded,vol=excluded.vol,age_days=excluded.age_days,pnl_all=excluded.pnl_all,pnl_week=excluded.pnl_week`,
+      )
+      .run(h.wallet, h.fetchedAt, h.name, h.cls, h.confidence, JSON.stringify(h.reasons), h.perDay, h.traded, h.vol, h.ageDays, h.pnlAll, h.pnlWeek);
+  }
+
+  getHolderProfile(wallet: string): HolderProfile | undefined {
+    const r = this.db.prepare('SELECT * FROM holder_profiles WHERE wallet=?').get(wallet);
+    if (!r) return undefined;
+    const x = plain<Record<string, unknown>>(r);
+    return {
+      wallet: x.wallet as string, fetchedAt: x.fetched_at as number, name: (x.name as string | null) ?? null, cls: x.cls as HolderProfile['cls'],
+      confidence: x.confidence as HolderProfile['confidence'], reasons: jsonOr<string[]>(x.reasons, []), perDay: (x.per_day as number | null) ?? null,
+      traded: (x.traded as number | null) ?? null, vol: (x.vol as number | null) ?? null, ageDays: (x.age_days as number | null) ?? null,
+      pnlAll: (x.pnl_all as number | null) ?? null, pnlWeek: (x.pnl_week as number | null) ?? null,
+    };
+  }
+
   saveSignal(s: SignalRow): void {
     this.db
       .prepare('INSERT INTO signals(cid,version,computed_at,score,level,reasons) VALUES(?,?,?,?,?,?)')
@@ -437,5 +479,6 @@ export function openStore(path = ':memory:'): RadarStore {
   const cols = db.prepare('PRAGMA table_info(snapshots)').all().map((r) => (r as { name: string }).name);
   if (!cols.includes('is_game')) db.exec('ALTER TABLE snapshots ADD COLUMN is_game INTEGER NOT NULL DEFAULT 0');
   if (!cols.includes('cat')) db.exec("ALTER TABLE snapshots ADD COLUMN cat TEXT NOT NULL DEFAULT ''");
+  if (!cols.includes('starts_at')) db.exec('ALTER TABLE snapshots ADD COLUMN starts_at INTEGER');
   return new RadarStore(db);
 }

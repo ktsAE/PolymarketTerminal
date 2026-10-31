@@ -9,10 +9,28 @@ npm run scan                # one poll, print one frame, exit (good for logs and
 npm run test:tui            # drives the real TUI through a pseudo-terminal against live data (needs network)
 ```
 
-Keys: `↑↓ / j k` move · `PgUp PgDn g G` jump · `1 2 3` or `Tab` switch tabs · `f` cycle category filter · `g` show/hide live games · `o` show the selected link · `r` refresh now · `q` quit.
+Keys: `↑↓ / j k` move · `PgUp PgDn g G` jump · `1`-`5` or `Tab` switch tabs · `f` cycle category filter · `h` load the selected event's top holders · `b` show/hide bots and market makers · `o` show the selected link · `r` refresh now · `q` quit.
 
-Tabs: **Anomalies** (ranked events with reasons and an OI sparkline), **Big prints** (large fills with the wallet's history: NEW / THIN / WHALE),
-**Integrity leads** (ESIC and news inbox, see below).
+Tabs: **1 Anomalies** (non-game events with reasons and an OI sparkline), **2 Games** (live and next-24h games with kickoff countdown, pre-game line moves, OI and fills),
+**3 Big prints** (large fills with the wallet's history: NEW / THIN / WHALE), **4 Holders** (top holders of the selected event, see below),
+**5 Leads** (ESIC and news inbox, see below).
+
+## Holders: people, not machines
+
+`h` on any event loads the top holders of its busiest market (about 12 per side) and profiles each wallet in a few seconds (cached 12h):
+current position and unrealized PnL, Polymarket's own all-time and 7-day PnL, markets traded, events per day, and a verdict:
+
+| WHO | Meaning |
+| --- | --- |
+| HUMAN | low cadence, modest breadth, no reward payouts |
+| NEW? | too little history to say (kept in the people list) |
+| ALGO | some automation signs, not conclusive (e.g. 1,000+ markets, or 5+ new markets a day) |
+| MM | looks like a market maker / rebate farmer: liquidity-reward and rebate payouts, buying and selling the same market within minutes, tiny fills |
+| BOT | clearly automated: very many markets, hundreds of events a day, seconds between events, merge/split operations |
+
+By default only HUMAN and NEW? rows are shown; `b` adds the machines, and the detail pane lists the reasons behind every verdict.
+A `!` marks positions the wallet never bought at a price (shares transferred in). `npm run radar -- holders <slug> [--all]` prints the same table.
+This is a screen built from activity patterns, not an identification; PnL is Polymarket's figure, which includes market-making profit.
 
 What it flags (all explained on screen; none claims intent):
 

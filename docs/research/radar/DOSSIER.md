@@ -113,3 +113,17 @@ expiring within 36h cut it to 6 watch-level events, leaving geopolitics/politics
 Live OI check [measured, Oct 31 2026 13:54 -> 14:04 UTC]: with 9 minutes of own snapshots the 15-minute OI rule fired on real data. Every
 top OI hit was a sports game (open interest rises around kickoff); no non-game market had an unusual OI move in that window. Games are now
 hidden from the default list.
+
+## 9. Games tab and holders PnL with a person-vs-bot screen (Oct 31 2026)
+
+Games: own rules (kickoff countdown, pre-game line move over ~30 min from our snapshots, OI and fills); live games whose main market has settled
+(>= 0.97 or <= 0.03) are dropped; live price swings are ignored.
+
+Holders: `/holders` (top 20 per outcome), `/v1/leaderboard?user=` (all-time and weekly PnL and volume in one call), `/positions?user=&market=`
+and `/activity` (which includes REWARD, MAKER_REBATE, TAKER_REBATE, MERGE, SPLIT records: direct market-maker fingerprints).
+Real wallets seen in the top holders of one Senate market showed why a trades-per-day filter alone fails: `toosensitive` traded only 4 markets but
+made 373 fills of ~$58, two-sided 75% of the time, with reward payouts (a liquidity farmer); `SwissMiss` runs 4 events/day on average but $88M lifetime
+volume at an $8 median fill and 6-second gaps (bursty bot). Classifier rules were fitted on 9 wallets from that market, then run on two other
+markets (48 wallets) and inspected by eye; no labelled ground truth exists, so accuracy is unmeasured. One held-out finding changed the rules:
+1,000+ lifetime markets alone is no longer a BOT verdict (a patient human can reach it over years); breadth is judged against account age.
+Also found: a wallet holding $111k of shares with average price 0.00, i.e. never bought (transfer or split), now flagged.

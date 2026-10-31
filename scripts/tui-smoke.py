@@ -63,11 +63,28 @@ check("j moves the selection down", selected() == [first[0] + 1] if first else F
 os.write(fd, b"\x1b[A"); pump(0.8)
 check("up arrow moves it back", selected() == first)
 os.write(fd, b"2"); pump(1.0)
-check("tab 2 shows big prints", "MARKET" in plain(screen()[2]) and "ADDRESS" in plain(screen()[2]))
+check("tab 2 shows games", "GAME" in plain(screen()[2]) and "STARTS" in plain(screen()[2]))
 os.write(fd, b"3"); pump(1.0)
-check("tab 3 shows the leads table", "HEADLINE" in plain(screen()[2]))
+check("tab 3 shows big prints", "MARKET" in plain(screen()[2]) and "ADDRESS" in plain(screen()[2]))
+os.write(fd, b"5"); pump(1.0)
+check("tab 5 shows the leads table", "HEADLINE" in plain(screen()[2]))
 os.write(fd, b"1"); pump(0.8); os.write(fd, b"o"); pump(0.8)
 check("o shows the selected event link in the footer", "polymarket.com/event/" in plain(screen()[ROWS - 1]))
+
+# holders: open the selected event's top holders and wait for profiling to finish
+os.write(fd, b"h"); pump(1.0)
+check("h opens the holders tab", "4 Holders" in plain(screen()[1]))
+t1 = time.time()
+while time.time() - t1 < 60:
+    pump(1)
+    if "WHO" in plain(screen()[2]) or "WHO" in plain(screen()[3]): 
+        if "profiling" not in plain("\n".join(screen()[:4])): break
+text = plain("\n".join(screen()[:ROWS]))
+check("holders table has its columns", "POSITION" in text and "ALL-TIME" in text)
+check("holders profiling finished", "profiling" not in text)
+check("holders table has at least one row or explains why not", len([l for l in screen()[4:30] if plain(l).strip()]) > 0)
+os.write(fd, b"b"); pump(0.8)
+check("b toggles bots and market makers", "bots and market makers" in plain(screen()[ROWS - 1]) or "people only" in plain(screen()[ROWS - 1]))
 pump(6)
 check("still alive after background activity", alive())
 os.write(fd, b"q"); pump(2)

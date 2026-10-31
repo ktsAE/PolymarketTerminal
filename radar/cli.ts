@@ -6,6 +6,7 @@ import { SEED_CASES } from './cases.seed.ts';
 import { TIER_TEXT, tierAsOf } from './evidence.ts';
 import { flowSummary, INFORMATIVE_BAND, peakPositions } from './features.ts';
 import { ingestEvent } from './ingest.ts';
+import { loadHolders, peopleOnly } from './holders.ts';
 import { runTui } from './tui/app.ts';
 import { FEEDS } from './news.ts';
 import { httpFetchText, pollFeeds } from './poll.ts';
@@ -122,6 +123,19 @@ async function main(): Promise<void> {
         for (const e of await client.searchEvents(args.join(' '))) console.log(`${e.slug}  ${usd(e.volume)}  ${e.title}`);
         return;
       }
+      case 'holders': {
+        if (!args[0]) throw new Error('usage: holders <event-slug> [--all]   (--all also lists bots and market makers)');
+        const v = await loadHolders(client, store, args[0]);
+        if (v.error && v.rows.length === 0) throw new Error(v.error);
+        const rows = args.includes('--all') ? v.rows : peopleOnly(v.rows);
+        console.log(`${v.eventTitle}\n${v.question}  (${v.loaded}/${v.total} top holders profiled${v.error ? `, last error: ${v.error}` : ''})\n`);
+        console.log(['CLASS'.padEnd(8), 'OUTCOME'.padEnd(10), 'POSITION'.padStart(9), 'AVG'.padStart(5), 'uPNL'.padStart(9), 'ALL-TIME'.padStart(10), '7D'.padStart(9), 'MKTS'.padStart(6), '/DAY'.padStart(6), 'NAME'].join(' '));
+        for (const r of rows) console.log([r.cls.padEnd(8), r.outcome.slice(0, 10).padEnd(10), usd(r.posUsd ?? 0).padStart(9), (r.avgPrice === null ? '-' : r.avgPrice.toFixed(2)).padStart(5), usd(r.uPnl ?? 0).padStart(9), (r.pnlAll === null ? '-' : usd(r.pnlAll)).padStart(10), (r.pnlWeek === null ? '-' : usd(r.pnlWeek)).padStart(9), String(r.traded ?? '-').padStart(6), (r.perDay === null ? '-' : String(Math.round(r.perDay))).padStart(6), r.name ?? r.wallet.slice(0, 10)].join(' '));
+        const hidden = v.rows.length - rows.length;
+        if (hidden > 0) console.log(`\n${hidden} bot/market-maker wallets hidden (use --all). Reasons for the last few:`);
+        for (const r of v.rows.filter((x) => !rows.includes(x)).slice(0, 6)) console.log(`  ${r.cls} ${r.name ?? r.wallet.slice(0, 10)}: ${r.reasons.join('; ')}`);
+        return;
+      }
       case 'tui':
       case 'scan': {
         const cols = flag(args, 'cols', 0);
@@ -132,6 +146,7 @@ async function main(): Promise<void> {
           intervalSecs: flag(args, 'interval', 120),
           cols: cols || undefined,
           rows: rows || undefined,
+          tab: (['anomalies', 'games', 'prints', 'holders', 'leads'] as const).find((t) => t === args[args.indexOf('--tab') + 1]),
         });
         return;
       }
@@ -180,7 +195,7 @@ async function main(): Promise<void> {
         return;
       }
       default:
-        console.log('commands: tui [--interval S --no-news] | scan [--cols N --rows N] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
+        console.log('commands: tui [--interval S --no-news] | holders <slug> [--all] | scan [--cols N --rows N --tab games|prints|leads] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
     }
   } finally {
     store.close();

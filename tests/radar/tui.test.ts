@@ -2,22 +2,26 @@ import { describe, expect, it } from 'vitest';
 import { charWidth, clip, fit, sparkline, strip, truncate, vlen } from '../../radar/tui/ansi';
 import { moveSelection, render, type Model, type View } from '../../radar/tui/render';
 import type { Anomaly } from '../../radar/detect';
+import type { HolderRow } from '../../radar/holders';
 import { applyFilters } from '../../radar/collect';
 
 const anomaly = (i: number, over: Partial<Anomaly> = {}): Anomaly => ({
-  eventId: String(i), slug: `ev-${i}`, title: i % 3 === 0 ? `日本語のイベント ${i} 🚀 with a really long title that must be cut cleanly` : `Event number ${i}`, cat: 'politics', isGame: false,
+  eventId: String(i), slug: `ev-${i}`, startsAt: null, title: i % 3 === 0 ? `日本語のイベント ${i} 🚀 with a really long title that must be cut cleanly` : `Event number ${i}`, cat: 'politics', isGame: false,
   score: 90 - i, level: i < 2 ? 'HOT' : i < 6 ? 'WATCH' : 'NONE',
   reasons: [{ code: 'oi_surge', points: 40, text: 'open interest +$120k (+18%) in 61m' }, { code: 'fresh_money', points: 20, text: '2 new/thin wallet(s) put $15k in' }], notes: [],
-  m: { oi: 800_000, dOi1h: 120_000, dOi1hPct: 0.18, dOi1hSpanMin: 61, dOi15m: null, dOi15mPct: null, dOi24h: null, dOi24hPct: null, vol24: 2_400_000, accel: 4.2, turnover: 3, liq: 90_000, price: 0.42, ch1h: 0.12, ch1d: null },
+  m: { oi: 800_000, dOi1h: 120_000, dOi1hPct: 0.18, dOi1hSpanMin: 61, dOi15m: null, dOi15mPct: null, dOi24h: null, dOi24hPct: null, vol24: 2_400_000, accel: 4.2, turnover: 3, liq: 90_000, price: 0.42, ch1h: 0.12, ch1d: null, dPrice30m: null },
   flow: { usd1h: 80_000, prints1h: 5, biggestUsd: 30_000, freshUsd: 15_000, freshWallets: 2, cluster: false, top: { usd: 30_000, wallet: '0xabc', tag: 'NEW', outcome: 'Yes', side: 'BUY' } },
   ...over,
 });
 const model = (n = 40): Model => ({
   anomalies: Array.from({ length: n }, (_, i) => anomaly(i)),
+  games: Array.from({ length: 6 }, (_, i) => anomaly(100 + i, { isGame: true, cat: 'sports', title: `Team ${i} vs. Team ${i + 1}`, startsAt: Math.floor(Date.now() / 1000) + (i - 1) * 1_800, m: { ...anomaly(0).m, dPrice30m: 0.07 } })),
+  holders: null,
+  showBots: false,
   prints: [{ key: 'k', ts: Date.now() / 1000 - 90, wallet: '0x1234567890abcdef1234567890abcdef12345678', cid: '0xc', eventSlug: 'ev', title: 'Some market', outcome: 'Yes', side: 'BUY', price: 0.41, size: 50_000, usd: 20_500, name: null, tag: { kind: 'NEW', ageDays: 2, traded: 1 } }],
   leads: [{ feedId: 'esic', url: 'https://esic.gg/x', title: 'ESIC Issues Interim Suspension to X', summary: 's', publishedAt: Date.now(), firstSeen: 1, relevant: true, category: 'sanction', matched: [], tierHint: 'INVESTIGATING', note: 'n', status: 'new', caseId: null }],
   status: { lastPollAt: Date.now(), nextPollAt: Date.now() + 90_000, busy: false, error: null, events: 300, historySecs: 3_000, printsWindowMin: 360, message: null },
-  oiSeries: [1, 2, 3, 5, 8, 13, 21], filter: null, showGames: false,
+  oiSeries: [1, 2, 3, 5, 8, 13, 21], filter: null,
 });
 
 describe('ansi helpers', () => {
@@ -51,7 +55,7 @@ describe('ansi helpers', () => {
 describe('rendering', () => {
   it('never overflows its box at any terminal size, on any tab', () => {
     for (const [cols, rows] of [[60, 16], [80, 24], [100, 30], [140, 40], [220, 60]]) {
-      for (const tab of ['anomalies', 'prints', 'leads'] as const) {
+      for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads'] as const) {
         const lines = render(model(), { tab, sel: 3, cols, rows }, Date.now());
         expect(lines, `${cols}x${rows} ${tab}`).toHaveLength(rows);
         for (const l of lines) expect(vlen(l), `${cols}x${rows} ${tab}`).toBeLessThanOrEqual(cols);
@@ -73,8 +77,8 @@ describe('rendering', () => {
   });
 
   it('survives empty data and an error state', () => {
-    const empty: Model = { ...model(), anomalies: [], prints: [], leads: [], status: { ...model().status, error: 'HTTP 500', lastPollAt: null, nextPollAt: null } };
-    for (const tab of ['anomalies', 'prints', 'leads'] as const) expect(() => render(empty, { tab, sel: 0, cols: 100, rows: 30 }, Date.now())).not.toThrow();
+    const empty: Model = { ...model(), anomalies: [], games: [], prints: [], leads: [], status: { ...model().status, error: 'HTTP 500', lastPollAt: null, nextPollAt: null } };
+    for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads'] as const) expect(() => render(empty, { tab, sel: 0, cols: 100, rows: 30 }, Date.now())).not.toThrow();
     expect(strip(render(empty, { tab: 'anomalies', sel: 0, cols: 100, rows: 30 }, Date.now()).join('\n'))).toContain('error');
   });
 
@@ -94,8 +98,10 @@ describe('keyboard reducer', () => {
     expect(moveSelection(v, 'end', m).sel).toBe(9);
     expect(moveSelection({ ...v, sel: 9 }, 'home', m).sel).toBe(0);
     expect(moveSelection(v, 'pagedown', m).sel).toBe(9);
-    expect(moveSelection({ ...v, sel: 4 }, '2', m)).toMatchObject({ tab: 'prints', sel: 0 });
+    expect(moveSelection({ ...v, sel: 4 }, '2', m)).toMatchObject({ tab: 'games', sel: 0 });
+    expect(moveSelection({ ...v, sel: 4 }, '3', m)).toMatchObject({ tab: 'prints', sel: 0 });
     expect(moveSelection({ ...v, tab: 'leads' }, 'tab', m).tab).toBe('anomalies');
+    expect(moveSelection({ ...v, tab: 'anomalies' }, 'tab', m).tab).toBe('games');
   });
   it('handles an empty list', () => {
     const m = { ...model(), anomalies: [] };
@@ -105,17 +111,72 @@ describe('keyboard reducer', () => {
 });
 
 describe('anomaly filters', () => {
-  const list = [anomaly(1, { cat: 'politics' }), anomaly(2, { cat: 'sports', isGame: true }), anomaly(3, { cat: 'crypto' }), anomaly(4, { cat: 'esports', isGame: true })];
-  it('hides games by default and can show them', () => {
-    expect(applyFilters(list, { cat: null, showGames: false }).map((a) => a.eventId)).toEqual(['1', '3']);
-    expect(applyFilters(list, { cat: null, showGames: true })).toHaveLength(4);
+  const list = [anomaly(1, { cat: 'politics' }), anomaly(3, { cat: 'crypto' }), anomaly(5, { cat: 'politics' })];
+  it('filters by category and passes everything when none is chosen', () => {
+    expect(applyFilters(list, { cat: null })).toHaveLength(3);
+    expect(applyFilters(list, { cat: 'politics' }).map((a) => a.eventId)).toEqual(['1', '5']);
+    expect(applyFilters(list, { cat: 'sports' })).toHaveLength(0);
   });
-  it('combines category and game filters', () => {
-    expect(applyFilters(list, { cat: 'sports', showGames: false })).toHaveLength(0);
-    expect(applyFilters(list, { cat: 'sports', showGames: true }).map((a) => a.eventId)).toEqual(['2']);
+});
+
+describe('games and holders tabs', () => {
+  const holder = (over: Partial<HolderRow> = {}): HolderRow => ({
+    wallet: '0xabcdef0123456789abcdef0123456789abcdef01', name: 'dubdubdub2', outcomeIndex: 0, outcome: 'Yes', shares: 476_000, avgPrice: 0.77, curPrice: 0.81, posUsd: 366_851, uPnl: 17_716,
+    pnlAll: 147_399, pnlWeek: null, vol: 900_000, traded: 7, ageDays: 120, perDay: 0, cls: 'HUMAN', confidence: 'medium', reasons: ['low cadence, few markets, no reward/rebate payouts'], flags: [], ...over,
   });
-  it('says in the header whether games are hidden', () => {
-    const header = strip(render(model(), { tab: 'anomalies', sel: 0, cols: 160, rows: 30 }, Date.now()).join('\n'));
-    expect(header).toContain('games hidden');
+  const withHolders = (showBots: boolean): Model => ({
+    ...model(),
+    showBots,
+    holders: {
+      slug: 'mi', eventTitle: 'Michigan Senate', question: 'Will the Democrats win Michigan?', cid: '0xc', total: 4, loaded: 4, done: true, error: null,
+      rows: [holder(), holder({ name: 'cigarettes', cls: 'BOT', confidence: 'high', traded: 157_118, posUsd: 11_659, reasons: ['157,118 markets traded lifetime'] }), holder({ name: 'toosensitive', cls: 'MM', posUsd: 5_000 }), holder({ name: 'newcomer', cls: 'LOW_DATA', posUsd: 30_000, avgPrice: 0, flags: ['holds shares it never bought'] })],
+    },
+  });
+  const text = (m: Model, tab: View['tab'], sel = 0) => strip(render(m, { tab, sel, cols: 150, rows: 40 }, Date.now()).join('\n'));
+
+  it('lists only people by default and says how many machines are hidden', () => {
+    const t = text(withHolders(false), 'holders');
+    expect(t).toContain('dubdubdub2');
+    expect(t).toContain('newcomer');
+    expect(t).not.toContain('cigarettes');
+    expect(t).not.toContain('toosensitive');
+    expect(t).toContain('2 bots/market makers hidden');
+  });
+
+  it('shows machines when asked, with their reasons in the detail pane', () => {
+    const m = withHolders(true);
+    const t = text(m, 'holders', 2);
+    expect(t).toContain('cigarettes');
+    expect(t).toContain('showing 2 bots/market makers too');
+    expect(text(m, 'holders', 1)).toContain('157,118 markets traded lifetime');
+  });
+
+  it('flags positions that were never bought', () => {
+    expect(text(withHolders(false), 'holders', 1)).toContain('never bought');
+  });
+
+  it('shows a progress note while wallets are still being profiled', () => {
+    const m = withHolders(false);
+    m.holders = { ...m.holders!, done: false, loaded: 1 };
+    expect(text(m, 'holders')).toContain('profiling 1/4');
+  });
+
+  it('prompts for h when nothing is loaded', () => {
+    expect(text({ ...model(), holders: null }, 'holders')).toContain('press h');
+  });
+
+  it('shows start countdowns, live games and line moves on the games tab', () => {
+    const t = text(model(), 'games');
+    expect(t).toMatch(/in \d+m/);
+    expect(t).toMatch(/LIVE \d+m/);
+    expect(t).toContain('+7pt');
+  });
+
+  it('navigates the holders list within the visible rows only', () => {
+    const m = withHolders(false);
+    expect(moveSelection({ tab: 'holders', sel: 0, cols: 120, rows: 40 }, 'end', m).sel).toBe(1);
+    expect(moveSelection({ tab: 'holders', sel: 0, cols: 120, rows: 40 }, 'end', { ...m, showBots: true }).sel).toBe(3);
+    expect(moveSelection({ tab: 'anomalies', sel: 0, cols: 120, rows: 40 }, '4', m).tab).toBe('holders');
+    expect(moveSelection({ tab: 'anomalies', sel: 0, cols: 120, rows: 40 }, '5', m).tab).toBe('leads');
   });
 });

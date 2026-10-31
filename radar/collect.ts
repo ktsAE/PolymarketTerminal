@@ -1,4 +1,4 @@
-import { flowBySlug, rankAnomalies, tagWallet, type WalletTag } from './detect.ts';
+import { flowBySlug, rankAnomalies, rankGames, tagWallet, type WalletTag } from './detect.ts';
 import type { PolymarketClient } from './polymarket.ts';
 import type { RadarStore } from './store.ts';
 import type { Model, TaggedPrint } from './tui/render.ts';
@@ -57,13 +57,13 @@ export async function runCycle(client: PolymarketClient, store: RadarStore, opts
   return { events: snaps.length, newPrints, profiled, profileErrors, at: now() };
 }
 
-/** Anomaly list filters: category, and whether live games/sports fixtures are included. */
-export function applyFilters<T extends { cat: string; isGame: boolean }>(list: readonly T[], f: { cat: string | null; showGames: boolean }): T[] {
-  return list.filter((a) => (f.cat === null || a.cat === f.cat) && (f.showGames || !a.isGame));
+/** Category filter for the anomaly list (null = all). */
+export function applyFilters<T extends { cat: string }>(list: readonly T[], f: { cat: string | null }): T[] {
+  return f.cat === null ? [...list] : list.filter((a) => a.cat === f.cat);
 }
 
 /** Recomputes everything the screen shows from stored data. Cheap: no network. */
-export function buildModel(store: RadarStore, nowMs: number): Pick<Model, 'anomalies' | 'prints' | 'leads'> & { historySecs: number; events: number } {
+export function buildModel(store: RadarStore, nowMs: number): Pick<Model, 'anomalies' | 'games' | 'prints' | 'leads'> & { historySecs: number; events: number } {
   const nowSecs = Math.floor(nowMs / 1000);
   const span = store.snapshotSpan();
   const latest = span ? store.latestSnapshots().filter((s) => s.ts >= span.last - 900) : [];
@@ -76,7 +76,9 @@ export function buildModel(store: RadarStore, nowMs: number): Pick<Model, 'anoma
     tags.set(p.wallet, tagWallet(w ? { firstSeen: w.firstSeen, traded: w.traded } : undefined, p.ts));
   }
   const flows = flowBySlug(printRows, tags, nowSecs);
-  const anomalies = rankAnomalies(latest, (id, ts) => store.snapshotNear(id, ts), flows, nowSecs);
+  const past = (id: string, ts: number) => store.snapshotNear(id, ts);
+  const anomalies = rankAnomalies(latest, past, flows, nowSecs);
+  const games = rankGames(latest, past, flows, nowSecs);
   const prints: TaggedPrint[] = printRows.map((p) => ({ ...p, tag: tags.get(p.wallet) ?? tagWallet(undefined, p.ts) }));
-  return { anomalies, prints, leads: store.listNews({ relevantOnly: true, limit: 100 }), historySecs: span ? span.last - span.first : 0, events: latest.length };
+  return { anomalies, games, prints, leads: store.listNews({ relevantOnly: true, limit: 100 }), historySecs: span ? span.last - span.first : 0, events: latest.length };
 }

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { MarketRow, PrintRow, SnapRow, TradeRow, WalletRow } from './store.ts';
 import { clusteredZ, type Unit } from './features.ts';
+import type { ActivityRec } from './profile.ts';
 
 export type FetchJson = (url: string) => Promise<unknown>;
 
@@ -92,6 +93,7 @@ export function mapSnapshot(raw: Record<string, any>, ts: number): SnapRow | nul
     created: toSecs(raw.createdAt) ?? toSecs(raw.startDate), endDate: toSecs(raw.endDate),
     isGame: markets.some((m) => Boolean(m.sportsMarketType || m.gameStartTime)),
     cat: categoryOf(raw),
+    startsAt: markets.map((m) => parseStart(m.gameStartTime)).filter((x): x is number => x !== null).sort((a, b) => a - b)[0] ?? null,
   };
 }
 
@@ -197,6 +199,44 @@ export class PolymarketClient {
       firstSeen: Array.isArray(first) && first[0] ? num(first[0].timestamp, NaN) || null : null,
       traded: traded && typeof traded.traded === 'number' ? traded.traded : null,
     };
+  }
+
+  /** Top holders of a market's outcome tokens (up to `limit` per outcome). */
+  async holders(cid: string, limit = 20): Promise<Array<{ wallet: string; name: string | null; outcomeIndex: number; shares: number }>> {
+    const groups = (await this.get(`${DATA}/holders?market=${cid}&limit=${limit}`)) as Array<Record<string, any>>;
+    const out: Array<{ wallet: string; name: string | null; outcomeIndex: number; shares: number }> = [];
+    for (const g of Array.isArray(groups) ? groups : [])
+      for (const h of (g.holders as Array<Record<string, any>>) ?? [])
+        if (h.proxyWallet) out.push({ wallet: String(h.proxyWallet).toLowerCase(), name: h.name ? String(h.name) : h.pseudonym ? String(h.pseudonym) : null, outcomeIndex: num(h.outcomeIndex), shares: num(h.amount) });
+    return out;
+  }
+
+  /** A wallet's most recent activity (trades, rewards, rebates, merges...), newest first. */
+  async activityRecords(wallet: string, limit = 500): Promise<ActivityRec[]> {
+    const rows = (await this.get(`${DATA}/activity?user=${wallet}&limit=${limit}`)) as Array<Record<string, any>>;
+    return (Array.isArray(rows) ? rows : []).map((r) => ({ ts: num(r.timestamp), type: String(r.type ?? ''), side: String(r.side ?? ''), usd: num(r.usdcSize), cid: String(r.conditionId ?? '') }));
+  }
+
+  async firstActivityTs(wallet: string): Promise<number | null> {
+    const rows = (await this.get(`${DATA}/activity?user=${wallet}&limit=1&sortDirection=ASC`)) as Array<Record<string, any>>;
+    return Array.isArray(rows) && rows[0] ? num(rows[0].timestamp, NaN) || null : null;
+  }
+
+  async marketsTraded(wallet: string): Promise<number | null> {
+    const r = (await this.get(`${DATA}/traded?user=${wallet}`)) as Record<string, any>;
+    return r && typeof r.traded === 'number' ? r.traded : null;
+  }
+
+  /** All-time or recent PnL and volume from Polymarket's own leaderboard (null when the wallet is not ranked). */
+  async leaderboard(wallet: string, period: 'all' | 'week'): Promise<{ pnl: number; vol: number; name: string | null } | null> {
+    const rows = (await this.get(`${DATA}/v1/leaderboard?user=${wallet}&timePeriod=${period}&orderBy=PNL`)) as Array<Record<string, any>>;
+    const r = Array.isArray(rows) ? rows[0] : undefined;
+    return r ? { pnl: num(r.pnl), vol: num(r.vol), name: r.userName ? String(r.userName) : null } : null;
+  }
+
+  async positions(wallet: string, cid: string): Promise<Array<{ outcomeIndex: number; size: number; avgPrice: number; curPrice: number; currentValue: number; cashPnl: number }>> {
+    const rows = (await this.get(`${DATA}/positions?user=${wallet}&market=${cid}&limit=10`)) as Array<Record<string, any>>;
+    return (Array.isArray(rows) ? rows : []).map((r) => ({ outcomeIndex: num(r.outcomeIndex), size: num(r.size), avgPrice: num(r.avgPrice), curPrice: num(r.curPrice), currentValue: num(r.currentValue), cashPnl: num(r.cashPnl) }));
   }
 
   async searchEvents(query: string): Promise<Array<{ slug: string; title: string; volume: number }>> {

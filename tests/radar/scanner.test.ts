@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { D, flowBySlug, rankAnomalies, scoreEvent, tagWallet, type PastFn, type PrintFlow } from '../../radar/detect';
+import { D, flowBySlug, gamePhase, rankAnomalies, rankGames, scoreEvent, scoreGame, tagWallet, type PastFn, type PrintFlow } from '../../radar/detect';
 import { mapPrint, mapSnapshot } from '../../radar/polymarket';
 import { openStore, type PrintRow, type SnapRow } from '../../radar/store';
 
 const NOW = 1_800_000_000;
 const snap = (over: Partial<SnapRow> = {}): SnapRow => ({
   eventId: 'e1', ts: NOW, slug: 'ev', title: 'Will X happen?', oi: 500_000, vol24: 100_000, vol1w: 400_000, liq: 300_000, price: 0.4, ch1h: null, ch1d: null,
-  created: NOW - 30 * 86_400, endDate: NOW + 20 * 86_400, isGame: false, cat: 'politics', ...over,
+  created: NOW - 30 * 86_400, endDate: NOW + 20 * 86_400, isGame: false, cat: 'politics', startsAt: null, ...over,
 });
 const never: PastFn = () => undefined;
 const pastOf = (map: Record<number, Partial<SnapRow>>): PastFn => (id, target) => {
@@ -137,7 +137,7 @@ describe('ranking and mapping', () => {
       tags: [{ slug: 'games' }, { slug: 'Sports' }],
       markets: [{ volume24hr: 1, sportsMarketType: 'moneyline', lastTradePrice: 0.7, oneHourPriceChange: -0.2 }, { volume24hr: 9, gameStartTime: '2026-10-31 10:00:00+00', outcomePrices: '["0.55","0.45"]', oneHourPriceChange: 0.1, oneDayPriceChange: 0.3 }],
     }, NOW)!;
-    expect(s).toMatchObject({ eventId: '7', oi: 1500, isGame: true, cat: 'sports', ch1h: 0.1, ch1d: 0.3, price: 0.55 });
+    expect(s).toMatchObject({ eventId: '7', oi: 1500, isGame: true, cat: 'sports', ch1h: 0.1, ch1d: 0.3, price: 0.55, startsAt: Date.parse('2026-10-31T10:00:00Z') / 1000 });
     expect(mapSnapshot({ id: 1, slug: 's', title: 't', markets: [{ volume24hr: 1 }] }, NOW)).toMatchObject({ isGame: false, cat: '' });
     expect(mapSnapshot({ slug: 'no-id' }, NOW)).toBeNull();
   });
@@ -173,5 +173,63 @@ describe('storage of snapshots and prints', () => {
     expect(s.insertPrints([pr])).toBe(0);
     expect(s.printsSince(0)).toHaveLength(1);
     s.close();
+  });
+});
+
+describe('games', () => {
+  const game = (over: Partial<SnapRow> = {}): SnapRow => snap({ isGame: true, cat: 'sports', title: 'A vs. B', startsAt: NOW + 7_200, price: 0.5, vol24: 200_000, vol1w: 210_000, endDate: NOW + 3 * 86_400, ...over });
+
+  it('knows the phase of a game', () => {
+    expect(gamePhase(NOW + 60, NOW)).toBe('PRE');
+    expect(gamePhase(NOW - 3_600, NOW)).toBe('LIVE');
+    expect(gamePhase(NOW - 5 * 3_600, NOW)).toBe('OVER');
+    expect(gamePhase(null, NOW)).toBe('UNKNOWN');
+  });
+
+  it('only lists games starting within a day or live now', () => {
+    expect(scoreGame(game(), never, null, NOW)).not.toBeNull();
+    expect(scoreGame(game({ startsAt: NOW + 3 * 86_400 }), never, null, NOW)).toBeNull();
+    expect(scoreGame(game({ startsAt: NOW - 5 * 3_600 }), never, null, NOW)).toBeNull();
+    expect(scoreGame(game({ startsAt: null }), never, null, NOW)).toBeNull();
+  });
+
+  it('keeps quiet games on the list with a zero score', () => {
+    const a = scoreGame(game(), never, null, NOW)!;
+    expect(a.score).toBe(0);
+    expect(a.startsAt).toBe(NOW + 7_200);
+  });
+
+  it('flags a pre-game line move from our own snapshots', () => {
+    const past: PastFn = (id, t) => ({ ...game({ eventId: id, ts: NOW - 1_800, price: 0.4 }), ts: t <= NOW - 1_800 ? NOW - 1_800 : t });
+    const a = scoreGame(game({ price: 0.5 }), past, null, NOW)!;
+    expect(a.reasons.map((r) => r.code)).toContain('line_move');
+    expect(a.m.dPrice30m).toBeCloseTo(0.1);
+  });
+
+  it('ignores line moves once the game is live (price swings with the score)', () => {
+    const past: PastFn = (id) => game({ eventId: id, ts: NOW - 1_800, price: 0.2 });
+    const a = scoreGame(game({ startsAt: NOW - 1_200, price: 0.7 }), past, null, NOW)!;
+    expect(a.reasons.map((r) => r.code)).not.toContain('line_move');
+    expect(a.notes.join()).toMatch(/live/);
+  });
+
+  it('drops live games whose main market has already settled', () => {
+    expect(scoreGame(game({ startsAt: NOW - 3_000, price: 1 }), never, null, NOW)).toBeNull();
+    expect(scoreGame(game({ startsAt: NOW - 3_000, price: 0.01 }), never, null, NOW)).toBeNull();
+    expect(scoreGame(game({ startsAt: NOW - 3_000, price: 0.6 }), never, null, NOW)).not.toBeNull();
+    expect(scoreGame(game({ startsAt: NOW + 600, price: 0.99 }), never, null, NOW)).not.toBeNull(); // pre-game extremes are legitimate (heavy favourites)
+  });
+
+  it('still reports OI surges in games', () => {
+    const a = scoreGame(game({ oi: 600_000 }), pastOf({ 3600: { oi: 500_000, isGame: true, startsAt: NOW + 7_200 } }), null, NOW)!;
+    expect(a.reasons.map((r) => r.code)).toContain('oi_surge');
+  });
+
+  it('keeps games out of the anomaly list and out-ranks quiet ones in the games list', () => {
+    const quiet = game({ eventId: 'q', slug: 'q', startsAt: NOW + 1_000 });
+    const busy = game({ eventId: 'b', slug: 'b', startsAt: NOW + 20_000, oi: 700_000 });
+    const past = pastOf({ 3600: { oi: 500_000 } });
+    expect(rankAnomalies([quiet, busy], past, new Map(), NOW)).toEqual([]);
+    expect(rankGames([quiet, busy], past, new Map(), NOW).map((x) => x.eventId)).toEqual(['b', 'q']);
   });
 });
