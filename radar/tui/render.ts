@@ -1,11 +1,14 @@
+import type { DecisionView } from '../decide-data.ts';
 import { gamePhase, type Anomaly, type WalletTag } from '../detect.ts';
+import type { Action, MarketDecision } from '../decide.ts';
 import { peopleOnly, type HolderRow, type HoldersView } from '../holders.ts';
+import { accountAge, dateOf } from '../identity.ts';
 import type { NewsRow, PrintRow } from '../store.ts';
 import { c, clip, fit, sparkline, vlen } from './ansi.ts';
 
-export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads';
-export const TABS: readonly Tab[] = ['anomalies', 'games', 'prints', 'holders', 'leads'];
-const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Anomalies', games: '2 Games', prints: '3 Big prints', holders: '4 Holders', leads: '5 Leads' };
+export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision';
+export const TABS: readonly Tab[] = ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision'];
+const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Anomalies', games: '2 Games', prints: '3 Big prints', holders: '4 Holders', leads: '5 Leads', decision: '6 Decision' };
 
 export interface TaggedPrint extends PrintRow {
   tag: WalletTag;
@@ -34,6 +37,8 @@ export interface Model {
   holders: HoldersView | null;
   /** Show bots / market makers in the holders list (default: people only). */
   showBots: boolean;
+  /** Decision for the event the user opened with `d` (null until then). */
+  decision?: DecisionView | null;
 }
 
 export interface View {
@@ -208,6 +213,13 @@ export function gameRows(m: Model, v: View, height: number): string[] {
   return out;
 }
 
+/** Profile creation date; accounts under 30 days old stand out. */
+const createdCell = (createdAt: number | null | undefined, nowSecs: number, w: number): string => {
+  if (createdAt === null || createdAt === undefined) return c.gray(fit('?', w));
+  const a = accountAge(createdAt, nowSecs);
+  return a.isNew ? c.magenta(c.bold(fit(dateOf(createdAt), w))) : fit(dateOf(createdAt), w);
+};
+
 const classCell = (cls: HolderRow['cls'], w: number): string => {
   const t = fit(cls === 'LOW_DATA' ? 'NEW?' : cls, w);
   return cls === 'HUMAN' ? c.green(c.bold(t)) : cls === 'LOW_DATA' ? c.green(t) : cls === 'ALGO' ? c.yellow(t) : c.red(t);
@@ -230,12 +242,14 @@ export function holderRows(m: Model, v: View, height: number): string[] {
       { key: 'all', head: 'ALL-TIME', w: 9, align: 'right', keep: 5 },
       { key: 'wk', head: '7D', w: 8, align: 'right', keep: 3 },
       { key: 'mk', head: 'MKTS', w: 6, align: 'right', keep: 2 },
+      { key: 'cr', head: 'CREATED', w: 10, keep: 8 },
       { key: 'pd', head: '/DAY', w: 5, align: 'right', keep: 1 },
       { key: 'name', head: 'NAME', w: 20, keep: 9, flex: true },
     ],
     v.cols,
   );
   out.push(headOf(cols));
+  const nowSecs = Date.now() / 1000;
   const room = Math.max(1, height - 2);
   const start = Math.max(0, Math.min(v.sel - Math.floor(room / 2), Math.max(0, rows.length - room)));
   for (const [i, r] of rows.slice(start, start + room).entries()) {
@@ -252,14 +266,114 @@ export function holderRows(m: Model, v: View, height: number): string[] {
           all: signColor(r.pnlAll, fit(r.pnlAll === null ? '-' : usd(r.pnlAll, true), w('all'), 'right')),
           wk: signColor(r.pnlWeek, fit(r.pnlWeek === null ? '-' : usd(r.pnlWeek, true), w('wk'), 'right')),
           mk: fit(r.traded === null ? '-' : String(r.traded), w('mk'), 'right'),
+          cr: createdCell(r.createdAt, nowSecs, w('cr')),
           pd: fit(r.perDay === null ? '-' : String(Math.round(r.perDay)), w('pd'), 'right'),
-          name: fit(`${r.flags.length ? '! ' : ''}${r.name ?? r.wallet.slice(0, 10)}`, w('name')),
+          name: (r.matches?.length ? c.yellow : (s: string) => s)(fit(`${r.flags.length ? '! ' : ''}${r.matches?.length ? '≈ ' : ''}${r.name ?? r.wallet.slice(0, 10)}`, w('name'))),
         },
         start + i === v.sel,
       ),
     );
   }
   if (rows.length === 0 && h.done) out.push(c.gray(hidden > 0 ? '  only bots/market makers hold this market; press b to see them' : '  no holders found'));
+  return out;
+}
+
+/** Greedy word wrap of plain text. */
+function wrap(text: string, width: number): string[] {
+  const out: string[] = [];
+  let line = '';
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    if (line && line.length + 1 + word.length > width) {
+      out.push(line);
+      line = word;
+    } else line = line ? `${line} ${word}` : word;
+  }
+  if (line) out.push(line);
+  return out.length ? out : [''];
+}
+
+function actionCell(d: MarketDecision, w: number): string {
+  const label = d.action === 'BUY YES' || d.action === 'BUY NO' ? `BUY ${d.outcomes[d.side ?? 0] ?? d.action.slice(4)}`.toUpperCase() : d.action;
+  const t = fit(label, w);
+  return d.action === 'ARB' || d.action === 'BUY YES' || d.action === 'BUY NO' ? c.green(c.bold(t)) : d.action === 'WATCH' ? c.yellow(t) : c.gray(t);
+}
+const actionColor = (a: Action, s: string): string => (a === 'ARB' || a === 'BUY YES' || a === 'BUY NO' ? c.green(c.bold(s)) : a === 'WATCH' ? c.yellow(s) : c.gray(s));
+const px2 = (x: number | null): string => (x === null ? '-' : x.toFixed(2));
+
+export function decisionRows(m: Model, v: View, height: number): string[] {
+  const dv = m.decision;
+  if (!dv) return [c.gray('  select an event on Anomalies, Games, Big prints or Holders and press d to decide what to do about it')];
+  const busy = dv.done ? (dv.error ? c.red(`  ${dv.error}`) : '') : c.yellow(`  ${dv.stage}${dv.progress.total ? ` ${dv.progress.loaded}/${dv.progress.total}` : ''}…`);
+  const out = [clip(`${c.bold(dv.title)}${busy}`, v.cols)];
+  const d = dv.decision;
+  if (!d) return out;
+  out.push(clip(`  ${c.bold(d.headline)}  ${c.gray(`${d.version}, edges are model/structure based, never from following wallets`)}`, v.cols));
+  const cols = layout(
+    [
+      { key: 'act', head: 'ACTION', w: 9, keep: 10 },
+      { key: 'mk', head: 'MARKET', w: 22, keep: 9, flex: true },
+      { key: 'q', head: 'BID/ASK', w: 9, keep: 8 },
+      { key: 'fair', head: 'MODEL', w: 7, keep: 5 },
+      { key: 'edge', head: 'EDGE', w: 6, align: 'right', keep: 7 },
+      { key: 'cap', head: 'DEPTH', w: 6, align: 'right', keep: 4 },
+      { key: 'fl', head: '1H FLOW 1st/2nd', w: 15, keep: 3 },
+      { key: 'ld', head: 'LEADS', w: 6, keep: 6 },
+    ],
+    v.cols,
+  );
+  out.push(headOf(cols));
+  const w = (k: string) => cols.find((x) => x.key === k)?.w ?? 0;
+  d.markets.forEach((x, i) => {
+    const nNew = x.leads.filter((l) => l.kind === 'NEW').length;
+    const nMatch = x.leads.filter((l) => l.kind === 'MATCH').length;
+    out.push(
+      rowOf(
+        cols,
+        {
+          act: actionCell(x, w('act')),
+          mk: fit(x.label, w('mk')),
+          q: fit(`${px2(x.yesBid)}/${px2(x.yesAsk)}`, w('q')),
+          fair: fit(x.fair ? `${(x.fair.lo * 100).toFixed(0)}-${(x.fair.hi * 100).toFixed(0)}%` : '-', w('fair')),
+          edge: x.edgePts === null ? c.gray(fit('-', w('edge'), 'right')) : c.green(fit(`+${x.edgePts.toFixed(0)}pt`, w('edge'), 'right')),
+          cap: fit(x.capacityUsd === null ? '-' : usd(x.capacityUsd), w('cap'), 'right'),
+          fl: fit(x.flow1h ? `${usd(x.flow1h.first)}/${usd(x.flow1h.second)}` : '-', w('fl')),
+          ld: nMatch ? c.yellow(fit(`${nMatch}≈${nNew ? ` ${nNew}N` : ''}`, w('ld'))) : nNew ? c.magenta(fit(`${nNew}N`, w('ld'))) : fit('', w('ld')),
+        },
+        i === v.sel,
+      ),
+    );
+  });
+  const sel = d.markets[Math.min(v.sel, d.markets.length - 1)];
+  const width = Math.max(30, v.cols - 12);
+  const room = () => height - out.length;
+  const block = (tag: string, items: readonly string[], color: (s: string) => string = (s) => s) => {
+    for (const item of items) {
+      for (const [i, line] of wrap(item, width).entries()) {
+        if (room() <= 0) return;
+        out.push(clip(`  ${i === 0 ? c.dim(tag.padEnd(7)) : ' '.repeat(7)}${color(line)}`, v.cols));
+      }
+    }
+  };
+  if (sel && room() > 2) {
+    out.push(clip(`${c.dim('─'.repeat(2))} ${c.bold(sel.label)}  ${actionColor(sel.action, sel.action)}${sel.edgePts !== null ? c.green(`  +${sel.edgePts.toFixed(1)} points`) : ''}  confidence ${sel.confidence}${sel.capacityUsd !== null ? `  room for ~${usd(sel.capacityUsd)} near that price` : ''}`, v.cols));
+    block('WHY', sel.reasons);
+    block('LEADS', sel.leads.map((l) => `${l.kind === 'MATCH' ? '≈' : 'NEW'} ${l.text}`), c.yellow);
+    block('FLOW', sel.context, c.gray);
+    block('RISK', sel.risks, c.gray);
+    block('CHECK', sel.invalidates, c.gray);
+    const ws = dv.wallets[sel.cid] ?? [];
+    if (ws.length && room() > 3) {
+      out.push(clip(c.dim(`  ${'WHO'.padEnd(5)} ${'SIDE'.padEnd(8)} ${'POSITION'.padStart(8)} ${'CREATED'.padEnd(10)} ${'MKTS'.padStart(5)} ${'X HANDLE'.padEnd(16)} NAME`), v.cols));
+      const nowSecs = Date.now() / 1000;
+      for (const x of ws) {
+        if (room() <= 0) break;
+        const age = accountAge(x.createdAt, nowSecs);
+        const created = x.createdAt === null ? c.gray('?'.padEnd(10)) : age.isNew ? c.magenta(c.bold(dateOf(x.createdAt).padEnd(10))) : dateOf(x.createdAt).padEnd(10);
+        out.push(clip(`  ${(x.cls === 'LOW_DATA' ? 'NEW?' : x.cls).padEnd(5)} ${(x.side === null ? '?' : (sel.outcomes[x.side] ?? '?')).slice(0, 8).padEnd(8)} ${(x.posUsd === null ? '-' : usd(x.posUsd)).padStart(8)} ${created} ${String(x.traded ?? '-').padStart(5)} ${(x.xUsername ? `@${x.xUsername}` : '').slice(0, 16).padEnd(16)} ${x.matches.length ? c.yellow('≈ ') : ''}${x.name ?? x.wallet.slice(0, 10)}`, v.cols));
+      }
+    }
+    if (room() > 1) block('NOTE', d.notes, c.gray);
+  }
   return out;
 }
 
@@ -370,6 +484,9 @@ export function detailLines(m: Model, v: View, width: number): string[] {
     const out = [line(`${c.bold(r.name ?? r.wallet)}  ${c.gray(`polymarket.com/profile/${r.wallet}`)}`)];
     out.push(line(`  ${r.cls} (${r.confidence} confidence): ${r.reasons.join('; ') || 'no automation signs'}`));
     out.push(line(`  holds ${Math.round(r.shares).toLocaleString('en-US')} sh of ${r.outcome}${r.avgPrice !== null ? ` bought at avg ${r.avgPrice.toFixed(3)}` : ''}${r.curPrice !== null ? `, now ${r.curPrice.toFixed(3)}` : ''}; lifetime volume ${r.vol === null ? '-' : usd(r.vol)}, account ${r.ageDays === null ? '?' : `${Math.round(r.ageDays)}d`} old`));
+    const age = accountAge(r.createdAt, Date.now() / 1000);
+    out.push(line(`  profile created ${age.label}${age.isNew ? c.magenta(c.bold('  NEW ACCOUNT')) : ''}${r.xUsername ? `  linked X @${r.xUsername}` : ''}`));
+    for (const mt of r.matches ?? []) out.push(line(`  ${c.yellow('≈')} ${mt.why}; the watchlist has ${mt.person.name}${mt.person.org ? ` (${mt.person.org})` : ''}. Name match only, unverified (${mt.kind} ${mt.score})`));
     for (const f of r.flags) out.push(line(`  ${c.yellow('!')} ${f}`));
     out.push(line(c.gray('  Classification is a screen from activity patterns, not an identification. PnL is Polymarket\'s own all-time/7-day figure.')));
     return out;
@@ -384,6 +501,7 @@ export function detailLines(m: Model, v: View, width: number): string[] {
       line(c.gray('  A wallet tag describes history, not intent. NEW/THIN = little history; WHALE = 200+ markets.')),
     ];
   }
+  if (v.tab === 'decision') return [];
   const n = m.leads[v.sel];
   if (!n) return [];
   const out = [line(c.bold(n.title)), line(`  ${c.gray(n.url)}`)];
@@ -406,9 +524,9 @@ export function render(m: Model, v: View, nowMs: number): string[] {
     ' ' + TABS.map((t) => (t === v.tab ? c.inverse(` ${TAB_LABEL[t]} `) : c.gray(` ${TAB_LABEL[t]} `))).join(' ') + c.gray(`   ${[...m.anomalies, ...m.games].filter((a) => a.level === 'HOT').length} hot · ${[...m.anomalies, ...m.games].filter((a) => a.level === 'WATCH').length} watch`) + (m.filter ? c.yellow(`   filter: ${m.filter}`) : ''),
     cols,
   );
-  const detailH = rows >= 30 ? 8 : 0;
+  const detailH = rows >= 30 && v.tab !== 'decision' ? 8 : 0;
   const bodyH = Math.max(3, rows - 3 - detailH - (detailH ? 1 : 0));
-  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
+  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
   const lines = [header, tabs, ...body];
   while (lines.length < 2 + bodyH) lines.push('');
   if (detailH) {
@@ -418,13 +536,13 @@ export function render(m: Model, v: View, nowMs: number): string[] {
   }
   while (lines.length < rows - 1) lines.push('');
   const msg = s.message ? `  ${c.yellow(s.message)}` : '';
-  lines.push(clip(c.gray(' ↑↓ move · 1-5 tabs · r refresh · f category · h holders · b people/bots · o link · q quit') + msg, cols));
+  lines.push(clip(c.gray(' ↑↓ move · 1-6 tabs · r refresh · f category · h holders · d decide · b people/bots · o link · q quit') + msg, cols));
   return lines.slice(0, rows).map((l) => (vlen(l) > cols ? clip(l, cols) : l));
 }
 
-export type Key = 'up' | 'down' | 'pageup' | 'pagedown' | 'home' | 'end' | 'tab' | '1' | '2' | '3' | '4' | '5';
+export type Key = 'up' | 'down' | 'pageup' | 'pagedown' | 'home' | 'end' | 'tab' | '1' | '2' | '3' | '4' | '5' | '6';
 export function listLength(m: Model, tab: Tab): number {
-  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : m.leads.length;
+  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : m.leads.length;
 }
 
 /** Pure keyboard reducer; the shell only translates raw input into these keys. */
@@ -444,5 +562,6 @@ export function moveSelection(v: View, key: Key, m: Model): View {
     case '3': return { ...v, tab: 'prints', sel: 0 };
     case '4': return { ...v, tab: 'holders', sel: 0 };
     case '5': return { ...v, tab: 'leads', sel: 0 };
+    case '6': return { ...v, tab: 'decision', sel: 0 };
   }
 }

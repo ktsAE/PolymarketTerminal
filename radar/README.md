@@ -101,3 +101,44 @@ journalism -> none (find the primary source), Reddit -> RUMOR.
 Feed access notes (checked 2026-10-31): ESIC's firewall blocks User-Agents that pretend to be browsers but allows an honest
 `polymarket-radar/0.1`; Reddit rate-limits unauthenticated RSS hard (one subreddit per run is reliable; search endpoints return 403);
 cyberscore, escorenews and several others return 403 and are not polled.
+
+## Decision tab (`decide.ts`, `decide-data.ts`) - what to buy or sell, and why
+
+`d` on any event (or `npm run radar -- decide <event-slug>`) builds one verdict per market of that event. TUI tab `6`.
+
+What it will call an edge, and nothing else:
+
+1. **ARB** - prices of a ladder (`FDV above $30M / $45M / $70M`, `launch by Oct 31 / Nov 30`) that are out of order. Buy YES on the easier rung
+   and NO on the harder one for less than their guaranteed payoff. No model, but both legs must fill and the markets must settle from the same source.
+2. **BUY YES / BUY NO (low confidence)** - only for token-FDV ladders, from an external DEX price (`.radar/refs.json`). The fair probability is a *range*
+   (volatility 0.5x/1x/1.5x, with and without a drift term); a market is only called mispriced when it sits outside the whole range by 5 points, and the
+   depth within 3 points of that price is shown, because an edge you cannot buy at size is not one.
+3. **WATCH** - for "launch by date" markets where the facts can be checked but the ruling cannot be modelled (a checklist is printed), and for markets where a
+   top wallet's name closely matches the watchlist. Never a trade by itself.
+
+Everything else is **NO EDGE** or **AVOID** (closed, unpriced, or already priced at 97%+). If the reference price cannot be read the decision says so instead of
+reporting "no edge" as a verdict.
+
+Wallet findings are **leads, not signals**. The backtests (`docs/research/radar/HOLDERS_STUDY.md`) found no measurable edge from following top holders or
+from wallet form, so nothing about who holds what changes a BUY/SELL.
+
+### Account age and names
+
+* `CREATED` (Holders tab, Decision wallet table) is when the wallet's Polymarket profile was made (`/public-profile`), not its first trade. Under 30 days is
+  highlighted; a new account holding $300+ becomes a `NEW` lead with its date.
+* The profile also gives the display name, pseudonym, **linked X handle** and bio. There is **no e-mail** anywhere in Polymarket's public API, so matching uses these.
+* `.radar/people.json` is the watchlist: `people add "Full Name" --org X --role Y --handle xhandle --alias "Nickname"`, `people list`, `people remove`,
+  `people check <wallet>`. Scores: linked X handle equals a known handle 100, exact name 90, name contained 75, near-miss spelling 60, bio mention 40 (leads need 60+).
+  Names under 5 letters never match. **A match means "look", never "this is that person"**: anyone can choose any display name.
+
+### Reference prices
+
+`.radar/refs.json` maps an event (substring of its slug) to a token mint; see `radar/refs.example.json`. This tool cannot tell which mint is the official one
+(lookalike mints exist), so you set it and the `checks` you list are printed with every decision. "1 day after launch" is measured at 4:00 PM New York time on the
+next day, daylight saving included (it is 21:00 UTC, not 20:00, after the clocks go back on the first Sunday of November).
+
+### Limits worth remembering
+
+* The model has no sell-pressure term (airdrop/sale unlocks, exchange listings) and the reference pool can be thin; both are printed as `CHECK`/`NOTE` lines.
+* Books and trades are read for the two busiest markets of an event only (rate limit politeness); other rungs get quotes and the ladder check but no wallets.
+* `npm run test:tui` drives the real TUI in a pseudo-terminal including `h` and `d`.

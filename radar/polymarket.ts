@@ -7,6 +7,7 @@ export type FetchJson = (url: string) => Promise<unknown>;
 
 const GAMMA = 'https://gamma-api.polymarket.com';
 const DATA = 'https://data-api.polymarket.com';
+const CLOB = 'https://clob.polymarket.com';
 const PAGE = 1000;
 const OFFSET_CAP = 9000; // data API rejects offset > 10000; stay below and slice by time window instead
 
@@ -128,6 +129,32 @@ export function mapTrade(raw: Record<string, any>): TradeRow | null {
   };
 }
 
+export class NotFoundError extends Error {
+  constructor(url: string) {
+    super(`not found: ${url}`);
+    this.name = 'NotFoundError';
+  }
+}
+
+/** What a wallet publishes on its public Polymarket profile. There is no e-mail field; the API never exposes one. */
+export interface PublicProfile {
+  createdAt: number | null; // epoch seconds
+  name: string | null;
+  pseudonym: string | null;
+  xUsername: string | null;
+  bio: string | null;
+  verified: boolean;
+}
+
+export interface BookLevel {
+  price: number;
+  size: number;
+}
+export interface Book {
+  bids: BookLevel[]; // best (highest) first
+  asks: BookLevel[]; // best (lowest) first
+}
+
 export interface ClientOptions {
   minIntervalMs?: number;
   retries?: number;
@@ -160,6 +187,8 @@ export class PolymarketClient {
       try {
         return await this.fetchJson(url);
       } catch (error) {
+        // A 404 is an answer ("no such profile"), not a glitch: retrying it only burns seconds.
+        if (error instanceof Error && /^HTTP 404/.test(error.message)) throw new NotFoundError(url);
         lastError = error;
         await this.sleep(400 * 2 ** attempt);
       }
@@ -239,6 +268,32 @@ export class PolymarketClient {
     return (Array.isArray(rows) ? rows : []).map((r) => ({ outcomeIndex: num(r.outcomeIndex), size: num(r.size), avgPrice: num(r.avgPrice), curPrice: num(r.curPrice), currentValue: num(r.currentValue), cashPnl: num(r.cashPnl) }));
   }
 
+  /** The raw gamma event (quotes, liquidity and rules text included) for callers that need more than `mapEvent` keeps. */
+  async eventRaw(slug: string): Promise<Record<string, any> | undefined> {
+    const rows = (await this.get(`${GAMMA}/events?slug=${encodeURIComponent(slug)}`)) as Record<string, any>[];
+    return Array.isArray(rows) ? rows[0] : undefined;
+  }
+
+  /** Public profile of a wallet: creation date, display name, linked X handle, bio. Null when the wallet never made a profile. */
+  async publicProfile(wallet: string): Promise<PublicProfile | null> {
+    try {
+      const r = (await this.get(`${GAMMA}/public-profile?address=${wallet}`)) as Record<string, any>;
+      if (!r || typeof r !== 'object') return null;
+      const text = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
+      return { createdAt: toSecs(r.createdAt), name: text(r.name), pseudonym: text(r.pseudonym), xUsername: text(r.xUsername), bio: text(r.bio), verified: Boolean(r.verifiedBadge) };
+    } catch (error) {
+      if (error instanceof NotFoundError) return null;
+      throw error;
+    }
+  }
+
+  /** Order book of one outcome token, sorted best-first (the API returns levels unsorted). */
+  async book(tokenId: string): Promise<Book> {
+    const r = (await this.get(`${CLOB}/book?token_id=${tokenId}`)) as Record<string, any>;
+    const levels = (v: unknown): BookLevel[] => (Array.isArray(v) ? v : []).map((l: Record<string, any>) => ({ price: num(l.price, NaN), size: num(l.size, NaN) })).filter((l) => Number.isFinite(l.price) && Number.isFinite(l.size) && l.size > 0);
+    return { bids: levels(r?.bids).sort((a, b) => b.price - a.price), asks: levels(r?.asks).sort((a, b) => a.price - b.price) };
+  }
+
   async searchEvents(query: string): Promise<Array<{ slug: string; title: string; volume: number }>> {
     const d = (await this.get(`${GAMMA}/public-search?q=${encodeURIComponent(query)}&limit_per_type=8&keep_closed_markets=1`)) as Record<string, any>;
     return ((d?.events as Record<string, any>[]) ?? []).map((e) => ({ slug: String(e.slug), title: String(e.title), volume: num(e.volume) }));
@@ -248,10 +303,10 @@ export class PolymarketClient {
    * Every fill in a market, BOTH sides (taker and maker). takerOnly=true hides resting limit
    * orders, which is exactly where large patient positions show up.
    */
-  async marketTrades(cid: string, opts: { end?: number } = {}): Promise<TradeRow[]> {
+  async marketTrades(cid: string, opts: { end?: number; maxFills?: number } = {}): Promise<TradeRow[]> {
     const out: TradeRow[] = [];
     let end = opts.end;
-    for (let guard = 0; guard < 50; guard++) {
+    for (let guard = 0; guard < 50 && out.length < (opts.maxFills ?? Infinity); guard++) {
       let offset = 0;
       let exhausted = false;
       let minTs = Infinity;

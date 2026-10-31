@@ -1,7 +1,10 @@
 import { applyFilters, buildModel, runCycle } from '../collect.ts';
+import { loadDecision } from '../decide-data.ts';
 import { loadHolders } from '../holders.ts';
+import { loadPeople, type Person } from '../people.ts';
 import type { PolymarketClient } from '../polymarket.ts';
 import { httpFetchText, pollFeeds } from '../poll.ts';
+import { loadRefs, type RefConfig } from '../refs.ts';
 import type { RadarStore } from '../store.ts';
 import { listLength, moveSelection, render, visibleHolders, type Key, type Model, type View } from './render.ts';
 
@@ -14,6 +17,25 @@ export interface TuiOptions {
   cols?: number;
   rows?: number;
   tab?: View['tab'];
+  /** With `once` and the decision tab: the event to decide on. */
+  slug?: string;
+  /** Watchlist and reference config, read fresh from disk each time a decision or holder list is opened unless given. */
+  people?: readonly Person[];
+  refs?: readonly RefConfig[];
+}
+
+/** Reads the watchlist and reference config; a broken file is reported, not fatal. */
+function readConfig(opts: TuiOptions): { people: readonly Person[]; refs: readonly RefConfig[]; problem: string | null } {
+  let problem: string | null = null;
+  let people = opts.people ?? [];
+  let refs = opts.refs ?? [];
+  try {
+    if (!opts.people) people = loadPeople();
+    if (!opts.refs) refs = loadRefs();
+  } catch (error) {
+    problem = error instanceof Error ? error.message : String(error);
+  }
+  return { people, refs, problem };
 }
 
 function snapshotModel(store: RadarStore, prev: Model | null, nowMs: number, status: Model['status'], filter: string | null, showBots: boolean): Model {
@@ -28,6 +50,7 @@ function snapshotModel(store: RadarStore, prev: Model | null, nowMs: number, sta
     status: { ...status, events: b.events, historySecs: b.historySecs, printsWindowMin: b.prints.length ? 360 : null },
     oiSeries: prev?.oiSeries ?? [],
     holders: prev?.holders ?? null,
+    decision: prev?.decision ?? null,
   };
 }
 
@@ -38,7 +61,7 @@ function seriesFor(store: RadarStore, m: Model, v: View, nowSecs: number): numbe
 
 /** The event the user is looking at, for actions like "load holders" or "show link". */
 function selectedSlug(m: Model, v: View): string | undefined {
-  return v.tab === 'anomalies' ? m.anomalies[v.sel]?.slug : v.tab === 'games' ? m.games[v.sel]?.slug : v.tab === 'prints' ? m.prints[v.sel]?.eventSlug : v.tab === 'holders' ? m.holders?.slug : undefined;
+  return v.tab === 'anomalies' ? m.anomalies[v.sel]?.slug : v.tab === 'games' ? m.games[v.sel]?.slug : v.tab === 'prints' ? m.prints[v.sel]?.eventSlug : v.tab === 'holders' ? m.holders?.slug : v.tab === 'decision' ? m.decision?.slug : undefined;
 }
 
 export async function runTui(store: RadarStore, client: PolymarketClient, opts: TuiOptions = {}): Promise<void> {
@@ -87,6 +110,11 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
 
   if (opts.once) {
     await poll();
+    if (opts.slug && view.tab === 'decision') {
+      const cfg = readConfig(opts);
+      const dv = await loadDecision(client, store, opts.slug, { people: cfg.people, refs: cfg.refs });
+      model = { ...model, decision: dv };
+    }
     process.stdout.write(render(model, view, Date.now()).join('\n') + '\n');
     return;
   }
@@ -127,12 +155,36 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     const token = ++holdersToken;
     model = { ...model, holders: { slug, eventTitle: slug, question: 'loading…', cid: '', rows: [], total: 0, loaded: 0, done: false, error: null } };
     view = { ...view, tab: 'holders', sel: 0 };
+    const cfg = readConfig(opts);
+    if (cfg.problem) setStatus({ message: cfg.problem });
     paint();
     void loadHolders(client, store, slug, {
+      people: cfg.people,
       onProgress: (hv) => {
         if (token !== holdersToken) return;
         model = { ...model, holders: hv };
         view = { ...view, sel: Math.min(view.sel, Math.max(0, listLength(model, 'holders') - 1)) };
+        paint();
+      },
+    });
+  };
+
+  // Same idea for decisions: a newer request makes older progress callbacks irrelevant.
+  let decisionToken = 0;
+  const openDecision = (slug: string) => {
+    const token = ++decisionToken;
+    const cfg = readConfig(opts);
+    model = { ...model, decision: { slug, title: slug, stage: 'reading the event', progress: { loaded: 0, total: 0 }, done: false, error: null, decision: null, wallets: {} } };
+    view = { ...view, tab: 'decision', sel: 0 };
+    setStatus({ message: cfg.problem });
+    paint();
+    void loadDecision(client, store, slug, {
+      people: cfg.people,
+      refs: cfg.refs,
+      onProgress: (dv) => {
+        if (token !== decisionToken) return;
+        model = { ...model, decision: dv };
+        view = { ...view, sel: Math.min(view.sel, Math.max(0, listLength(model, 'decision') - 1)) };
         paint();
       },
     });
@@ -164,7 +216,7 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     process.stdin.on('data', (d: string) => {
       const map: Record<string, Key> = {
         [`${ESC}[A`]: 'up', [`${ESC}[B`]: 'down', [`${ESC}[5~`]: 'pageup', [`${ESC}[6~`]: 'pagedown', [`${ESC}[H`]: 'home', [`${ESC}[1~`]: 'home', [`${ESC}[F`]: 'end', [`${ESC}[4~`]: 'end',
-        '\t': 'tab', k: 'up', j: 'down', g: 'home', G: 'end', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5',
+        '\t': 'tab', k: 'up', j: 'down', g: 'home', G: 'end', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6',
       };
       if (d === 'q' || d === '\x03') return quit();
       if (d === 'r') {
@@ -179,6 +231,14 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
           return paint();
         }
         return openHolders(slug);
+      }
+      if (d === 'd') {
+        const slug = selectedSlug(model, view);
+        if (!slug) {
+          setStatus({ message: 'select an event first' });
+          return paint();
+        }
+        return openDecision(slug);
       }
       if (d === 'b') {
         showBots = !showBots;

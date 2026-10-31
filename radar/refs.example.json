@@ -1,0 +1,16 @@
+{
+  "refs": [
+    {
+      "match": "1win",
+      "kind": "dex-token",
+      "chain": "solana",
+      "mint": "PUT-THE-OFFICIAL-MINT-HERE",
+      "supply": 1000000000,
+      "sigmaDay": 0.8,
+      "checks": [
+        "the mint equals the address behind 'Add 1W' on the project's real claim page",
+        "the project's X account announces that the token is live"
+      ]
+    }
+  ]
+}

@@ -95,6 +95,18 @@ export interface PrintRow {
   name: string | null;
 }
 
+/** Cached public-profile data. A wallet without a profile is cached too (every field null) so it is not asked about again for a day. */
+export interface WalletIdentity {
+  wallet: string;
+  fetchedAt: number; // epoch seconds
+  createdAt: number | null; // epoch seconds, when the profile was created
+  name: string | null;
+  pseudonym: string | null;
+  xUsername: string | null;
+  bio: string | null;
+  verified: boolean;
+}
+
 export interface HolderProfile {
   wallet: string;
   fetchedAt: number; // epoch seconds
@@ -157,6 +169,8 @@ CREATE INDEX IF NOT EXISTS prints_slug ON prints(event_slug, ts);
 CREATE TABLE IF NOT EXISTS holder_profiles(
   wallet TEXT PRIMARY KEY, fetched_at INTEGER NOT NULL, name TEXT, cls TEXT NOT NULL, confidence TEXT NOT NULL, reasons TEXT NOT NULL,
   per_day REAL, traded INTEGER, vol REAL, age_days REAL, pnl_all REAL, pnl_week REAL);
+CREATE TABLE IF NOT EXISTS wallet_identity(
+  wallet TEXT PRIMARY KEY, fetched_at INTEGER NOT NULL, created_at INTEGER, name TEXT, pseudonym TEXT, x_username TEXT, bio TEXT, verified INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS news_items(
   url TEXT PRIMARY KEY, feed_id TEXT NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL, published_at INTEGER, first_seen INTEGER NOT NULL,
   relevant INTEGER NOT NULL, category TEXT NOT NULL, matched TEXT NOT NULL, tier_hint TEXT, note TEXT NOT NULL,
@@ -452,6 +466,23 @@ export class RadarStore {
       traded: (x.traded as number | null) ?? null, vol: (x.vol as number | null) ?? null, ageDays: (x.age_days as number | null) ?? null,
       pnlAll: (x.pnl_all as number | null) ?? null, pnlWeek: (x.pnl_week as number | null) ?? null,
     };
+  }
+
+  upsertIdentity(i: WalletIdentity): void {
+    this.db
+      .prepare(
+        `INSERT INTO wallet_identity(wallet,fetched_at,created_at,name,pseudonym,x_username,bio,verified) VALUES(?,?,?,?,?,?,?,?)
+         ON CONFLICT(wallet) DO UPDATE SET fetched_at=excluded.fetched_at,created_at=excluded.created_at,name=excluded.name,pseudonym=excluded.pseudonym,x_username=excluded.x_username,bio=excluded.bio,verified=excluded.verified`,
+      )
+      .run(i.wallet, i.fetchedAt, i.createdAt, i.name, i.pseudonym, i.xUsername, i.bio, i.verified ? 1 : 0);
+  }
+
+  getIdentity(wallet: string): WalletIdentity | undefined {
+    const r = this.db.prepare('SELECT * FROM wallet_identity WHERE wallet=?').get(wallet);
+    if (!r) return undefined;
+    const x = plain<Record<string, unknown>>(r);
+    const s = (v: unknown) => (v as string | null) ?? null;
+    return { wallet: x.wallet as string, fetchedAt: x.fetched_at as number, createdAt: (x.created_at as number | null) ?? null, name: s(x.name), pseudonym: s(x.pseudonym), xUsername: s(x.x_username), bio: s(x.bio), verified: x.verified === 1 };
   }
 
   saveSignal(s: SignalRow): void {

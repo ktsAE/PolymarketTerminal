@@ -6,7 +6,11 @@ import { SEED_CASES } from './cases.seed.ts';
 import { TIER_TEXT, tierAsOf } from './evidence.ts';
 import { flowSummary, INFORMATIVE_BAND, peakPositions } from './features.ts';
 import { ingestEvent } from './ingest.ts';
+import { loadDecision } from './decide-data.ts';
 import { loadHolders, peopleOnly } from './holders.ts';
+import { accountAge, identityFor } from './identity.ts';
+import { addPerson, describePerson, loadPeople, matchPeople, PEOPLE_PATH, removePerson } from './people.ts';
+import { loadRefs, REFS_PATH } from './refs.ts';
 import { runTui } from './tui/app.ts';
 import { FEEDS } from './news.ts';
 import { httpFetchText, pollFeeds } from './poll.ts';
@@ -136,17 +140,80 @@ async function main(): Promise<void> {
         for (const r of v.rows.filter((x) => !rows.includes(x)).slice(0, 6)) console.log(`  ${r.cls} ${r.name ?? r.wallet.slice(0, 10)}: ${r.reasons.join('; ')}`);
         return;
       }
+      case 'decide': {
+        if (!args[0]) throw new Error('usage: decide <event-slug>   (add --wallets to list every profiled wallet)');
+        const v = await loadDecision(client, store, args[0], { people: loadPeople(), refs: loadRefs(), onProgress: (x) => !x.done && process.stderr.write(`\r${x.stage}${x.progress.total ? ` ${x.progress.loaded}/${x.progress.total}` : ''}…   `) });
+        process.stderr.write('\r' + ' '.repeat(70) + '\r');
+        if (!v.decision) throw new Error(v.error ?? 'no decision');
+        const d = v.decision;
+        console.log(`${d.title}\n${d.headline}  [${d.version}]${v.error ? `\n(partial: ${v.error})` : ''}\n`);
+        for (const m of d.markets) {
+          const label = m.action === 'BUY YES' || m.action === 'BUY NO' ? `BUY ${(m.outcomes[m.side ?? 0] ?? '').toUpperCase()}` : m.action;
+          console.log(`${label.padEnd(8)} ${m.label.slice(0, 34).padEnd(34)} bid/ask ${(m.yesBid?.toFixed(2) ?? '-')}/${(m.yesAsk?.toFixed(2) ?? '-')}  ${m.fair ? `model ${(m.fair.lo * 100).toFixed(0)}-${(m.fair.hi * 100).toFixed(0)}%  ` : ''}${m.edgePts !== null ? `edge +${m.edgePts.toFixed(1)}pt  ` : ''}${m.capacityUsd !== null ? `room ~${usd(m.capacityUsd)}  ` : ''}[${m.confidence} confidence]`);
+          for (const r of m.reasons) console.log(`    why:   ${r}`);
+          for (const l of m.leads) console.log(`    lead:  ${l.kind === 'MATCH' ? '≈' : 'NEW'} ${l.text}`);
+          for (const r of m.context) console.log(`    flow:  ${r}`);
+          for (const r of m.risks) console.log(`    risk:  ${r}`);
+          for (const r of m.invalidates) console.log(`    check: ${r}`);
+        }
+        console.log('');
+        for (const n of d.notes) console.log(`note: ${n}`);
+        const nowSecs = Math.floor(Date.now() / 1000);
+        for (const m of d.markets) {
+          const ws = v.wallets[m.cid];
+          if (!ws?.length) continue;
+          console.log(`\nwallets around "${m.label}" (top holders and net buyers; CREATED is when the Polymarket profile was made):`);
+          console.log(['WHO'.padEnd(5), 'SIDE'.padEnd(8), 'POSITION'.padStart(9), 'CREATED'.padEnd(18), 'MKTS'.padStart(6), 'X HANDLE'.padEnd(18), 'NAME'].join(' '));
+          for (const w of args.includes('--wallets') ? ws : ws.slice(0, 12)) console.log([(w.cls === 'LOW_DATA' ? 'NEW?' : w.cls).padEnd(5), (w.side === null ? '?' : (m.outcomes[w.side] ?? '?')).slice(0, 8).padEnd(8), (w.posUsd === null ? '-' : usd(w.posUsd)).padStart(9), accountAge(w.createdAt, nowSecs).label.padEnd(18), String(w.traded ?? '-').padStart(6), (w.xUsername ? `@${w.xUsername}` : '').padEnd(18), `${w.matches.length ? '≈ ' : ''}${w.name ?? w.wallet}`].join(' '));
+        }
+        console.log('\nA decision is a reading of public data, not advice. ARB needs both legs filled; model calls are low confidence; wallet leads are never a trade signal.');
+        return;
+      }
+      case 'people': {
+        const [sub, ...rest] = args;
+        if (sub === 'add') {
+          if (!rest[0]) throw new Error('usage: people add "Full Name" [--org X --role Y --handle xhandle --alias "Other Name" --note "..."]');
+          const opt = (n: string) => { const i = rest.indexOf(`--${n}`); return i >= 0 ? rest[i + 1] : undefined; };
+          const all = (n: string) => rest.flatMap((x, i) => (x === `--${n}` && rest[i + 1] ? [rest[i + 1]] : []));
+          const people = addPerson({ name: rest[0], org: opt('org'), role: opt('role'), handles: all('handle'), aliases: all('alias'), note: opt('note') });
+          console.log(`watchlist now has ${people.length} people (${PEOPLE_PATH})`);
+          return;
+        }
+        if (sub === 'remove') {
+          if (!rest[0]) throw new Error('usage: people remove "Full Name"');
+          console.log(removePerson(rest[0]) ? 'removed' : 'no such person');
+          return;
+        }
+        if (sub === 'check') {
+          // people check <wallet>: how does this wallet's public profile compare with the watchlist
+          if (!rest[0]) throw new Error('usage: people check <wallet>');
+          const id = await identityFor(client, store, rest[0].toLowerCase(), Date.now, 0);
+          if (!id) return void console.log('profile lookup failed');
+          const hits = matchPeople(id, loadPeople());
+          console.log(`${id.name ?? id.pseudonym ?? '(no name)'}${id.xUsername ? `  X @${id.xUsername}` : ''}  profile created ${accountAge(id.createdAt, Date.now() / 1000).label}`);
+          if (id.bio) console.log(`bio: ${id.bio}`);
+          console.log(hits.length ? hits.map((h) => `  ≈ ${h.why} -> ${describePerson(h.person)} (${h.kind} ${h.score}); name match only, unverified`).join('\n') : '  no watchlist matches');
+          return;
+        }
+        const people = loadPeople();
+        console.log(`${people.length} people on ${PEOPLE_PATH}${people.length ? '' : '  (empty: add with  people add "Full Name" --org 1win --role "Head of X" --handle theirhandle)'}`);
+        for (const p of people) console.log(`  ${describePerson(p)}${p.handles?.length ? `  ${p.handles.map((h) => `@${h.replace(/^@/, '')}`).join(' ')}` : ''}${p.aliases?.length ? `  aka ${p.aliases.join(', ')}` : ''}`);
+        console.log(`reference config: ${REFS_PATH} (${loadRefs().length} entries). Matching uses display name, pseudonym, linked X handle and bio only: Polymarket exposes no e-mail.`);
+        return;
+      }
       case 'tui':
       case 'scan': {
         const cols = flag(args, 'cols', 0);
         const rows = flag(args, 'rows', 0);
+        const val = (n: string) => { const i = args.indexOf(`--${n}`); return i >= 0 ? args[i + 1] : undefined; };
         await runTui(store, client, {
           once: cmd === 'scan' || args.includes('--once'),
           news: !args.includes('--no-news'),
           intervalSecs: flag(args, 'interval', 120),
           cols: cols || undefined,
           rows: rows || undefined,
-          tab: (['anomalies', 'games', 'prints', 'holders', 'leads'] as const).find((t) => t === args[args.indexOf('--tab') + 1]),
+          tab: (['anomalies', 'games', 'prints', 'holders', 'leads', 'decision'] as const).find((t) => t === val('tab')),
+          slug: val('slug'),
         });
         return;
       }
@@ -195,7 +262,7 @@ async function main(): Promise<void> {
         return;
       }
       default:
-        console.log('commands: tui [--interval S --no-news] | holders <slug> [--all] | scan [--cols N --rows N --tab games|prints|leads] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
+        console.log('commands: tui [--interval S --no-news] | decide <slug> [--wallets] | people list|add|remove|check <wallet> | holders <slug> [--all] | scan [--cols N --rows N --tab games|prints|leads|decision --slug S] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
     }
   } finally {
     store.close();

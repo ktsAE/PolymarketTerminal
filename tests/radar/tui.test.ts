@@ -55,7 +55,7 @@ describe('ansi helpers', () => {
 describe('rendering', () => {
   it('never overflows its box at any terminal size, on any tab', () => {
     for (const [cols, rows] of [[60, 16], [80, 24], [100, 30], [140, 40], [220, 60]]) {
-      for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads'] as const) {
+      for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision'] as const) {
         const lines = render(model(), { tab, sel: 3, cols, rows }, Date.now());
         expect(lines, `${cols}x${rows} ${tab}`).toHaveLength(rows);
         for (const l of lines) expect(vlen(l), `${cols}x${rows} ${tab}`).toBeLessThanOrEqual(cols);
@@ -78,7 +78,7 @@ describe('rendering', () => {
 
   it('survives empty data and an error state', () => {
     const empty: Model = { ...model(), anomalies: [], games: [], prints: [], leads: [], status: { ...model().status, error: 'HTTP 500', lastPollAt: null, nextPollAt: null } };
-    for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads'] as const) expect(() => render(empty, { tab, sel: 0, cols: 100, rows: 30 }, Date.now())).not.toThrow();
+    for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision'] as const) expect(() => render(empty, { tab, sel: 0, cols: 100, rows: 30 }, Date.now())).not.toThrow();
     expect(strip(render(empty, { tab: 'anomalies', sel: 0, cols: 100, rows: 30 }, Date.now()).join('\n'))).toContain('error');
   });
 
@@ -100,7 +100,8 @@ describe('keyboard reducer', () => {
     expect(moveSelection(v, 'pagedown', m).sel).toBe(9);
     expect(moveSelection({ ...v, sel: 4 }, '2', m)).toMatchObject({ tab: 'games', sel: 0 });
     expect(moveSelection({ ...v, sel: 4 }, '3', m)).toMatchObject({ tab: 'prints', sel: 0 });
-    expect(moveSelection({ ...v, tab: 'leads' }, 'tab', m).tab).toBe('anomalies');
+    expect(moveSelection({ ...v, tab: 'leads' }, 'tab', m).tab).toBe('decision');
+    expect(moveSelection({ ...v, tab: 'decision' }, 'tab', m).tab).toBe('anomalies');
     expect(moveSelection({ ...v, tab: 'anomalies' }, 'tab', m).tab).toBe('games');
   });
   it('handles an empty list', () => {
@@ -178,5 +179,6 @@ describe('games and holders tabs', () => {
     expect(moveSelection({ tab: 'holders', sel: 0, cols: 120, rows: 40 }, 'end', { ...m, showBots: true }).sel).toBe(3);
     expect(moveSelection({ tab: 'anomalies', sel: 0, cols: 120, rows: 40 }, '4', m).tab).toBe('holders');
     expect(moveSelection({ tab: 'anomalies', sel: 0, cols: 120, rows: 40 }, '5', m).tab).toBe('leads');
+    expect(moveSelection({ tab: 'anomalies', sel: 0, cols: 120, rows: 40 }, '6', m).tab).toBe('decision');
   });
 });

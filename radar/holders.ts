@@ -1,3 +1,5 @@
+import { identityFor } from './identity.ts';
+import { matchPeople, type NameMatch, type Person } from './people.ts';
 import { classifyWallet, isPerson, summarizeActivity, type WalletClass } from './profile.ts';
 import type { PolymarketClient } from './polymarket.ts';
 import type { HolderProfile, RadarStore } from './store.ts';
@@ -29,6 +31,11 @@ export interface HolderRow {
   reasons: string[];
   /** Things worth knowing about this position specifically (e.g. shares that were never bought). */
   flags: string[];
+  /** When the wallet's Polymarket profile was created (epoch seconds), and its linked X handle, from the public profile. */
+  createdAt?: number | null;
+  xUsername?: string | null;
+  /** Watchlist names this profile resembles (a lead, never an identification). */
+  matches?: NameMatch[];
 }
 
 export interface HoldersView {
@@ -50,6 +57,8 @@ export interface LoadOptions {
   maxAgeSecs?: number;
   now?: () => number;
   onProgress?: (view: HoldersView) => void;
+  /** Watchlist to compare each holder's profile against. */
+  people?: readonly Person[];
 }
 
 export async function profileWallet(client: PolymarketClient, store: RadarStore, wallet: string, now: () => number, maxAgeSecs: number, name: string | null): Promise<HolderProfile> {
@@ -107,9 +116,10 @@ export async function loadHolders(client: PolymarketClient, store: RadarStore, s
     emit();
     await pool(picked, opts.concurrency ?? 3, async (h) => {
       try {
-        const [profile, positions] = await Promise.all([
+        const [profile, positions, identity] = await Promise.all([
           profileWallet(client, store, h.wallet, now, opts.maxAgeSecs ?? 12 * 3_600, h.name),
           client.positions(h.wallet, market.cid),
+          identityFor(client, store, h.wallet, now),
         ]);
         const pos = positions.find((p) => p.outcomeIndex === h.outcomeIndex);
         view.rows.push({
@@ -117,6 +127,8 @@ export async function loadHolders(client: PolymarketClient, store: RadarStore, s
           avgPrice: pos?.avgPrice ?? null, curPrice: pos?.curPrice ?? null, posUsd: pos?.currentValue ?? null, uPnl: pos?.cashPnl ?? null,
           pnlAll: profile.pnlAll, pnlWeek: profile.pnlWeek, vol: profile.vol, traded: profile.traded, ageDays: profile.ageDays, perDay: profile.perDay,
           cls: profile.cls, confidence: profile.confidence, reasons: profile.reasons, flags: positionFlags(pos?.avgPrice ?? null, pos?.currentValue ?? null),
+          createdAt: identity?.createdAt ?? null, xUsername: identity?.xUsername ?? null,
+          matches: opts.people?.length ? matchPeople({ name: identity?.name ?? profile.name ?? h.name, pseudonym: identity?.pseudonym ?? null, xUsername: identity?.xUsername ?? null, bio: identity?.bio ?? null }, opts.people) : [],
         });
       } catch (error) {
         view.error = error instanceof Error ? error.message : String(error);
