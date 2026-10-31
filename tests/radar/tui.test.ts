@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { charWidth, clip, fit, sparkline, strip, truncate, vlen } from '../../radar/tui/ansi';
 import { moveSelection, render, type Model, type View } from '../../radar/tui/render';
 import type { Anomaly } from '../../radar/detect';
+import { applyFilters } from '../../radar/collect';
 
 const anomaly = (i: number, over: Partial<Anomaly> = {}): Anomaly => ({
   eventId: String(i), slug: `ev-${i}`, title: i % 3 === 0 ? `日本語のイベント ${i} 🚀 with a really long title that must be cut cleanly` : `Event number ${i}`, cat: 'politics', isGame: false,
@@ -16,7 +17,7 @@ const model = (n = 40): Model => ({
   prints: [{ key: 'k', ts: Date.now() / 1000 - 90, wallet: '0x1234567890abcdef1234567890abcdef12345678', cid: '0xc', eventSlug: 'ev', title: 'Some market', outcome: 'Yes', side: 'BUY', price: 0.41, size: 50_000, usd: 20_500, name: null, tag: { kind: 'NEW', ageDays: 2, traded: 1 } }],
   leads: [{ feedId: 'esic', url: 'https://esic.gg/x', title: 'ESIC Issues Interim Suspension to X', summary: 's', publishedAt: Date.now(), firstSeen: 1, relevant: true, category: 'sanction', matched: [], tierHint: 'INVESTIGATING', note: 'n', status: 'new', caseId: null }],
   status: { lastPollAt: Date.now(), nextPollAt: Date.now() + 90_000, busy: false, error: null, events: 300, historySecs: 3_000, printsWindowMin: 360, message: null },
-  oiSeries: [1, 2, 3, 5, 8, 13, 21], filter: null,
+  oiSeries: [1, 2, 3, 5, 8, 13, 21], filter: null, showGames: false,
 });
 
 describe('ansi helpers', () => {
@@ -100,5 +101,21 @@ describe('keyboard reducer', () => {
     const m = { ...model(), anomalies: [] };
     expect(moveSelection(v, 'end', m).sel).toBe(0);
     expect(moveSelection(v, 'down', m).sel).toBe(0);
+  });
+});
+
+describe('anomaly filters', () => {
+  const list = [anomaly(1, { cat: 'politics' }), anomaly(2, { cat: 'sports', isGame: true }), anomaly(3, { cat: 'crypto' }), anomaly(4, { cat: 'esports', isGame: true })];
+  it('hides games by default and can show them', () => {
+    expect(applyFilters(list, { cat: null, showGames: false }).map((a) => a.eventId)).toEqual(['1', '3']);
+    expect(applyFilters(list, { cat: null, showGames: true })).toHaveLength(4);
+  });
+  it('combines category and game filters', () => {
+    expect(applyFilters(list, { cat: 'sports', showGames: false })).toHaveLength(0);
+    expect(applyFilters(list, { cat: 'sports', showGames: true }).map((a) => a.eventId)).toEqual(['2']);
+  });
+  it('says in the header whether games are hidden', () => {
+    const header = strip(render(model(), { tab: 'anomalies', sel: 0, cols: 160, rows: 30 }, Date.now()).join('\n'));
+    expect(header).toContain('games hidden');
   });
 });

@@ -28,6 +28,7 @@ export interface Model {
   oiSeries: readonly number[];
   /** Active category filter (null = all) and the categories available to cycle through. */
   filter: string | null;
+  showGames: boolean;
 }
 
 export interface View {
@@ -103,7 +104,7 @@ export function anomalyRows(m: Model, v: View, height: number): string[] {
       { key: 'ev', head: 'EVENT', w: 30, keep: 10, flex: true },
       { key: 'cat', head: 'CAT', w: 8, keep: 2 },
       { key: 'oi', head: 'OI', w: 7, align: 'right', keep: 7 },
-      { key: 'doi', head: 'ΔOI', w: 14, align: 'right', keep: 6 },
+      { key: 'doi', head: 'ΔOI', w: 17, align: 'right', keep: 6 },
       { key: 'vol', head: 'VOL24H', w: 7, align: 'right', keep: 5 },
       { key: 'acc', head: 'ACCEL', w: 6, align: 'right', keep: 3 },
       { key: 'px', head: 'Δ1H', w: 6, align: 'right', keep: 2 },
@@ -132,7 +133,7 @@ export function anomalyRows(m: Model, v: View, height: number): string[] {
           oi: fit(usd(a.m.oi), w('oi'), 'right'),
           doi: signColor(dv, fit(doi, w('doi'), 'right')),
           vol: fit(usd(a.m.vol24), w('vol'), 'right'),
-          acc: a.m.accel === null ? c.gray(fit('-', w('acc'), 'right')) : a.m.accel >= 3 ? c.yellow(fit(`${a.m.accel.toFixed(1)}x`, w('acc'), 'right')) : fit(`${a.m.accel.toFixed(1)}x`, w('acc'), 'right'),
+          acc: a.m.accel === null || a.isGame ? c.gray(fit('-', w('acc'), 'right')) : a.m.accel >= 3 ? c.yellow(fit(`${a.m.accel.toFixed(1)}x`, w('acc'), 'right')) : fit(`${a.m.accel.toFixed(1)}x`, w('acc'), 'right'),
           px: signColor(a.m.ch1h, fit(a.m.ch1h === null ? '-' : pct(a.m.ch1h), w('px'), 'right')),
           fill: fit(top, w('fill')),
           why: c.cyan(fit(a.reasons.map((r) => WHY[r.code] ?? r.code).join(' '), w('why'))),
@@ -264,7 +265,7 @@ export function render(m: Model, v: View, nowMs: number): string[] {
     cols,
   );
   const tabs = clip(
-    ' ' + TABS.map((t) => (t === v.tab ? c.inverse(` ${TAB_LABEL[t]} `) : c.gray(` ${TAB_LABEL[t]} `))).join(' ') + c.gray(`   ${m.anomalies.filter((a) => a.level === 'HOT').length} hot · ${m.anomalies.filter((a) => a.level === 'WATCH').length} watch`) + (m.filter ? c.yellow(`   filter: ${m.filter}`) : ''),
+    ' ' + TABS.map((t) => (t === v.tab ? c.inverse(` ${TAB_LABEL[t]} `) : c.gray(` ${TAB_LABEL[t]} `))).join(' ') + c.gray(`   ${m.anomalies.filter((a) => a.level === 'HOT').length} hot · ${m.anomalies.filter((a) => a.level === 'WATCH').length} watch`) + (m.filter ? c.yellow(`   filter: ${m.filter}`) : '') + c.gray(m.showGames ? '   games shown' : '   games hidden (g)'),
     cols,
   );
   const detailH = rows >= 30 ? 8 : 0;
@@ -279,7 +280,7 @@ export function render(m: Model, v: View, nowMs: number): string[] {
   }
   while (lines.length < rows - 1) lines.push('');
   const msg = s.message ? `  ${c.yellow(s.message)}` : '';
-  lines.push(clip(c.gray(' ↑↓ move · 1-3 tabs · Tab next · r refresh · f category · o link · q quit') + msg, cols));
+  lines.push(clip(c.gray(' ↑↓ move · 1-3 tabs · Tab next · r refresh · f category · g games · o link · q quit') + msg, cols));
   return lines.slice(0, rows).map((l) => (vlen(l) > cols ? clip(l, cols) : l));
 }
 

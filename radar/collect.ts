@@ -57,6 +57,11 @@ export async function runCycle(client: PolymarketClient, store: RadarStore, opts
   return { events: snaps.length, newPrints, profiled, profileErrors, at: now() };
 }
 
+/** Anomaly list filters: category, and whether live games/sports fixtures are included. */
+export function applyFilters<T extends { cat: string; isGame: boolean }>(list: readonly T[], f: { cat: string | null; showGames: boolean }): T[] {
+  return list.filter((a) => (f.cat === null || a.cat === f.cat) && (f.showGames || !a.isGame));
+}
+
 /** Recomputes everything the screen shows from stored data. Cheap: no network. */
 export function buildModel(store: RadarStore, nowMs: number): Pick<Model, 'anomalies' | 'prints' | 'leads'> & { historySecs: number; events: number } {
   const nowSecs = Math.floor(nowMs / 1000);

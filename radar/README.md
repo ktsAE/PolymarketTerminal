@@ -9,7 +9,7 @@ npm run scan                # one poll, print one frame, exit (good for logs and
 npm run test:tui            # drives the real TUI through a pseudo-terminal against live data (needs network)
 ```
 
-Keys: `↑↓ / j k` move · `PgUp PgDn g G` jump · `1 2 3` or `Tab` switch tabs · `f` cycle category filter · `o` show the selected link · `r` refresh now · `q` quit.
+Keys: `↑↓ / j k` move · `PgUp PgDn g G` jump · `1 2 3` or `Tab` switch tabs · `f` cycle category filter · `g` show/hide live games · `o` show the selected link · `r` refresh now · `q` quit.
 
 Tabs: **Anomalies** (ranked events with reasons and an OI sparkline), **Big prints** (large fills with the wallet's history: NEW / THIN / WHALE),
 **Integrity leads** (ESIC and news inbox, see below).
@@ -24,7 +24,7 @@ What it flags (all explained on screen; none claims intent):
 | CHURN / THIN | volume several times open interest / liquidity thin against volume |
 | FILLS / NEW$ / CLUSTER | many large fills in the last hour / money from new or thin wallets / 3+ such wallets on one outcome |
 
-Live games and markets expiring within 36 hours have their price and volume rules switched off (their swings are normal); OI and fill signals stay on.
+Live games and markets expiring within 36 hours have their price and volume rules switched off (their swings are normal). Games are also hidden from the list by default (`g` shows them): in a 9-minute live check every OI jump in the top results was a sports game, where OI rises around kickoff.
 
 Surveillance toolkit for suspected match-fixing ("322") and insider flow on Polymarket.
 It keeps **proven** and **alleged** cases apart, stores everything locally, and explains every flag.

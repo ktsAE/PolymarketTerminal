@@ -109,3 +109,7 @@ Polymarket exposes no OI history, so OI deltas come from our own snapshots (SQLi
 Noise finding [measured]: the first version flagged 68 events, mostly live games and same-day markets whose price/volume swings are structural.
 Switching those rules off for games (any market with a sports market type or game start time; 130 of the top 300 events) and for markets
 expiring within 36h cut it to 6 watch-level events, leaving geopolitics/politics/economy markets at 7-46x normal volume.
+
+Live OI check [measured, Oct 31 2026 13:54 -> 14:04 UTC]: with 9 minutes of own snapshots the 15-minute OI rule fired on real data. Every
+top OI hit was a sports game (open interest rises around kickoff); no non-game market had an unusual OI move in that window. Games are now
+hidden from the default list.

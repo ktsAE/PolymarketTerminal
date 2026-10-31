@@ -1,4 +1,4 @@
-import { buildModel, runCycle } from '../collect.ts';
+import { applyFilters, buildModel, runCycle } from '../collect.ts';
 import type { PolymarketClient } from '../polymarket.ts';
 import { httpFetchText, pollFeeds } from '../poll.ts';
 import type { RadarStore } from '../store.ts';
@@ -14,11 +14,12 @@ export interface TuiOptions {
   rows?: number;
 }
 
-function snapshotModel(store: RadarStore, prev: Model | null, nowMs: number, status: Model['status'], filter: string | null): Model {
+function snapshotModel(store: RadarStore, prev: Model | null, nowMs: number, status: Model['status'], filter: string | null, showGames: boolean): Model {
   const b = buildModel(store, nowMs);
   return {
     filter,
-    anomalies: filter ? b.anomalies.filter((a) => a.cat === filter) : b.anomalies, prints: b.prints, leads: b.leads,
+    showGames,
+    anomalies: applyFilters(b.anomalies, { cat: filter, showGames }), prints: b.prints, leads: b.leads,
     status: { ...status, events: b.events, historySecs: b.historySecs, printsWindowMin: b.prints.length ? 360 : null },
     oiSeries: prev?.oiSeries ?? [],
   };
@@ -35,7 +36,8 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
   let status: Model['status'] = { lastPollAt: null, nextPollAt: null, busy: false, error: null, events: 0, historySecs: 0, printsWindowMin: null, message: null };
   let view: View = { tab: 'anomalies', sel: 0, cols: opts.cols ?? out.columns ?? 120, rows: opts.rows ?? out.rows ?? 40 };
   let filter: string | null = null;
-  let model = snapshotModel(store, null, Date.now(), status, filter);
+  let showGames = false;
+  let model = snapshotModel(store, null, Date.now(), status, filter, showGames);
 
   /** Update status and the already-built model together, so the next paint shows it. */
   const setStatus = (patch: Partial<Model['status']>) => {
@@ -45,7 +47,7 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
 
   const refresh = () => {
     const selectedId = view.tab === 'anomalies' ? model.anomalies[view.sel]?.eventId : undefined;
-    model = snapshotModel(store, model, Date.now(), status, filter);
+    model = snapshotModel(store, model, Date.now(), status, filter, showGames);
     if (selectedId) {
       const i = model.anomalies.findIndex((a) => a.eventId === selectedId);
       if (i >= 0) view = { ...view, sel: i };
@@ -138,8 +140,14 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
         paint();
         return;
       }
+      if (d === 'g') {
+        showGames = !showGames;
+        view = { ...view, sel: 0 };
+        refresh();
+        return paint();
+      }
       if (d === 'f') {
-        const cats = ['', ...[...new Set(buildModel(store, Date.now()).anomalies.map((a) => a.cat).filter(Boolean))].sort()];
+        const cats = ['', ...[...new Set(applyFilters(buildModel(store, Date.now()).anomalies, { cat: null, showGames }).map((a) => a.cat).filter(Boolean))].sort()];
         filter = cats[(cats.indexOf(filter ?? '') + 1) % cats.length] || null;
         view = { ...view, sel: 0 };
         refresh();
