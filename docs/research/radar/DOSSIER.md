@@ -127,3 +127,8 @@ volume at an $8 median fill and 6-second gaps (bursty bot). Classifier rules wer
 markets (48 wallets) and inspected by eye; no labelled ground truth exists, so accuracy is unmeasured. One held-out finding changed the rules:
 1,000+ lifetime markets alone is no longer a BOT verdict (a patient human can reach it over years); breadth is judged against account age.
 Also found: a wallet holding $111k of shares with average price 0.00, i.e. never bought (transfer or split), now flagged.
+
+## 10. Top-holder edge study (Oct 31 2026)
+
+See HOLDERS_STUDY.md. Headline: no measurable edge from following top human holders (esports games, n~150-180, intervals about +/-7pp); one fragile
+lead (fading wallets with prior losses). Forward logging is the proper test.
