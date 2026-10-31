@@ -40,3 +40,31 @@ Top-10 and top-50 give the same picture. Baseline in the sample: always backing 
 ## What would settle it
 A forward test: record the holders, their PnL (Polymarket's figure AT that moment, no lookahead) and the price about 2 hours before each game, then
 score the signal after resolution. Needs a few hundred games; Polymarket lists well over 100 a day, so about a week of logging.
+
+---
+# Part 2: wallet form (streaks, win rate, profit factor, Worlds form) and a subgroup scan (Oct 31 2026)
+
+Reproduce: `python3 scripts/wallet-form-study.py fetch` then `report`. Data: 457 wallets that were top-20 holders in 36 finished Worlds LoL matches,
+256 left after removing machines (>15 closed positions/day or tiny stakes), 69.5k positions, 51.5k bets with >=20 earlier game bets.
+
+## Result: no usable edge
+- Within-wallet, price-adjusted, next-bet ROI. Hot (3 wins) vs cold (3 losses): -12.6pp [-19, -6]. Win rate(20) >=60% vs <=40%: -7.9pp [-13, -3].
+  Profit factor(20) >=1.5 vs <=0.8: -3.3pp [-7, +1]. 5-streaks: -13pp, wide. Direction is "form does not persist, if anything it reverses".
+- Skill persistence (older half to newer half, 191 wallets): Spearman +0.06. Top fifth by old ROI earned -8.4% later vs -9.3% for the bottom fifth.
+- Worlds-specific form (profit factor / ROI so far at Worlds): too few wallets with enough Worlds history (8-16); inconclusive, mostly negative.
+- Subgroup scan (24 groups: game, entry price, stake size, streak states, Worlds): 0 groups with a 95% CI above zero. Baseline ROI -4.4% (fees/spread).
+- Favourite bias in 392 games: +0.1pp [-4.5, +4.4] at 10 min before kickoff, +2.5pp [-2.4, +7.4] at 2 h. Nothing.
+- Reading: the streak reversal is the usual "money follows hot hands, price already adjusts". It is not tradeable without a sign-stable test.
+
+## Data traps (cost me three wrong answers; encoded in the script)
+1. `/closed-positions` shows only sold/redeemed positions, so it is biased to winners: 76% win rate, +47% ROI. Impossible.
+2. `/positions` holds the resolved-but-unredeemed ones (mostly losers) but reaches back further than the 250 newest closed rows. Merging both and
+   cutting before the oldest closed row gives win rate 48.9% = entry price 48.9%, ROI -4.8%. That is the sanity check to pass before any test.
+3. The H1 streak result flips from -12.6pp at a 12h gap to +60..70pp at 24h+. The two sources date positions differently (exact close time vs
+   market end date at noon), so the gap changes which losers count as "prior". Treat the +60pp as an artifact: it would be a free lunch, so it is a bug.
+   The sign-flip is itself the evidence that streak results from this data cannot be trusted either way.
+
+## Where an edge could still be (untested)
+- Lead/lag: price reaction after big prints by wallets with a *prior* (pre-game) record, measured on live data with timestamps (needs forward logging).
+- Cross-venue gaps (Polymarket vs sportsbook/Pinnacle closing line) for esports: the only place with an external truth to compare against.
+- Structural, not wallet-based: mispricing in correlated markets (match winner vs map handicaps/totals within the same event), checked for arbitrage.
