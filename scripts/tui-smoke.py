@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Drives the real radar TUI through a pseudo-terminal against live Polymarket data.
+
+Checks what unit tests cannot: raw mode, the alternate screen, keystrokes, background polling, a clean quit.
+Usage: python3 scripts/tui-smoke.py        (needs network; ~40s)
+Exit code 0 = every check passed.
+"""
+import os, pty, re, select, signal, struct, sys, time, fcntl, termios
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+COLS, ROWS = 150, 40
+DB = os.path.join(os.environ.get("TMPDIR", "/tmp"), "radar-tui-smoke.db")
+for suffix in ("", "-wal", "-shm"):
+    try: os.remove(DB + suffix)
+    except FileNotFoundError: pass
+
+pid, fd = pty.fork()
+if pid == 0:
+    os.chdir(ROOT)
+    os.execvpe("node", ["node", "--no-warnings", "radar/cli.ts", "tui", "--no-news"], dict(os.environ, RADAR_DB=DB, TERM="xterm-256color"))
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+os.kill(pid, signal.SIGWINCH)
+stream = b""
+
+def pump(sec):
+    global stream
+    end = time.time() + sec
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.2)
+        if r:
+            try: stream += os.read(fd, 65536)
+            except OSError: return
+
+def alive():
+    try: return os.waitpid(pid, os.WNOHANG) == (0, 0)
+    except ChildProcessError: return False
+
+def screen():
+    scr, row = [""] * ROWS, None
+    for m in re.finditer(r"\x1b\[(\d+);1H|(\x1b\[[0-9;?]*[A-Za-z])|([^\x1b]+)", stream.decode("utf8", "ignore")):
+        if m.group(1): row = int(m.group(1)) - 1; scr[row] = ""
+        elif row is not None and 0 <= row < ROWS:
+            if m.group(3): scr[row] += m.group(3)
+            elif m.group(2) in ("\x1b[7m", "\x1b[27m"): scr[row] += m.group(2)
+    return scr
+
+plain = lambda s: re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", s)
+selected = lambda: [i for i, l in enumerate(screen()) if "\x1b[7m" in l and i > 2]
+failures = []
+def check(name, ok):
+    print(("PASS " if ok else "FAIL ") + name)
+    if not ok: failures.append(name)
+
+t0 = time.time()
+while time.time() - t0 < 60:
+    pump(1)
+    if re.search(r"\b(WATCH|HOT)\b", plain("\n".join(screen()))): break
+check("rows appear within 30s of launch", time.time() - t0 < 30)
+first = selected()
+check("a row is selected initially", len(first) == 1)
+os.write(fd, b"j"); pump(0.8)
+check("j moves the selection down", selected() == [first[0] + 1] if first else False)
+os.write(fd, b"\x1b[A"); pump(0.8)
+check("up arrow moves it back", selected() == first)
+os.write(fd, b"2"); pump(1.0)
+check("tab 2 shows big prints", "MARKET" in plain(screen()[2]) and "ADDRESS" in plain(screen()[2]))
+os.write(fd, b"3"); pump(1.0)
+check("tab 3 shows the leads table", "HEADLINE" in plain(screen()[2]))
+os.write(fd, b"1"); pump(0.8); os.write(fd, b"o"); pump(0.8)
+check("o shows the selected event link in the footer", "polymarket.com/event/" in plain(screen()[ROWS - 1]))
+pump(6)
+check("still alive after background activity", alive())
+os.write(fd, b"q"); pump(2)
+try: done = os.waitpid(pid, os.WNOHANG)
+except ChildProcessError: done = (pid, 0)
+check("q exits with code 0", done[0] != 0 and (done[1] >> 8) == 0)
+check("terminal restored (main screen, cursor visible)", b"\x1b[?1049l" in stream and b"\x1b[?25h" in stream)
+sys.exit(1 if failures else 0)

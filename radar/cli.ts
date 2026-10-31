@@ -6,6 +6,7 @@ import { SEED_CASES } from './cases.seed.ts';
 import { TIER_TEXT, tierAsOf } from './evidence.ts';
 import { flowSummary, INFORMATIVE_BAND, peakPositions } from './features.ts';
 import { ingestEvent } from './ingest.ts';
+import { runTui } from './tui/app.ts';
 import { FEEDS } from './news.ts';
 import { httpFetchText, pollFeeds } from './poll.ts';
 import { PolymarketClient, httpFetchJson } from './polymarket.ts';
@@ -121,6 +122,19 @@ async function main(): Promise<void> {
         for (const e of await client.searchEvents(args.join(' '))) console.log(`${e.slug}  ${usd(e.volume)}  ${e.title}`);
         return;
       }
+      case 'tui':
+      case 'scan': {
+        const cols = flag(args, 'cols', 0);
+        const rows = flag(args, 'rows', 0);
+        await runTui(store, client, {
+          once: cmd === 'scan' || args.includes('--once'),
+          news: !args.includes('--no-news'),
+          intervalSecs: flag(args, 'interval', 120),
+          cols: cols || undefined,
+          rows: rows || undefined,
+        });
+        return;
+      }
       case 'news': {
         const [sub, ...rest] = args;
         if (sub === 'poll') {
@@ -166,7 +180,7 @@ async function main(): Promise<void> {
         return;
       }
       default:
-        console.log('commands: seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
+        console.log('commands: tui [--interval S --no-news] | scan [--cols N --rows N] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
     }
   } finally {
     store.close();

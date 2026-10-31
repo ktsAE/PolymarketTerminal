@@ -98,3 +98,14 @@ figures (EPL 35 LiXO vs Nemiga), first-hand player allegation without artifacts 
 
 Limits: profit-rate z is inflated for scalpers; the 0.03-0.97 band and all thresholds are untuned; X posts and the ICT Academy item were not
 retrieved (no X access configured; ICT Academy not identified).
+
+## 8. Pivot: a market-wide scanner TUI (Oct 31 2026)
+
+The product is a Bloomberg-style terminal scanner, not an esports-only tool. Esports integrity stays as the "Integrity leads" tab.
+Data sources checked live: Gamma `events?order=volume24hr` gives event-level openInterest, volume24hr/1wk, liquidity and market price moves
+for the 300 busiest events in 3 calls; Data API `/trades?filterType=CASH&filterAmount=2000` gives ~1000 large fills (~2h) per call.
+Polymarket exposes no OI history, so OI deltas come from our own snapshots (SQLite).
+
+Noise finding [measured]: the first version flagged 68 events, mostly live games and same-day markets whose price/volume swings are structural.
+Switching those rules off for games (any market with a sports market type or game start time; 130 of the top 300 events) and for markets
+expiring within 36h cut it to 6 watch-level events, leaving geopolitics/politics/economy markets at 7-46x normal volume.

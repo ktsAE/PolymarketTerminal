@@ -1,4 +1,5 @@
-import type { MarketRow, TradeRow, WalletRow } from './store.ts';
+import { createHash } from 'node:crypto';
+import type { MarketRow, PrintRow, SnapRow, TradeRow, WalletRow } from './store.ts';
 import { clusteredZ, type Unit } from './features.ts';
 
 export type FetchJson = (url: string) => Promise<unknown>;
@@ -59,6 +60,50 @@ export function mapEvent(raw: Record<string, any>): GammaEvent {
     };
   });
   return { slug: String(raw.slug), title, volume: num(raw.volume), closed: Boolean(raw.closed), markets };
+}
+
+const toSecs = (v: unknown): number | null => {
+  const ms = typeof v === 'string' ? Date.parse(v) : NaN;
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+};
+const optNum = (v: unknown): number | null => {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+const CATEGORIES = ['esports', 'sports', 'politics', 'geopolitics', 'crypto', 'finance', 'economy', 'culture', 'tech', 'science', 'weather'];
+function categoryOf(raw: Record<string, any>): string {
+  const slugs = new Set(((raw.tags as Array<Record<string, any>>) ?? []).map((t) => String(t.slug ?? '').toLowerCase()));
+  return CATEGORIES.find((c) => slugs.has(c)) ?? '';
+}
+
+/** One row per event for the scanner: event-level OI/volume/liquidity plus price and moves of its busiest market. */
+export function mapSnapshot(raw: Record<string, any>, ts: number): SnapRow | null {
+  if (!raw.id || !raw.slug) return null;
+  const markets: Array<Record<string, any>> = raw.markets ?? [];
+  const top = [...markets].sort((a, b) => num(b.volume24hr) - num(a.volume24hr))[0];
+  const prices = top ? parseJson<unknown[]>(top.outcomePrices, []).map((p) => optNum(p)) : [];
+  return {
+    eventId: String(raw.id), ts, slug: String(raw.slug), title: String(raw.title ?? ''),
+    oi: num(raw.openInterest), vol24: num(raw.volume24hr), vol1w: num(raw.volume1wk), liq: num(raw.liquidity),
+    price: top ? (optNum(top.lastTradePrice) || prices[0] || null) : null,
+    ch1h: top ? optNum(top.oneHourPriceChange) : null, ch1d: top ? optNum(top.oneDayPriceChange) : null,
+    created: toSecs(raw.createdAt) ?? toSecs(raw.startDate), endDate: toSecs(raw.endDate),
+    isGame: markets.some((m) => Boolean(m.sportsMarketType || m.gameStartTime)),
+    cat: categoryOf(raw),
+  };
+}
+
+export function mapPrint(raw: Record<string, any>): PrintRow | null {
+  const t = mapTrade(raw);
+  if (!t) return null;
+  const key = createHash('sha1').update([raw.transactionHash ?? '', t.cid, t.wallet, t.side, t.size, t.price, t.ts].join('|')).digest('hex');
+  return {
+    key, ts: t.ts, wallet: t.wallet, cid: t.cid, eventSlug: String(raw.eventSlug ?? raw.slug ?? ''), title: String(raw.title ?? ''),
+    outcome: raw.outcome ? String(raw.outcome) : null, side: t.side, price: t.price, size: t.size, usd: t.size * t.price,
+    name: raw.name ? String(raw.name) : raw.pseudonym ? String(raw.pseudonym) : null,
+  };
 }
 
 export function mapTrade(raw: Record<string, any>): TradeRow | null {
@@ -130,6 +175,28 @@ export class PolymarketClient {
       `${GAMMA}/events?tag_slug=esports&closed=${opts.closed}&limit=${opts.limit ?? 100}&offset=${opts.offset ?? 0}&order=startDate&ascending=false`,
     )) as Record<string, any>[];
     return Array.isArray(rows) ? rows.map(mapEvent) : [];
+  }
+
+  /** The busiest active events, ranked by 24h volume. */
+  async topEvents(opts: { offset?: number; limit?: number; ts: number }): Promise<SnapRow[]> {
+    const rows = (await this.get(`${GAMMA}/events?active=true&closed=false&limit=${opts.limit ?? 100}&offset=${opts.offset ?? 0}&order=volume24hr&ascending=false`)) as Record<string, any>[];
+    return Array.isArray(rows) ? rows.map((r) => mapSnapshot(r, opts.ts)).filter((x): x is SnapRow => x !== null) : [];
+  }
+
+  /** The platform-wide feed of fills at least `minUsd`, newest first. */
+  async bigPrints(opts: { minUsd: number; limit?: number }): Promise<PrintRow[]> {
+    const rows = (await this.get(`${DATA}/trades?limit=${opts.limit ?? 500}&filterType=CASH&filterAmount=${opts.minUsd}&takerOnly=false`)) as Record<string, any>[];
+    return Array.isArray(rows) ? rows.map(mapPrint).filter((x): x is PrintRow => x !== null) : [];
+  }
+
+  /** Cheap wallet profile (two calls): first activity and markets traded. */
+  async walletLite(wallet: string): Promise<{ firstSeen: number | null; traded: number | null }> {
+    const first = (await this.get(`${DATA}/activity?user=${wallet}&limit=1&sortDirection=ASC`)) as Record<string, any>[];
+    const traded = (await this.get(`${DATA}/traded?user=${wallet}`)) as Record<string, any>;
+    return {
+      firstSeen: Array.isArray(first) && first[0] ? num(first[0].timestamp, NaN) || null : null,
+      traded: traded && typeof traded.traded === 'number' ? traded.traded : null,
+    };
   }
 
   async searchEvents(query: string): Promise<Array<{ slug: string; title: string; volume: number }>> {

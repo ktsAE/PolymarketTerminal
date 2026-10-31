@@ -26,7 +26,10 @@
     "test:main": "node --test tests/main-feed.test.cjs",
     "dev:debug": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron . --dev --remote-debugging-port=9222\"",
     "start:debug": "npm run build && electron . --remote-debugging-port=9222",
-    "radar": "node --no-warnings radar/cli.ts"
+    "radar": "node --no-warnings radar/cli.ts",
+    "tui": "node --no-warnings radar/cli.ts tui",
+    "scan": "node --no-warnings radar/cli.ts scan",
+    "test:tui": "python3 scripts/tui-smoke.py"
   },
   "dependencies": {
     "@polymarket/client": "^0.14.0",

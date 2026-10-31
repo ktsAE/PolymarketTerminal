@@ -1,5 +1,31 @@
 # Radar
 
+A terminal scanner for unusual activity across Polymarket: open-interest jumps, volume spikes, fast price moves, and large fills
+from new or thin wallets. Zero dependencies, runs in any terminal, uses little CPU and RAM.
+
+```
+npm run tui                 # the live scanner (polls every 2 minutes; --interval S, --no-news)
+npm run scan                # one poll, print one frame, exit (good for logs and screenshots)
+npm run test:tui            # drives the real TUI through a pseudo-terminal against live data (needs network)
+```
+
+Keys: `↑↓ / j k` move · `PgUp PgDn g G` jump · `1 2 3` or `Tab` switch tabs · `f` cycle category filter · `o` show the selected link · `r` refresh now · `q` quit.
+
+Tabs: **Anomalies** (ranked events with reasons and an OI sparkline), **Big prints** (large fills with the wallet's history: NEW / THIN / WHALE),
+**Integrity leads** (ESIC and news inbox, see below).
+
+What it flags (all explained on screen; none claims intent):
+
+| Signal | Meaning |
+| --- | --- |
+| OI++ / OI+ / OI- | open interest up >=15% / >=5% (or >=3% over 15 min) / down >=15%, with a dollar floor. Needs history: Polymarket exposes none, so the app builds it from its own snapshots (15-minute signals after ~8 min of running, hourly after ~30 min) |
+| VOL++ / VOL+ | 24h volume 6x / 3x the average of the previous six days |
+| PX1H / PX1D | price moved >=10% in an hour or >=25% in a day, with real volume |
+| CHURN / THIN | volume several times open interest / liquidity thin against volume |
+| FILLS / NEW$ / CLUSTER | many large fills in the last hour / money from new or thin wallets / 3+ such wallets on one outcome |
+
+Live games and markets expiring within 36 hours have their price and volume rules switched off (their swings are normal); OI and fill signals stay on.
+
 Surveillance toolkit for suspected match-fixing ("322") and insider flow on Polymarket.
 It keeps **proven** and **alleged** cases apart, stores everything locally, and explains every flag.
 

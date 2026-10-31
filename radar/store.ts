@@ -60,6 +60,39 @@ export interface NewsRow extends NewsItem {
   caseId: string | null;
 }
 
+export interface SnapRow {
+  eventId: string;
+  ts: number; // epoch seconds
+  slug: string;
+  title: string;
+  oi: number;
+  vol24: number;
+  vol1w: number;
+  liq: number;
+  price: number | null;
+  ch1h: number | null;
+  ch1d: number | null;
+  created: number | null; // epoch seconds
+  endDate: number | null; // epoch seconds
+  isGame: boolean;
+  cat: string;
+}
+
+export interface PrintRow {
+  key: string;
+  ts: number;
+  wallet: string;
+  cid: string;
+  eventSlug: string;
+  title: string;
+  outcome: string | null;
+  side: 'BUY' | 'SELL';
+  price: number;
+  size: number;
+  usd: number;
+  name: string | null;
+}
+
 export interface SignalRow {
   cid: string;
   version: string;
@@ -94,6 +127,16 @@ CREATE TABLE IF NOT EXISTS signals(
   id INTEGER PRIMARY KEY AUTOINCREMENT, cid TEXT NOT NULL, version TEXT NOT NULL, computed_at INTEGER NOT NULL,
   score REAL NOT NULL, level TEXT NOT NULL, reasons TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS signals_cid ON signals(cid, computed_at);
+CREATE TABLE IF NOT EXISTS snapshots(
+  event_id TEXT NOT NULL, ts INTEGER NOT NULL, slug TEXT NOT NULL, title TEXT NOT NULL, oi REAL NOT NULL, vol24 REAL NOT NULL,
+  vol1w REAL NOT NULL, liq REAL NOT NULL, price REAL, ch1h REAL, ch1d REAL, created INTEGER, end_date INTEGER,
+  is_game INTEGER NOT NULL DEFAULT 0, cat TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY(event_id, ts));
+CREATE TABLE IF NOT EXISTS prints(
+  key TEXT PRIMARY KEY, ts INTEGER NOT NULL, wallet TEXT NOT NULL, cid TEXT NOT NULL, event_slug TEXT NOT NULL, title TEXT NOT NULL,
+  outcome TEXT, side TEXT NOT NULL, price REAL NOT NULL, size REAL NOT NULL, usd REAL NOT NULL, name TEXT);
+CREATE INDEX IF NOT EXISTS prints_ts ON prints(ts);
+CREATE INDEX IF NOT EXISTS prints_slug ON prints(event_slug, ts);
 CREATE TABLE IF NOT EXISTS news_items(
   url TEXT PRIMARY KEY, feed_id TEXT NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL, published_at INTEGER, first_seen INTEGER NOT NULL,
   relevant INTEGER NOT NULL, category TEXT NOT NULL, matched TEXT NOT NULL, tier_hint TEXT, note TEXT NOT NULL,
@@ -298,6 +341,77 @@ export class RadarStore {
     return Number(this.db.prepare('UPDATE news_items SET status=?, case_id=? WHERE url=?').run(status, caseId, url).changes) > 0;
   }
 
+  insertSnapshots(rows: readonly SnapRow[]): number {
+    const stmt = this.db.prepare('INSERT OR IGNORE INTO snapshots(event_id,ts,slug,title,oi,vol24,vol1w,liq,price,ch1h,ch1d,created,end_date,is_game,cat) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+    return this.tx(() => {
+      let n = 0;
+      for (const r of rows) n += Number(stmt.run(r.eventId, r.ts, r.slug, r.title, r.oi, r.vol24, r.vol1w, r.liq, r.price, r.ch1h, r.ch1d, r.created, r.endDate, r.isGame ? 1 : 0, r.cat).changes);
+      return n;
+    });
+  }
+
+  private snapFrom(x: Record<string, unknown>): SnapRow {
+    return {
+      eventId: x.event_id as string, ts: x.ts as number, slug: x.slug as string, title: x.title as string, oi: x.oi as number, vol24: x.vol24 as number,
+      vol1w: x.vol1w as number, liq: x.liq as number, price: (x.price as number | null) ?? null, ch1h: (x.ch1h as number | null) ?? null,
+      ch1d: (x.ch1d as number | null) ?? null, created: (x.created as number | null) ?? null, endDate: (x.end_date as number | null) ?? null,
+      isGame: x.is_game === 1, cat: (x.cat as string | null) ?? '',
+    };
+  }
+
+  /** Nearest snapshot at or before `ts`; if none exists, the earliest one we have. */
+  snapshotNear(eventId: string, ts: number): SnapRow | undefined {
+    const before = this.db.prepare('SELECT * FROM snapshots WHERE event_id=? AND ts<=? ORDER BY ts DESC LIMIT 1').get(eventId, ts);
+    if (before) return this.snapFrom(plain(before));
+    const first = this.db.prepare('SELECT * FROM snapshots WHERE event_id=? ORDER BY ts ASC LIMIT 1').get(eventId);
+    return first ? this.snapFrom(plain(first)) : undefined;
+  }
+
+  snapshotSeries(eventId: string, since: number): SnapRow[] {
+    return this.db.prepare('SELECT * FROM snapshots WHERE event_id=? AND ts>=? ORDER BY ts').all(eventId, since).map((r) => this.snapFrom(plain(r)));
+  }
+
+  latestSnapshots(): SnapRow[] {
+    return this.db
+      .prepare('SELECT s.* FROM snapshots s JOIN (SELECT event_id, MAX(ts) m FROM snapshots GROUP BY event_id) l ON s.event_id=l.event_id AND s.ts=l.m ORDER BY s.vol24 DESC')
+      .all()
+      .map((r) => this.snapFrom(plain(r)));
+  }
+
+  /** Seconds covered by stored snapshots (null when empty). */
+  snapshotSpan(): { first: number; last: number } | null {
+    const r = plain<{ a: number | null; b: number | null }>(this.db.prepare('SELECT MIN(ts) a, MAX(ts) b FROM snapshots').get());
+    return r.a === null || r.b === null ? null : { first: r.a, last: r.b };
+  }
+
+  pruneOld(snapshotsBefore: number, printsBefore: number): void {
+    this.db.prepare('DELETE FROM snapshots WHERE ts<?').run(snapshotsBefore);
+    this.db.prepare('DELETE FROM prints WHERE ts<?').run(printsBefore);
+  }
+
+  insertPrints(rows: readonly PrintRow[]): number {
+    const stmt = this.db.prepare('INSERT OR IGNORE INTO prints(key,ts,wallet,cid,event_slug,title,outcome,side,price,size,usd,name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)');
+    return this.tx(() => {
+      let n = 0;
+      for (const r of rows) n += Number(stmt.run(r.key, r.ts, r.wallet, r.cid, r.eventSlug, r.title, r.outcome, r.side, r.price, r.size, r.usd, r.name).changes);
+      return n;
+    });
+  }
+
+  printsSince(ts: number, limit = 500): PrintRow[] {
+    return this.db
+      .prepare('SELECT * FROM prints WHERE ts>=? ORDER BY ts DESC LIMIT ?')
+      .all(ts, limit)
+      .map((r) => {
+        const x = plain<Record<string, unknown>>(r);
+        return {
+          key: x.key as string, ts: x.ts as number, wallet: x.wallet as string, cid: x.cid as string, eventSlug: x.event_slug as string,
+          title: x.title as string, outcome: (x.outcome as string | null) ?? null, side: x.side as 'BUY' | 'SELL', price: x.price as number,
+          size: x.size as number, usd: x.usd as number, name: (x.name as string | null) ?? null,
+        };
+      });
+  }
+
   saveSignal(s: SignalRow): void {
     this.db
       .prepare('INSERT INTO signals(cid,version,computed_at,score,level,reasons) VALUES(?,?,?,?,?,?)')
@@ -319,5 +433,9 @@ export function openStore(path = ':memory:'): RadarStore {
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  // additive migrations for databases created by earlier versions
+  const cols = db.prepare('PRAGMA table_info(snapshots)').all().map((r) => (r as { name: string }).name);
+  if (!cols.includes('is_game')) db.exec('ALTER TABLE snapshots ADD COLUMN is_game INTEGER NOT NULL DEFAULT 0');
+  if (!cols.includes('cat')) db.exec("ALTER TABLE snapshots ADD COLUMN cat TEXT NOT NULL DEFAULT ''");
   return new RadarStore(db);
 }
