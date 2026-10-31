@@ -51,7 +51,7 @@ describe('evidence ladder', () => {
   });
 
   it('never seeds an alleged-only case as proven', () => {
-    const proven = new Set(['nomercy-roman-imperium-vii', 'atox-falcons-epl20', 'playtime-liquid-ewc2026']);
+    const proven = new Set(['nomercy-roman-imperium-vii', 'atox-falcons-epl20', 'playtime-liquid-ewc2026', 'nifee-epl22-prop-markets']);
     for (const c of SEED_CASES) {
       const last = [...c.events].sort((a, b) => a.at - b.at).at(-1)!;
       if (!proven.has(c.row.id)) expect(last.tier, c.row.id).not.toBe('SANCTIONED');

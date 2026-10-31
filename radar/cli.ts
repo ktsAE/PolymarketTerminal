@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // Run with: node radar/cli.ts <command>   (Node >= 22.18 strips types natively)
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { SEED_CASES } from './cases.seed.ts';
 import { TIER_TEXT, tierAsOf } from './evidence.ts';
 import { flowSummary, INFORMATIVE_BAND, peakPositions } from './features.ts';
 import { ingestEvent } from './ingest.ts';
+import { FEEDS } from './news.ts';
+import { httpFetchText, pollFeeds } from './poll.ts';
 import { PolymarketClient, httpFetchJson } from './polymarket.ts';
 import { scoreMarket, short, SCORE_VERSION, type WalletProfile } from './score.ts';
 import { openStore, type RadarStore } from './store.ts';
@@ -119,6 +121,34 @@ async function main(): Promise<void> {
         for (const e of await client.searchEvents(args.join(' '))) console.log(`${e.slug}  ${usd(e.volume)}  ${e.title}`);
         return;
       }
+      case 'news': {
+        const [sub, ...rest] = args;
+        if (sub === 'poll') {
+          for (const r of await pollFeeds(httpFetchText, store)) console.log(`${r.error ? 'FAIL' : 'ok  '} ${r.feed.padEnd(18)} fetched ${String(r.fetched).padStart(3)}, new ${String(r.added).padStart(3)}, relevant new ${r.relevantNew}${r.error ? `  (${r.error})` : ''}`);
+          console.log(`feeds: ${FEEDS.map((f) => f.id).join(', ')}`);
+          return;
+        }
+        if (sub === 'dismiss') {
+          if (!rest[0]) throw new Error('usage: news dismiss <url>');
+          console.log(store.setNewsStatus(rest[0], 'dismissed') ? 'dismissed' : 'no such item');
+          return;
+        }
+        for (const n of store.listNews({ relevantOnly: !rest.includes('--all'), limit: flag(rest, 'limit', 25) })) {
+          console.log(`\n[${n.category}] ${n.title}`);
+          console.log(`  ${n.feedId} | ${n.publishedAt ? new Date(n.publishedAt).toISOString().slice(0, 16) : 'undated'} | matched: ${n.matched.join(', ') || '-'}${n.tierHint ? ` | hint: ${n.tierHint}` : ''}`);
+          console.log(`  ${n.url}`);
+          if (n.note) console.log(`  -> ${n.note}`);
+        }
+        return;
+      }
+      case 'case-add': {
+        if (!args[0]) throw new Error('usage: case-add <file.json>   (file: { row, events[] }, see radar/cases.seed.ts)');
+        const c = JSON.parse(readFileSync(args[0], 'utf8')) as { row: Parameters<RadarStore['upsertCase']>[0]; events: Parameters<RadarStore['addCaseEvent']>[1][] };
+        store.upsertCase(c.row);
+        for (const ev of c.events) store.addCaseEvent(c.row.id, ev);
+        console.log(`recorded ${c.row.id} (${c.events.length} event(s), tiers validated)`);
+        return;
+      }
       case 'backfill': {
         const max = flag(args, 'max', 20);
         const minVolume = flag(args, 'min-volume', 20_000);
@@ -136,7 +166,7 @@ async function main(): Promise<void> {
         return;
       }
       default:
-        console.log('commands: seed | cases | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
+        console.log('commands: seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
     }
   } finally {
     store.close();

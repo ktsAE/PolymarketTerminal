@@ -11,6 +11,10 @@ npm run radar -- ingest <event-slug>       # fetch markets + all fills (both sid
 npm run radar -- report <event-slug>       # indicator score, reasons, largest positions, linked case
 npm run radar -- link <case-id> <slug>     # attach a Polymarket event to a case
 npm run radar -- backfill --max 20         # ingest recent resolved esports events
+npm run radar -- news poll                 # read free feeds (ESIC, HLTV, Dust2, Dexerto, Esports Insider, Reddit RSS) into the inbox
+npm run radar -- news list [--all]         # relevant leads with a SUGGESTED tier (never applied automatically)
+npm run radar -- news dismiss <url>        # drop a lead
+npm run radar -- case-add case.json        # record a reviewed case; tiers are validated against sources
 ```
 
 The database lives at `.radar/radar.db` (override with `RADAR_DB`). Requires Node >= 22.18 (uses `node:sqlite`).
@@ -43,3 +47,13 @@ backtests do not use hindsight. Only SANCTIONED/ORGANIZER_ACTION count as positi
 Indicators are not validated. On the five ESIC-sanctioned matches available on Polymarket (four NOMERCY, PlayTime vs Liquid)
 the v0 score was 0 for all: the fixing money was on sportsbooks, so Polymarket flow alone does not reveal these cases.
 Next sources: cross-venue odds, in-game telemetry, and social/news ingestion. See docs/research/radar/DOSSIER.md.
+
+## News inbox (`news.ts`, `poll.ts`)
+
+Free feeds -> keyword classification -> a reviewed queue. A feed item is a *lead*; it earns a tier only when you record a case with
+sources that justify it. Suggested hints: ESIC final ruling -> SANCTIONED, ESIC interim/provisional -> INVESTIGATING, appeals -> none,
+journalism -> none (find the primary source), Reddit -> RUMOR.
+
+Feed access notes (checked 2026-10-31): ESIC's firewall blocks User-Agents that pretend to be browsers but allows an honest
+`polymarket-radar/0.1`; Reddit rate-limits unauthenticated RSS hard (one subreddit per run is reliable; search endpoints return 403);
+cyberscore, escorenews and several others return 403 and are not polled.

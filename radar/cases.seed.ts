@@ -126,4 +126,55 @@ export const SEED_CASES: SeedCase[] = [
       },
     ],
   },
+  {
+    row: {
+      id: 'nifee-epl22-prop-markets', title: 'nifee (Inner Circle), ESL Pro League S22: manipulated in-game proposition markets (CS2)', game: 'CS2',
+      tournament: 'ESL Pro League Season 22', teams: ['Inner Circle'], matchAt: null, polymarketSlug: null,
+      notes: 'ESIC found repeated deaths to molotovs/incendiaries coinciding with unusual betting-volume spikes on that in-game outcome market. ESIC stated the bets came from newly created, dormant, high-value accounts outside the expected baseline for that market: the fresh-wallet fingerprint, on sportsbooks. Player admitted the conduct; sanction cut from five to four years for cooperation (Oct 21 2025 - Oct 20 2029).',
+    },
+    events: [
+      {
+        at: d('2026-04-01'), tier: 'SANCTIONED', summary: 'ESIC four-year ban for match manipulation and betting-related corruption.',
+        sources: [{ kind: 'integrity_body', url: 'https://esic.gg/sanction-outcome/esic-issues-four-year-sanction-to-dmytro-nifee-tediashvili-for-match-manipulation-and-betting-related-corruption/', publishedAt: '2026-04-01', retrievedAt: RETRIEVED, documented: true, note: 'Read via HLTV report quoting the ESIC press release; ESIC page not opened directly.' }],
+        claims: [
+          { kind: 'odds_move', text: 'Unusual spikes in betting volume on the relevant in-game outcome market', verified: 'document' },
+          { kind: 'financial_flow', text: 'Bets from newly created, dormant, high-value accounts outside the market baseline', verified: 'document' },
+          { kind: 'communication', text: 'Player ultimately admitted the conduct', verified: 'document' },
+        ],
+      },
+    ],
+  },
+  {
+    row: {
+      id: 'acidhouze-pgl-bucharest-oq', title: 'acidhouze vs Inner Circle Academy, PGL Bucharest 2027 open qualifier (CS2): suspected radar hack, betting angle', game: 'CS2',
+      tournament: 'PGL Bucharest 2027 Open Qualifier', teams: ['acidhouze', 'Inner Circle Academy'], matchAt: d('2026-10-11'), polymarketSlug: null,
+      notes: 'A cheating case, not a throw, but the same integrity pipeline: Inner Circle Academy forfeited "so the cheaters couldn\'t profit from betting", posting gameplay video. PGL then disqualified acidhouze and the qualifier is to be replayed. PGL published no evidence in what we read. Shows tier progression in 24 hours.',
+    },
+    events: [
+      {
+        at: d('2026-10-11'), tier: 'ALLEGED_CONCRETE', summary: 'Inner Circle (X, Oct 11) posted gameplay video of an acidhouze player and asked PGL and ESIC to act; academy forfeited the match.',
+        sources: [{ kind: 'player_statement', url: 'https://community.skin.club/en/news/pgl-disqualifies-team-for-cheating-qualifier-to-be-replayed', publishedAt: '2026-10-11', retrievedAt: RETRIEVED, documented: false, note: 'Original X post (@InCircleEsports) not retrieved; quoted by skin.club and cybersports.live.' }],
+        claims: [{ kind: 'gameplay', text: 'Video of suspicious gameplay; one account allegedly permanently banned on FACEIT since 2023', verified: 'none' }],
+      },
+      {
+        at: d('2026-10-12'), tier: 'ORGANIZER_ACTION', summary: 'PGL disqualified acidhouze for competitive integrity concerns; qualifier to be replayed.',
+        sources: [{ kind: 'organizer', url: 'https://community.skin.club/en/news/pgl-disqualifies-team-for-cheating-qualifier-to-be-replayed', retrievedAt: RETRIEVED, documented: false, note: 'Reported via skin.club and Inner Circle statement; PGL statement not read. Date approximate (cybersports.live piece dated Oct 12).' }],
+        claims: [], approx: true,
+      },
+    ],
+  },
+  {
+    row: {
+      id: 'benched-gods-cct-series6', title: 'Benched Gods, CCT Challengers Europe Series 6 (CS2): radar hack and match-fixing allegations', game: 'CS2',
+      tournament: 'CCT 2026 Challengers Europe Series 6', teams: ['Benched Gods', 'Inner Circle Academy'], matchAt: d('2026-09-07'), polymarketSlug: null,
+      notes: 'Allegation by a rival organization with video and links to other teams\' complaints, and a call for ESIC to investigate. The earlier disqualification (VRS GLuck Yungstar closed qualifier) and the July CYBERSHOKE bans are reported only second-hand through this statement. No ESIC finding found.',
+    },
+    events: [
+      {
+        at: d('2026-09-07'), tier: 'ALLEGED_CONCRETE', summary: 'Inner Circle publicly accused Benched Gods of radar hack and match-fixing and asked ESIC to investigate.',
+        sources: [{ kind: 'player_statement', url: 'https://players.com.ua/en/news/inner-circle-accuses-benched-gods-of-using-a-radar-hack-and-calls-on-esic-to-investigate/', publishedAt: '2026-09-07', retrievedAt: RETRIEVED, documented: false }],
+        claims: [{ kind: 'gameplay', text: 'Video evidence and links to complaints from other teams', verified: 'none' }],
+      },
+    ],
+  },
 ];

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { validateEvent, type CaseEvent } from './evidence.ts';
+import { validateEvent, type CaseEvent, type EvidenceTier } from './evidence.ts';
+import type { Classification, NewsItem } from './news.ts';
 
 export interface MarketRow {
   cid: string;
@@ -48,6 +49,17 @@ export interface CaseRow {
   notes: string | null;
 }
 
+export interface NewsRow extends NewsItem {
+  firstSeen: number;
+  relevant: boolean;
+  category: string;
+  matched: string[];
+  tierHint: EvidenceTier | null;
+  note: string;
+  status: 'new' | 'dismissed' | 'promoted';
+  caseId: string | null;
+}
+
 export interface SignalRow {
   cid: string;
   version: string;
@@ -82,6 +94,11 @@ CREATE TABLE IF NOT EXISTS signals(
   id INTEGER PRIMARY KEY AUTOINCREMENT, cid TEXT NOT NULL, version TEXT NOT NULL, computed_at INTEGER NOT NULL,
   score REAL NOT NULL, level TEXT NOT NULL, reasons TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS signals_cid ON signals(cid, computed_at);
+CREATE TABLE IF NOT EXISTS news_items(
+  url TEXT PRIMARY KEY, feed_id TEXT NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL, published_at INTEGER, first_seen INTEGER NOT NULL,
+  relevant INTEGER NOT NULL, category TEXT NOT NULL, matched TEXT NOT NULL, tier_hint TEXT, note TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'new', case_id TEXT);
+CREATE INDEX IF NOT EXISTS news_status ON news_items(status, relevant, published_at);
 `;
 
 export function tradeKey(t: TradeRow): string {
@@ -250,6 +267,35 @@ export class RadarStore {
           events: this.caseEvents(id),
         };
       });
+  }
+
+  /** Stores a feed item once (by URL). Returns true when it was new. */
+  addNews(item: NewsItem, c: Classification, now = Date.now()): boolean {
+    const r = this.db
+      .prepare('INSERT OR IGNORE INTO news_items(url,feed_id,title,summary,published_at,first_seen,relevant,category,matched,tier_hint,note) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+      .run(item.url, item.feedId, item.title, item.summary, item.publishedAt, now, c.relevant ? 1 : 0, c.category, JSON.stringify(c.matched), c.tierHint, c.note);
+    return Number(r.changes) > 0;
+  }
+
+  listNews(opts: { status?: NewsRow['status']; relevantOnly?: boolean; limit?: number } = {}): NewsRow[] {
+    const where = ['status = ?'];
+    if (opts.relevantOnly ?? true) where.push('relevant = 1');
+    return this.db
+      .prepare(`SELECT * FROM news_items WHERE ${where.join(' AND ')} ORDER BY COALESCE(published_at, first_seen) DESC LIMIT ?`)
+      .all(opts.status ?? 'new', opts.limit ?? 50)
+      .map((r) => {
+        const x = plain<Record<string, unknown>>(r);
+        return {
+          feedId: x.feed_id as string, url: x.url as string, title: x.title as string, summary: x.summary as string,
+          publishedAt: (x.published_at as number | null) ?? null, firstSeen: x.first_seen as number, relevant: x.relevant === 1,
+          category: x.category as string, matched: jsonOr<string[]>(x.matched, []), tierHint: (x.tier_hint as EvidenceTier | null) ?? null,
+          note: x.note as string, status: x.status as NewsRow['status'], caseId: (x.case_id as string | null) ?? null,
+        };
+      });
+  }
+
+  setNewsStatus(url: string, status: NewsRow['status'], caseId: string | null = null): boolean {
+    return Number(this.db.prepare('UPDATE news_items SET status=?, case_id=? WHERE url=?').run(status, caseId, url).changes) > 0;
   }
 
   saveSignal(s: SignalRow): void {
