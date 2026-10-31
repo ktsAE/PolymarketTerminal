@@ -87,3 +87,25 @@ Test design: strategies fixed in advance, chosen on the older 60% of markets (by
 - Ladder arbitrage frequency (needs order-book history, which Polymarket does not serve retroactively: log it forward).
 - Cross-venue gaps (Polymarket vs Kalshi/sportsbooks) on the same event.
 - Resolution-rule risk (ambiguous wording) as a mispricing source: disputes are ~1-4% of markets and cluster in vaguely worded ones.
+
+---
+# Part 4: wallets by game/tournament, and a rating model against the closing line (Oct 31 2026)
+
+## Wallet skill per game (256 people-like wallets, positions merged from /closed-positions + /positions)
+Older half -> newer half ROI, wallets with 40+ positions in that game, permutation test on the rank correlation:
+- CS2: 73 wallets, Spearman +0.17 (p=0.07); the top quartile by old ROI earned -4.4% later (all wallets -4.9%).
+- Dota 2: 47 wallets, Spearman -0.21; top quartile -23.5% later (all -8.6%). LoL: 149 wallets, Spearman +0.01; top quartile -6.1% (all -3.6%).
+- Tournaments with enough wallets show pooled ROI between -9% and +15% with 12-139 wallets each; no tournament-level pattern worth trading.
+- Today in this sample: 7 of 198 wallets are on a 5-win streak and 18 on a 0-of-5 streak. Earlier tests found streaks do not predict the next bet.
+External boards exist (polynode.io, pmwallets.com, onchainpoly.com, predictionist.com, 0xinsider.com). They rank wallets by results that already happened,
+so they cannot show that skill persists; 0xinsider publishes a cohort test (S/A/B grades +1.57 points, CI [+0.32,+2.82]) with data at github.com/0xinsider/research: worth reproducing.
+
+## Elo against the closing price (1,545 resolved esports moneylines with a price series, mostly CS2)
+Reproduce: `python3 scripts/elo-vs-market.py fetch` then `report`.
+- Closing lines are close to calibrated: underdogs priced 3-20% won 13.0% vs 13.7% priced, 20-35%: 26.4% vs 28.1%, 35-50%: 43.3% vs 42.3%. The underdog hint seen on 311 matches vanished at 1,545.
+- Elo built only from these results (online, 24 K-factor): Brier 0.241 vs 0.225 for the closing line, so alone it is worse than the market.
+- Betting the side Elo prefers when it differs from the market by 5+ points, at the closing price (before spread/fees):
+  teams with 5+ prior results: older half n=30 ROI +17% [-31, +69]; newer half n=210 ROI +21% [-0.4, +45]. With 3+ prior results: older +0.2% [-26, +29], newer +9.9% [-6, +29].
+  The regression coefficient on Elo, controlling for the market price, was +0.74 with CI [-0.48, +2.29] (n=311).
+- Reading: the only estimate that is non-negative in every cut, but no interval clears zero reliably, and it improves as Elo gets more history. It is a lead, not a finding.
+  The next step is a better rating source than 1,545 Polymarket results: HLTV / Oracle's Elixir / Liquipedia results back to 2023, then test on the same closing lines.
