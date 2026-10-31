@@ -68,3 +68,22 @@ Reproduce: `python3 scripts/wallet-form-study.py fetch` then `report`. Data: 457
 - Lead/lag: price reaction after big prints by wallets with a *prior* (pre-game) record, measured on live data with timestamps (needs forward logging).
 - Cross-venue gaps (Polymarket vs sportsbook/Pinnacle closing line) for esports: the only place with an external truth to compare against.
 - Structural, not wallet-based: mispricing in correlated markets (match winner vs map handicaps/totals within the same event), checked for arbitrage.
+
+---
+# Part 3: price-band / calibration backtest across all categories (Oct 31 2026)
+
+Reproduce: `python3 scripts/calibration-study.py fetch` then `report`.
+Data: 4,302 resolved binary markets (volume >= $30k, 12-hourly YES price history), 4,702 market-horizon observations, 2,293 markets.
+Test design: strategies fixed in advance, chosen on the older 60% of markets (by resolution time), then checked on the newer 40% (from 2026-04-01).
+24 cells (category x T-3/7/14/30 days x four price bands), event-clustered bootstrap.
+
+## Result: no price-band edge
+- No cell had a positive 95% interval on the training half (0 of 24; about 0.6 expected by chance).
+- Mean ROI across cells was -1.2% on train and +3.4% on test; train and test cell results correlate only 0.39, so nothing persisted reliably.
+- A first look at ~1,300 markets showed one tempting cell (buy NO when YES is 5-15% two weeks out: +5.9%, CI [+1.5, +9.3]) among ~20 tried. It did not appear in the larger sample.
+- All returns are before spread and fees (real fills 1-3 points worse), so any real edge would be smaller than shown.
+
+## What is still untested
+- Ladder arbitrage frequency (needs order-book history, which Polymarket does not serve retroactively: log it forward).
+- Cross-venue gaps (Polymarket vs Kalshi/sportsbooks) on the same event.
+- Resolution-rule risk (ambiguous wording) as a mispricing source: disputes are ~1-4% of markets and cluster in vaguely worded ones.

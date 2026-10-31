@@ -294,9 +294,9 @@ export class PolymarketClient {
     return { bids: levels(r?.bids).sort((a, b) => b.price - a.price), asks: levels(r?.asks).sort((a, b) => a.price - b.price) };
   }
 
-  async searchEvents(query: string): Promise<Array<{ slug: string; title: string; volume: number }>> {
-    const d = (await this.get(`${GAMMA}/public-search?q=${encodeURIComponent(query)}&limit_per_type=8&keep_closed_markets=1`)) as Record<string, any>;
-    return ((d?.events as Record<string, any>[]) ?? []).map((e) => ({ slug: String(e.slug), title: String(e.title), volume: num(e.volume) }));
+  async searchEvents(query: string, limit = 8): Promise<Array<{ slug: string; title: string; volume: number; closed: boolean }>> {
+    const d = (await this.get(`${GAMMA}/public-search?q=${encodeURIComponent(query)}&limit_per_type=${limit}&keep_closed_markets=1`)) as Record<string, any>;
+    return ((d?.events as Record<string, any>[]) ?? []).map((e) => ({ slug: String(e.slug), title: String(e.title), volume: num(e.volume), closed: Boolean(e.closed) }));
   }
 
   /**

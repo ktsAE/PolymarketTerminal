@@ -408,7 +408,7 @@ describe('decision tab', () => {
     expect(text).toMatch(/CREATED/);
     expect(text).toMatch(/2025-01-01/); // the watchlisted wallet's creation date
     expect(text).toMatch(/≈/); // name-match marker
-    expect(text).toMatch(/1-6 tabs/);
+    expect(text).toMatch(/1-7 tabs/);
     for (const l of lines) expect(l.length).toBeLessThanOrEqual(140 + 20); // no line overflows the terminal (width counts glyphs, not bytes)
   });
   it('never overflows its box at any terminal size, with a loaded decision', async () => {
@@ -445,3 +445,47 @@ describe('decision tab', () => {
     expect(detail).toMatch(/profile created .*\(2d\).*NEW ACCOUNT/);
   });
 });
+
+describe('search tab', () => {
+  const empty: Model = {
+    anomalies: [], games: [], prints: [], leads: [], holders: null, showBots: false, oiSeries: [], filter: null,
+    status: { lastPollAt: NOW * 1000, nextPollAt: null, busy: false, error: null, events: 0, historySecs: 0, printsWindowMin: null, message: null },
+  };
+  const v = (over: Partial<View> = {}): View => ({ tab: 'search', sel: 0, cols: 120, rows: 30, ...over });
+  it('maps public-search results with their open/closed state', async () => {
+    const client = new PolymarketClient(async (url) => {
+      expect(url).toContain('limit_per_type=25');
+      return { events: [{ slug: 'a', title: 'Alpha', volume: '12', closed: false }, { slug: 'b', title: 'Beta', volume: 5, closed: true }] };
+    }, fast);
+    expect(await client.searchEvents('x', 25)).toEqual([{ slug: 'a', title: 'Alpha', volume: 12, closed: false }, { slug: 'b', title: 'Beta', volume: 5, closed: true }]);
+  });
+  it('shows the prompt, a cursor while typing, results with state, and an empty-result message', () => {
+    const hits = [{ slug: 'will-1win-launch-a-token-by', title: 'Will 1win launch a token by ___?', volume: 55_000, closed: false }, { slug: 'old', title: 'Old market', volume: 9_000_000, closed: true }];
+    const typing = strip(render({ ...empty, search: { query: '1wi', typing: true, loading: false, error: null, results: [] } }, v(), Date.now()).join('\n'));
+    expect(typing).toMatch(/Search\s+1wi/);
+    expect(typing).toMatch(/Enter search/);
+    const done = strip(render({ ...empty, search: { query: '1win', typing: false, loading: false, error: null, results: hits } }, v(), Date.now()).join('\n'));
+    expect(done).toMatch(/VOLUME\s+STATE\s+EVENT/);
+    expect(done).toMatch(/Will 1win launch a token by/);
+    expect(done).toMatch(/open/);
+    expect(done).toMatch(/closed/);
+    expect(done).toMatch(/p decide/); // detail line for the selected result
+    const none = strip(render({ ...empty, search: { query: 'zzzz', typing: false, loading: false, error: null, results: [] } }, v(), Date.now()).join('\n'));
+    expect(none).toMatch(/no events matched/);
+    expect(strip(render(empty, v(), Date.now()).join('\n'))).toMatch(/press \//);
+  });
+  it('switches with key 7 and moves within results', () => {
+    const m: Model = { ...empty, search: { query: 'q', typing: false, loading: false, error: null, results: [1, 2, 3].map((i) => ({ slug: `s${i}`, title: `T${i}`, volume: i, closed: false })) } };
+    expect(moveSelection(v({ tab: 'anomalies' }), '7', m).tab).toBe('search');
+    expect(moveSelection(v({ sel: 0 }), 'end', m).sel).toBe(2);
+  });
+  it('never overflows its box at any size', () => {
+    const m: Model = { ...empty, search: { query: 'bitcoin', typing: false, loading: false, error: 'HTTP 500', results: Array.from({ length: 30 }, (_, i) => ({ slug: `slug-number-${i}-with-a-long-name`, title: `日本語のタイトル ${i} with a really long market title that must be clipped`, volume: i * 1e5, closed: i % 2 === 0 })) } };
+    for (const [cols, rows] of [[50, 12], [60, 16], [80, 24], [140, 40], [220, 60]]) {
+      const lines = render(m, v({ cols, rows, sel: 3 }), Date.now());
+      expect(lines, `${cols}x${rows}`).toHaveLength(rows);
+      for (const l of lines) expect(vlen(l), `${cols}x${rows}`).toBeLessThanOrEqual(cols);
+    }
+  });
+});
+

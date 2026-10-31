@@ -6,9 +6,9 @@ import { accountAge, dateOf } from '../identity.ts';
 import type { NewsRow, PrintRow } from '../store.ts';
 import { c, clip, fit, sparkline, vlen } from './ansi.ts';
 
-export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision';
-export const TABS: readonly Tab[] = ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision'];
-const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Anomalies', games: '2 Games', prints: '3 Big prints', holders: '4 Holders', leads: '5 Leads', decision: '6 Decision' };
+export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search';
+export const TABS: readonly Tab[] = ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search'];
+const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Anomalies', games: '2 Games', prints: '3 Big prints', holders: '4 Holders', leads: '5 Leads', decision: '6 Decision', search: '7 Search' };
 
 export interface TaggedPrint extends PrintRow {
   tag: WalletTag;
@@ -39,6 +39,22 @@ export interface Model {
   showBots: boolean;
   /** Decision for the event the user opened with `p` (null until then). */
   decision?: DecisionView | null;
+  /** Search tab: the query (being typed when `typing`), its results and state. */
+  search?: SearchState | null;
+}
+
+export interface SearchHit {
+  slug: string;
+  title: string;
+  volume: number;
+  closed: boolean;
+}
+export interface SearchState {
+  query: string;
+  typing: boolean;
+  loading: boolean;
+  error: string | null;
+  results: SearchHit[];
 }
 
 export interface View {
@@ -377,6 +393,33 @@ export function decisionRows(m: Model, v: View, height: number): string[] {
   return out;
 }
 
+export function searchRows(m: Model, v: View, height: number): string[] {
+  const s = m.search;
+  const prompt = `${c.bold(' Search ')} ${s?.query ?? ''}${s?.typing ? c.inverse(' ') : ''}`;
+  const hint = s?.typing ? c.gray('  Enter search · Esc cancel') : c.gray('  press / to type a search');
+  const out = [clip(prompt + (s?.loading ? c.yellow('  searching…') : hint), v.cols)];
+  if (!s) return [...out, c.gray('  press /, type part of a market name (e.g. 1win, bitcoin, lakers), then Enter. Select a result and press p to decide on it, h for holders')];
+  if (s.error) out.push(c.red(`  ${s.error}`));
+  const cols = layout(
+    [
+      { key: 'vol', head: 'VOLUME', w: 8, align: 'right', keep: 9 },
+      { key: 'st', head: 'STATE', w: 6, keep: 6 },
+      { key: 'title', head: 'EVENT', w: 40, keep: 10, flex: true },
+      { key: 'slug', head: 'SLUG', w: 30, keep: 2 },
+    ],
+    v.cols,
+  );
+  out.push(headOf(cols));
+  const w = (k: string) => cols.find((x) => x.key === k)?.w ?? 0;
+  const room = Math.max(1, height - out.length);
+  const start = Math.max(0, Math.min(v.sel - Math.floor(room / 2), Math.max(0, s.results.length - room)));
+  for (const [i, r] of s.results.slice(start, start + room).entries()) {
+    out.push(rowOf(cols, { vol: fit(usd(r.volume), w('vol'), 'right'), st: r.closed ? c.gray(fit('closed', w('st'))) : c.green(fit('open', w('st'))), title: fit(r.title, w('title')), slug: c.gray(fit(r.slug, w('slug'))) }, start + i === v.sel));
+  }
+  if (!s.loading && !s.typing && s.query && s.results.length === 0 && !s.error) out.push(c.gray('  no events matched'));
+  return out;
+}
+
 export function printRows(m: Model, v: View, height: number): string[] {
   const cols = layout(
     [
@@ -502,6 +545,10 @@ export function detailLines(m: Model, v: View, width: number): string[] {
     ];
   }
   if (v.tab === 'decision') return [];
+  if (v.tab === 'search') {
+    const r = m.search?.results[v.sel];
+    return r ? [line(`${c.bold(r.title)}  ${c.gray(`polymarket.com/event/${r.slug}`)}`), line(c.gray('  p decide · h holders · o link'))] : [];
+  }
   const n = m.leads[v.sel];
   if (!n) return [];
   const out = [line(c.bold(n.title)), line(`  ${c.gray(n.url)}`)];
@@ -526,7 +573,7 @@ export function render(m: Model, v: View, nowMs: number): string[] {
   );
   const detailH = rows >= 30 && v.tab !== 'decision' ? 8 : 0;
   const bodyH = Math.max(3, rows - 3 - detailH - (detailH ? 1 : 0));
-  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
+  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : v.tab === 'search' ? searchRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
   const lines = [header, tabs, ...body];
   while (lines.length < 2 + bodyH) lines.push('');
   if (detailH) {
@@ -536,13 +583,13 @@ export function render(m: Model, v: View, nowMs: number): string[] {
   }
   while (lines.length < rows - 1) lines.push('');
   const msg = s.message ? `  ${c.yellow(s.message)}` : '';
-  lines.push(clip(c.gray(' ↑↓ move · 1-6 tabs · r refresh · f category · h holders · p decide · b people/bots · o link · q quit') + msg, cols));
+  lines.push(clip(c.gray(' ↑↓ move · 1-7 tabs · / search · r refresh · f category · h holders · p decide · b people/bots · o link · q quit') + msg, cols));
   return lines.slice(0, rows).map((l) => (vlen(l) > cols ? clip(l, cols) : l));
 }
 
-export type Key = 'up' | 'down' | 'pageup' | 'pagedown' | 'home' | 'end' | 'tab' | '1' | '2' | '3' | '4' | '5' | '6';
+export type Key = 'up' | 'down' | 'pageup' | 'pagedown' | 'home' | 'end' | 'tab' | '1' | '2' | '3' | '4' | '5' | '6' | '7';
 export function listLength(m: Model, tab: Tab): number {
-  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : m.leads.length;
+  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : tab === 'search' ? (m.search?.results.length ?? 0) : m.leads.length;
 }
 
 /** Pure keyboard reducer; the shell only translates raw input into these keys. */
@@ -563,5 +610,6 @@ export function moveSelection(v: View, key: Key, m: Model): View {
     case '4': return { ...v, tab: 'holders', sel: 0 };
     case '5': return { ...v, tab: 'leads', sel: 0 };
     case '6': return { ...v, tab: 'decision', sel: 0 };
+    case '7': return { ...v, tab: 'search', sel: 0 };
   }
 }

@@ -51,6 +51,7 @@ function snapshotModel(store: RadarStore, prev: Model | null, nowMs: number, sta
     oiSeries: prev?.oiSeries ?? [],
     holders: prev?.holders ?? null,
     decision: prev?.decision ?? null,
+    search: prev?.search ?? null,
   };
 }
 
@@ -61,7 +62,7 @@ function seriesFor(store: RadarStore, m: Model, v: View, nowSecs: number): numbe
 
 /** The event the user is looking at, for actions like "load holders" or "show link". */
 function selectedSlug(m: Model, v: View): string | undefined {
-  return v.tab === 'anomalies' ? m.anomalies[v.sel]?.slug : v.tab === 'games' ? m.games[v.sel]?.slug : v.tab === 'prints' ? m.prints[v.sel]?.eventSlug : v.tab === 'holders' ? m.holders?.slug : v.tab === 'decision' ? m.decision?.slug : undefined;
+  return v.tab === 'anomalies' ? m.anomalies[v.sel]?.slug : v.tab === 'games' ? m.games[v.sel]?.slug : v.tab === 'prints' ? m.prints[v.sel]?.eventSlug : v.tab === 'holders' ? m.holders?.slug : v.tab === 'decision' ? m.decision?.slug : v.tab === 'search' ? m.search?.results[v.sel]?.slug : undefined;
 }
 
 export async function runTui(store: RadarStore, client: PolymarketClient, opts: TuiOptions = {}): Promise<void> {
@@ -190,6 +191,52 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     });
   };
 
+  // Search: `/` starts typing, Enter runs it, Esc cancels. Typing is handled here so letters like q or p are text while typing.
+  let searchToken = 0;
+  const putSearch = (patch: Partial<NonNullable<Model['search']>>) => {
+    const cur = model.search ?? { query: '', typing: false, loading: false, error: null, results: [] };
+    model = { ...model, search: { ...cur, ...patch } };
+  };
+  const beginSearch = () => {
+    putSearch({ typing: true, error: null });
+    view = { ...view, tab: 'search', sel: 0 };
+    paint();
+  };
+  const runSearch = (query: string) => {
+    const token = ++searchToken;
+    putSearch({ typing: false, loading: true, error: null, results: [] });
+    paint();
+    client.searchEvents(query, 25).then(
+      (hits) => {
+        if (token !== searchToken) return;
+        putSearch({ loading: false, results: [...hits].sort((a, b) => b.volume - a.volume) });
+        view = { ...view, sel: 0 };
+        paint();
+      },
+      (error) => {
+        if (token !== searchToken) return;
+        putSearch({ loading: false, error: error instanceof Error ? error.message : String(error) });
+        paint();
+      },
+    );
+  };
+  const typeSearch = (d: string) => {
+    const q = model.search?.query ?? '';
+    if (d === '\x03') return quit();
+    if (d === ESC) {
+      putSearch({ typing: false });
+      return paint();
+    }
+    if (d === '\r' || d === '\n') {
+      if (q.trim()) return runSearch(q.trim());
+      putSearch({ typing: false });
+      return paint();
+    }
+    if (d === '\x7f' || d === '\b') putSearch({ query: q.slice(0, -1) });
+    else if (!d.startsWith(ESC) && !/[\x00-\x1f]/.test(d)) putSearch({ query: (q + d).slice(0, 80) });
+    paint();
+  };
+
   out.write(`${ESC}[?1049h${ESC}[?25l${ESC}[2J`);
   process.on('exit', restore);
   process.on('uncaughtException', (e) => {
@@ -216,8 +263,10 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     process.stdin.on('data', (d: string) => {
       const map: Record<string, Key> = {
         [`${ESC}[A`]: 'up', [`${ESC}[B`]: 'down', [`${ESC}[5~`]: 'pageup', [`${ESC}[6~`]: 'pagedown', [`${ESC}[H`]: 'home', [`${ESC}[1~`]: 'home', [`${ESC}[F`]: 'end', [`${ESC}[4~`]: 'end',
-        '\t': 'tab', k: 'up', j: 'down', g: 'home', G: 'end', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6',
+        '\t': 'tab', k: 'up', j: 'down', g: 'home', G: 'end', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7',
       };
+      if (model.search?.typing) return typeSearch(d);
+      if (d === '/') return beginSearch();
       if (d === 'q' || d === '\x03') return quit();
       if (d === 'r') {
         void poll().then(() => paint());
