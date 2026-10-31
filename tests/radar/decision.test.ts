@@ -184,6 +184,7 @@ describe('decisions', () => {
     expect(m.fair).toEqual({ lo: fair.lo, hi: fair.hi });
     expect(m.reasons.join()).toMatch(/model \d+-\d+%/);
     expect(m.invalidates.join()).toMatch(/sell pressure/);
+    expect(m.risks.join()).toMatch(/assumes the first DEX pool was "the launch"/);
     expect(m.capacityUsd).toBeGreaterThan(0);
   });
   it('says NO EDGE when the market is inside the range', () => {

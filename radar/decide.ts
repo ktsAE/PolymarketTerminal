@@ -248,6 +248,7 @@ export function decide(inp: DecideInput): Decision {
         if ((d.action === 'BUY YES' || d.action === 'BUY NO') && d.capacityUsd !== null && d.capacityUsd < T.thinUsd) d.risks.push(`only ~${usd(d.capacityUsd)} can be bought within 3 points of that price: the edge exists on paper but not at size`);
         d.invalidates.push(`the token's price moves (every 10% move shifts these ranges)`, `the model leaves out sell pressure from unlocked airdrop/sale tokens and any exchange listing news`, `the reference price comes from ${ref.pools} pool(s) with ${usd(ref.liqUsd)} of liquidity, easy to move`);
         d.risks.push(`model range assumes ${Math.round(ref.sigmaDay * 100)}%/day volatility, tried at 0.5x to 1.5x, with and without a drift term`);
+        d.risks.push(`measurement time ${clock(ref.resolveAt)} assumes the first DEX pool was "the launch"; if the launch-date market is ruled differently, the FDV is measured a day after whenever the launch is ruled to happen`);
       }
     }
 
