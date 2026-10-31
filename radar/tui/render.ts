@@ -37,7 +37,7 @@ export interface Model {
   holders: HoldersView | null;
   /** Show bots / market makers in the holders list (default: people only). */
   showBots: boolean;
-  /** Decision for the event the user opened with `d` (null until then). */
+  /** Decision for the event the user opened with `p` (null until then). */
   decision?: DecisionView | null;
 }
 
@@ -302,7 +302,7 @@ const px2 = (x: number | null): string => (x === null ? '-' : x.toFixed(2));
 
 export function decisionRows(m: Model, v: View, height: number): string[] {
   const dv = m.decision;
-  if (!dv) return [c.gray('  select an event on Anomalies, Games, Big prints or Holders and press d to decide what to do about it')];
+  if (!dv) return [c.gray('  select an event on Anomalies, Games, Big prints or Holders and press p to decide what to do about it')];
   const busy = dv.done ? (dv.error ? c.red(`  ${dv.error}`) : '') : c.yellow(`  ${dv.stage}${dv.progress.total ? ` ${dv.progress.loaded}/${dv.progress.total}` : ''}…`);
   const out = [clip(`${c.bold(dv.title)}${busy}`, v.cols)];
   const d = dv.decision;
@@ -536,7 +536,7 @@ export function render(m: Model, v: View, nowMs: number): string[] {
   }
   while (lines.length < rows - 1) lines.push('');
   const msg = s.message ? `  ${c.yellow(s.message)}` : '';
-  lines.push(clip(c.gray(' ↑↓ move · 1-6 tabs · r refresh · f category · h holders · d decide · b people/bots · o link · q quit') + msg, cols));
+  lines.push(clip(c.gray(' ↑↓ move · 1-6 tabs · r refresh · f category · h holders · p decide · b people/bots · o link · q quit') + msg, cols));
   return lines.slice(0, rows).map((l) => (vlen(l) > cols ? clip(l, cols) : l));
 }
 

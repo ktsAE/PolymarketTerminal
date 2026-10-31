@@ -391,7 +391,7 @@ describe('decision tab', () => {
   it('explains how to open it when nothing is loaded', () => {
     const text = strip(render(empty, view(), Date.now()).join('\n'));
     expect(text).toMatch(/6 Decision/);
-    expect(text).toMatch(/press d to decide/);
+    expect(text).toMatch(/press p to decide/);
   });
   it('shows actions, quotes, the model range, wallet creation dates and flags, and the standing caveat', async () => {
     const store = openStore();

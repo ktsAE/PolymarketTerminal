@@ -232,7 +232,7 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
         }
         return openHolders(slug);
       }
-      if (d === 'd') {
+      if (d === 'p') {
         const slug = selectedSlug(model, view);
         if (!slug) {
           setStatus({ message: 'select an event first' });

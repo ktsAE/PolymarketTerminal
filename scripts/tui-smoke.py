@@ -88,8 +88,8 @@ check("b toggles bots and market makers", "bots and market makers" in plain(scre
 check("holders table has the account-created column", "CREATED" in text)
 
 # decision: open it for the event whose holders are on screen and wait for it to finish
-os.write(fd, b"d"); pump(1.0)
-check("d opens the decision tab", "6 Decision" in plain(screen()[1]))
+os.write(fd, b"p"); pump(1.0)
+check("p opens the decision tab", "6 Decision" in plain(screen()[1]))
 t2 = time.time()
 while time.time() - t2 < 150:
     pump(1)

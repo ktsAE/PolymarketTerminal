@@ -104,7 +104,7 @@ cyberscore, escorenews and several others return 403 and are not polled.
 
 ## Decision tab (`decide.ts`, `decide-data.ts`) - what to buy or sell, and why
 
-`d` on any event (or `npm run radar -- decide <event-slug>`) builds one verdict per market of that event. TUI tab `6`.
+`p` on any event (or `npm run radar -- decide <event-slug>`) builds one verdict per market of that event. TUI tab `6`.
 
 What it will call an edge, and nothing else:
 
@@ -141,4 +141,4 @@ next day, daylight saving included (it is 21:00 UTC, not 20:00, after the clocks
 
 * The model has no sell-pressure term (airdrop/sale unlocks, exchange listings) and the reference pool can be thin; both are printed as `CHECK`/`NOTE` lines.
 * Books and trades are read for the two busiest markets of an event only (rate limit politeness); other rungs get quotes and the ladder check but no wallets.
-* `npm run test:tui` drives the real TUI in a pseudo-terminal including `h` and `d`.
+* `npm run test:tui` drives the real TUI in a pseudo-terminal including `h` and `p`.
