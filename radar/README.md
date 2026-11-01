@@ -142,3 +142,15 @@ next day, daylight saving included (it is 21:00 UTC, not 20:00, after the clocks
 * The model has no sell-pressure term (airdrop/sale unlocks, exchange listings) and the reference pool can be thin; both are printed as `CHECK`/`NOTE` lines.
 * Books and trades are read for the two busiest markets of an event only (rate limit politeness); other rungs get quotes and the ladder check but no wallets.
 * `npm run test:tui` drives the real TUI in a pseudo-terminal including `h` and `p`.
+
+## Search and News (`newssearch.ts`, `newsview.ts`)
+
+* `/` opens a search prompt (Search tab, `7`): type part of a market name, Enter. While typing, letters like `q` and `p` are text. Esc cancels. Results are events by volume with open/closed state.
+* `n` on the selected event from any tab (Anomalies, Games, Big prints, Holders, Decision, Search) opens the News tab (`8`):
+  the market's deadline, oracle history (`proposed > disputed > ...`) and bid/ask, then headlines from the last 7 days. `o` shows the selected headline's link.
+  CLI equivalent: `npm run radar -- research <event-slug>`.
+* Sources are keyless Google News RSS and Bing News RSS, merged, de-duplicated and sorted newest first. If a source fails it is named on screen, and if both fail the tab says so:
+  an empty list is never presented as "nothing happened". Headlines are leads to read; they decide nothing.
+* The query is the market title without placeholders, dates and question words ("Will 1win launch a token by ___?" -> "1win launch a token").
+  Google News links are redirects; the headline's publisher comes from its title suffix, Bing's from the unwrapped link.
+* Not wired up (needs an account or key): X/Twitter search (`xurl` + X API), PandaScore results, a Solana RPC. See the research notes for why each would help.

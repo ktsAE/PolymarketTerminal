@@ -116,6 +116,16 @@ while time.time() - t3 < 40:
 check("search lists results", "VOLUME" in plain("\n".join(screen()[2:6])) and "EVENT" in plain("\n".join(screen()[2:6])))
 os.write(fd, b"p"); pump(1.0)
 check("p on a search result opens the decision tab", "6 Decision" in plain(screen()[1]))
+# news: n on the selected search result opens the News tab with the market state, then headlines (or says why not)
+os.write(fd, b"7"); pump(0.8); os.write(fd, b"n"); pump(1.0)
+check("n opens the news tab", "8 News" in plain(screen()[1]))
+t4 = time.time()
+while time.time() - t4 < 60:
+    pump(1)
+    if "AGO" in plain("\n".join(screen()[2:9])) and "searching" not in plain("\n".join(screen()[2:4])) and "reading the market" not in plain("\n".join(screen()[2:4])): break
+ntext = plain("\n".join(screen()[:ROWS]))
+check("news tab shows the headline table and what was searched", "HEADLINE" in ntext and "searched:" in ntext)
+check("news tab shows headlines or says none were found", len([l for l in screen()[6:30] if plain(l).strip()]) > 2)
 pump(6)
 check("still alive after background activity", alive())
 os.write(fd, b"q")

@@ -1,6 +1,7 @@
 import { applyFilters, buildModel, runCycle } from '../collect.ts';
 import { loadDecision } from '../decide-data.ts';
 import { loadHolders } from '../holders.ts';
+import { loadNews } from '../newsview.ts';
 import { loadPeople, type Person } from '../people.ts';
 import type { PolymarketClient } from '../polymarket.ts';
 import { httpFetchText, pollFeeds } from '../poll.ts';
@@ -52,6 +53,7 @@ function snapshotModel(store: RadarStore, prev: Model | null, nowMs: number, sta
     holders: prev?.holders ?? null,
     decision: prev?.decision ?? null,
     search: prev?.search ?? null,
+    news: prev?.news ?? null,
   };
 }
 
@@ -62,7 +64,7 @@ function seriesFor(store: RadarStore, m: Model, v: View, nowSecs: number): numbe
 
 /** The event the user is looking at, for actions like "load holders" or "show link". */
 function selectedSlug(m: Model, v: View): string | undefined {
-  return v.tab === 'anomalies' ? m.anomalies[v.sel]?.slug : v.tab === 'games' ? m.games[v.sel]?.slug : v.tab === 'prints' ? m.prints[v.sel]?.eventSlug : v.tab === 'holders' ? m.holders?.slug : v.tab === 'decision' ? m.decision?.slug : v.tab === 'search' ? m.search?.results[v.sel]?.slug : undefined;
+  return v.tab === 'anomalies' ? m.anomalies[v.sel]?.slug : v.tab === 'games' ? m.games[v.sel]?.slug : v.tab === 'prints' ? m.prints[v.sel]?.eventSlug : v.tab === 'holders' ? m.holders?.slug : v.tab === 'decision' ? m.decision?.slug : v.tab === 'search' ? m.search?.results[v.sel]?.slug : v.tab === 'news' ? m.news?.slug : undefined;
 }
 
 export async function runTui(store: RadarStore, client: PolymarketClient, opts: TuiOptions = {}): Promise<void> {
@@ -191,6 +193,23 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     });
   };
 
+  // News: `n` searches headlines for the selected event; a newer request makes older progress irrelevant.
+  let newsToken = 0;
+  const openNews = (slug: string) => {
+    const token = ++newsToken;
+    model = { ...model, news: { slug, title: slug, query: '', stage: 'reading the market', done: false, error: null, hits: [], sourceErrors: [], markets: [], rules: '' } };
+    view = { ...view, tab: 'news', sel: 0 };
+    paint();
+    void loadNews(client, httpFetchText, slug, {
+      onProgress: (nv) => {
+        if (token !== newsToken) return;
+        model = { ...model, news: nv };
+        view = { ...view, sel: Math.min(view.sel, Math.max(0, listLength(model, 'news') - 1)) };
+        paint();
+      },
+    });
+  };
+
   // Search: `/` starts typing, Enter runs it, Esc cancels. Typing is handled here so letters like q or p are text while typing.
   let searchToken = 0;
   const putSearch = (patch: Partial<NonNullable<Model['search']>>) => {
@@ -263,10 +282,18 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     process.stdin.on('data', (d: string) => {
       const map: Record<string, Key> = {
         [`${ESC}[A`]: 'up', [`${ESC}[B`]: 'down', [`${ESC}[5~`]: 'pageup', [`${ESC}[6~`]: 'pagedown', [`${ESC}[H`]: 'home', [`${ESC}[1~`]: 'home', [`${ESC}[F`]: 'end', [`${ESC}[4~`]: 'end',
-        '\t': 'tab', k: 'up', j: 'down', g: 'home', G: 'end', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7',
+        '\t': 'tab', k: 'up', j: 'down', g: 'home', G: 'end', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7', '8': '8',
       };
       if (model.search?.typing) return typeSearch(d);
       if (d === '/') return beginSearch();
+      if (d === 'n') {
+        const slug = selectedSlug(model, view);
+        if (!slug) {
+          setStatus({ message: 'select an event first' });
+          return paint();
+        }
+        return openNews(slug);
+      }
       if (d === 'q' || d === '\x03') return quit();
       if (d === 'r') {
         void poll().then(() => paint());
@@ -306,7 +333,7 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
       if (d === 'o') {
         const slug = selectedSlug(model, view);
         const holder = view.tab === 'holders' ? visibleHolders(model)[view.sel] : undefined;
-        const url = view.tab === 'leads' ? model.leads[view.sel]?.url : holder ? `https://polymarket.com/profile/${holder.wallet}` : slug ? `https://polymarket.com/event/${slug}` : undefined;
+        const url = view.tab === 'leads' ? model.leads[view.sel]?.url : view.tab === 'news' ? model.news?.hits[view.sel]?.url : holder ? `https://polymarket.com/profile/${holder.wallet}` : slug ? `https://polymarket.com/event/${slug}` : undefined;
         setStatus({ message: url ?? 'nothing selected' });
         return paint();
       }

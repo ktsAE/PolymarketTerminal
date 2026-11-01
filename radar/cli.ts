@@ -8,6 +8,7 @@ import { flowSummary, INFORMATIVE_BAND, peakPositions } from './features.ts';
 import { ingestEvent } from './ingest.ts';
 import { loadDecision } from './decide-data.ts';
 import { loadHolders, peopleOnly } from './holders.ts';
+import { loadNews } from './newsview.ts';
 import { accountAge, identityFor } from './identity.ts';
 import { addPerson, describePerson, loadPeople, matchPeople, PEOPLE_PATH, removePerson } from './people.ts';
 import { loadRefs, REFS_PATH } from './refs.ts';
@@ -169,6 +170,17 @@ async function main(): Promise<void> {
         console.log('\nA decision is a reading of public data, not advice. ARB needs both legs filled; model calls are low confidence; wallet leads are never a trade signal.');
         return;
       }
+      case 'research': {
+        if (!args[0]) throw new Error('usage: research <event-slug>   (market state + recent headlines; find slugs with: find <text>)');
+        const nv = await loadNews(client, httpFetchText, args[0]);
+        if (nv.error && nv.hits.length === 0) throw new Error(nv.error);
+        console.log(`${nv.title}\nsearched: ${nv.query}${nv.sourceErrors.length ? `   (${nv.sourceErrors.join('; ')})` : ''}\n`);
+        for (const mk of nv.markets) console.log(`  ${mk.label.slice(0, 24).padEnd(24)} bid/ask ${mk.bid ?? '-'}/${mk.ask ?? '-'}${mk.endsAt ? `  ends ${iso(mk.endsAt)}` : ''}${mk.uma.length ? `  oracle: ${mk.uma.join(' > ')}` : ''}${mk.closed ? '  (closed)' : ''}`);
+        console.log('');
+        for (const h of nv.hits) console.log(`${(h.publishedAt === null ? 'undated' : new Date(h.publishedAt).toISOString().slice(5, 16).replace('T', ' ')).padEnd(11)} ${(h.source || '?').slice(0, 22).padEnd(22)} ${h.title}\n${' '.repeat(34)}${h.url}`);
+        if (nv.hits.length === 0) console.log('no headlines in the last 7 days (this is not evidence that nothing happened)');
+        return;
+      }
       case 'people': {
         const [sub, ...rest] = args;
         if (sub === 'add') {
@@ -212,7 +224,7 @@ async function main(): Promise<void> {
           intervalSecs: flag(args, 'interval', 120),
           cols: cols || undefined,
           rows: rows || undefined,
-          tab: (['anomalies', 'games', 'prints', 'holders', 'leads', 'decision'] as const).find((t) => t === val('tab')),
+          tab: (['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news'] as const).find((t) => t === val('tab')),
           slug: val('slug'),
         });
         return;
@@ -262,7 +274,7 @@ async function main(): Promise<void> {
         return;
       }
       default:
-        console.log('commands: tui [--interval S --no-news] | decide <slug> [--wallets] | people list|add|remove|check <wallet> | holders <slug> [--all] | scan [--cols N --rows N --tab games|prints|leads|decision --slug S] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
+        console.log('commands: tui [--interval S --no-news] | decide <slug> [--wallets] | research <slug> | people list|add|remove|check <wallet> | holders <slug> [--all] | scan [--cols N --rows N --tab games|prints|leads|decision --slug S] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
     }
   } finally {
     store.close();

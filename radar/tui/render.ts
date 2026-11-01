@@ -1,4 +1,5 @@
 import type { DecisionView } from '../decide-data.ts';
+import type { NewsView } from '../newsview.ts';
 import { gamePhase, type Anomaly, type WalletTag } from '../detect.ts';
 import type { Action, MarketDecision } from '../decide.ts';
 import { peopleOnly, type HolderRow, type HoldersView } from '../holders.ts';
@@ -6,9 +7,9 @@ import { accountAge, dateOf } from '../identity.ts';
 import type { NewsRow, PrintRow } from '../store.ts';
 import { c, clip, fit, sparkline, vlen } from './ansi.ts';
 
-export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search';
-export const TABS: readonly Tab[] = ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search'];
-const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Anomalies', games: '2 Games', prints: '3 Big prints', holders: '4 Holders', leads: '5 Leads', decision: '6 Decision', search: '7 Search' };
+export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search' | 'news';
+export const TABS: readonly Tab[] = ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news'];
+const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Anomalies', games: '2 Games', prints: '3 Big prints', holders: '4 Holders', leads: '5 Leads', decision: '6 Decision', search: '7 Search', news: '8 News' };
 
 export interface TaggedPrint extends PrintRow {
   tag: WalletTag;
@@ -41,6 +42,8 @@ export interface Model {
   decision?: DecisionView | null;
   /** Search tab: the query (being typed when `typing`), its results and state. */
   search?: SearchState | null;
+  /** News tab: headlines and market state for the event the user opened with `n`. */
+  news?: NewsView | null;
 }
 
 export interface SearchHit {
@@ -420,6 +423,43 @@ export function searchRows(m: Model, v: View, height: number): string[] {
   return out;
 }
 
+const ageLabel = (ms: number | null, nowMs: number): string => {
+  if (ms === null) return '?';
+  const s = Math.max(0, (nowMs - ms) / 1000);
+  return s < 5_400 ? `${Math.max(1, Math.round(s / 60))}m` : s < 172_800 ? `${(s / 3600).toFixed(0)}h` : `${Math.round(s / 86_400)}d`;
+};
+
+export function newsRows(m: Model, v: View, height: number): string[] {
+  const nv = m.news;
+  if (!nv) return [c.gray('  select an event on any tab and press n to search news about it (headlines + the market\'s deadline, oracle status and prices)')];
+  const busy = nv.done ? (nv.error ? c.red(`  ${nv.error}`) : '') : c.yellow(`  ${nv.stage}…`);
+  const out = [clip(`${c.bold(nv.title)}${busy}`, v.cols)];
+  const nowMs = Date.now();
+  for (const mk of nv.markets.slice(0, 3)) {
+    const ends = mk.endsAt === null ? '' : `  ends ${new Date(mk.endsAt * 1000).toISOString().slice(5, 16).replace('T', ' ')}Z (${dur(Math.abs(mk.endsAt - nowMs / 1000))} ${mk.endsAt * 1000 < nowMs ? 'ago' : 'left'})`;
+    const uma = mk.uma.length ? `  oracle: ${mk.uma.join('>')}` : '';
+    out.push(clip(`  ${fit(mk.label, 18)} ${px2(mk.bid)}/${px2(mk.ask)}${mk.closed ? c.gray('  closed') : ''}${ends}${c.cyan(uma)}`, v.cols));
+  }
+  if (nv.query) out.push(clip(c.gray(`  searched: ${nv.query}${nv.sourceErrors.length ? `   (${nv.sourceErrors.join('; ')})` : ''}`), v.cols));
+  const cols = layout(
+    [
+      { key: 'age', head: 'AGO', w: 4, align: 'right', keep: 9 },
+      { key: 'src', head: 'SOURCE', w: 18, keep: 4 },
+      { key: 'title', head: 'HEADLINE', w: 60, keep: 10, flex: true },
+    ],
+    v.cols,
+  );
+  out.push(headOf(cols));
+  const w = (k: string) => cols.find((x) => x.key === k)?.w ?? 0;
+  const room = Math.max(1, height - out.length);
+  const start = Math.max(0, Math.min(v.sel - Math.floor(room / 2), Math.max(0, nv.hits.length - room)));
+  for (const [i, h] of nv.hits.slice(start, start + room).entries()) {
+    out.push(rowOf(cols, { age: c.gray(fit(ageLabel(h.publishedAt, nowMs), w('age'), 'right')), src: c.cyan(fit(h.source, w('src'))), title: fit(h.title, w('title')) }, start + i === v.sel));
+  }
+  if (nv.done && !nv.error && nv.hits.length === 0) out.push(c.gray('  no headlines in the last 7 days (this is not evidence that nothing happened)'));
+  return out;
+}
+
 export function printRows(m: Model, v: View, height: number): string[] {
   const cols = layout(
     [
@@ -544,6 +584,11 @@ export function detailLines(m: Model, v: View, width: number): string[] {
       line(c.gray('  A wallet tag describes history, not intent. NEW/THIN = little history; WHALE = 200+ markets.')),
     ];
   }
+  if (v.tab === 'news') {
+    const h = m.news?.hits[v.sel];
+    if (!h) return m.news?.rules ? [line(c.gray(`  rules: ${m.news.rules.slice(0, Math.max(40, width * 3))}`))] : [];
+    return [line(c.bold(h.title)), line(`  ${h.source || '?'}  ${h.publishedAt === null ? 'undated' : new Date(h.publishedAt).toISOString().slice(0, 16).replace('T', ' ') + 'Z'}  via ${h.via}`), line(`  ${c.gray(h.url)}`), line(c.gray('  o shows the link in the footer · p decide · h holders'))];
+  }
   if (v.tab === 'decision') return [];
   if (v.tab === 'search') {
     const r = m.search?.results[v.sel];
@@ -573,7 +618,7 @@ export function render(m: Model, v: View, nowMs: number): string[] {
   );
   const detailH = rows >= 30 && v.tab !== 'decision' ? 8 : 0;
   const bodyH = Math.max(3, rows - 3 - detailH - (detailH ? 1 : 0));
-  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : v.tab === 'search' ? searchRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
+  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : v.tab === 'search' ? searchRows(m, v, bodyH) : v.tab === 'news' ? newsRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
   const lines = [header, tabs, ...body];
   while (lines.length < 2 + bodyH) lines.push('');
   if (detailH) {
@@ -582,14 +627,15 @@ export function render(m: Model, v: View, nowMs: number): string[] {
     for (let i = 0; i < detailH; i++) lines.push(d[i] ?? '');
   }
   while (lines.length < rows - 1) lines.push('');
-  const msg = s.message ? `  ${c.yellow(s.message)}` : '';
-  lines.push(clip(c.gray(' ↑↓ move · 1-7 tabs · / search · r refresh · f category · h holders · p decide · b people/bots · o link · q quit') + msg, cols));
+  const hint = c.gray(' ↑↓ move · 1-8 tabs · / search · n news · r refresh · f category · h holders · p decide · b people/bots · o link · q quit');
+  // the status message goes first: the key hint is long and would push a trailing message off a narrow screen
+  lines.push(clip(s.message ? `${c.yellow(` ${s.message}`)}  ${hint}` : hint, cols));
   return lines.slice(0, rows).map((l) => (vlen(l) > cols ? clip(l, cols) : l));
 }
 
-export type Key = 'up' | 'down' | 'pageup' | 'pagedown' | 'home' | 'end' | 'tab' | '1' | '2' | '3' | '4' | '5' | '6' | '7';
+export type Key = 'up' | 'down' | 'pageup' | 'pagedown' | 'home' | 'end' | 'tab' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8';
 export function listLength(m: Model, tab: Tab): number {
-  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : tab === 'search' ? (m.search?.results.length ?? 0) : m.leads.length;
+  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : tab === 'search' ? (m.search?.results.length ?? 0) : tab === 'news' ? (m.news?.hits.length ?? 0) : m.leads.length;
 }
 
 /** Pure keyboard reducer; the shell only translates raw input into these keys. */
@@ -611,5 +657,6 @@ export function moveSelection(v: View, key: Key, m: Model): View {
     case '5': return { ...v, tab: 'leads', sel: 0 };
     case '6': return { ...v, tab: 'decision', sel: 0 };
     case '7': return { ...v, tab: 'search', sel: 0 };
+    case '8': return { ...v, tab: 'news', sel: 0 };
   }
 }
