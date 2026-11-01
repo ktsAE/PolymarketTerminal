@@ -126,6 +126,18 @@ while time.time() - t4 < 60:
 ntext = plain("\n".join(screen()[:ROWS]))
 check("news tab shows the headline table and what was searched", "HEADLINE" in ntext and "searched:" in ntext)
 check("news tab shows headlines or says none were found", len([l for l in screen()[6:30] if plain(l).strip()]) > 2)
+# edge scan: e screens every active event and checks the best on live books; wait for it to finish
+os.write(fd, b"e"); pump(1.0)
+check("e opens the edge tab", "9 Edge" in plain(screen()[1]))
+t5 = time.time()
+while time.time() - t5 < 150:
+    pump(1)
+    h = plain("\n".join(screen()[2:4]))
+    if "events," in h and "…" not in h: break
+etext = plain("\n".join(screen()[:ROWS]))
+check("edge scan finished with its summary line", "events," in etext and "markets," in etext and "…" not in plain(screen()[2]))
+check("edge tab states what it does and does not claim", "no forecasting edge is claimed" in etext)
+check("edge tab shows its columns or says nothing structural exists", ("TYPE" in etext and "LIVE" in etext) or "nothing structural right now" in etext)
 pump(6)
 check("still alive after background activity", alive())
 os.write(fd, b"q")

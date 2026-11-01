@@ -8,6 +8,8 @@ export interface LadderMarket {
   cid: string;
   label: string;
   question: string;
+  /** The market's own deadline (epoch seconds). When every rung has one, dates are ordered by it: labels often omit the year. */
+  endsAt?: number | null;
 }
 export interface LadderRung {
   cid: string;
@@ -36,7 +38,7 @@ export interface Violation {
 
 /** "$30M" -> 30e6, "1.5B" -> 1.5e9, "$250k" -> 250000, "100" -> 100. */
 export function parseAmount(label: string): number | null {
-  const m = /^\s*[<>≥≤]?\s*\$?\s*([\d,]+(?:\.\d+)?)\s*([kmbt])?\b/i.exec(label);
+  const m = /^\s*[<>≥≤↑]?\s*\$?\s*([\d,]+(?:\.\d+)?)\s*([kmbt])?\b/i.exec(label);
   if (!m) return null;
   const n = Number(m[1].replace(/,/g, ''));
   const mult = { k: 1e3, m: 1e6, b: 1e9, t: 1e12 }[(m[2] ?? '').toLowerCase() as 'k' | 'm' | 'b' | 't'] ?? 1;
@@ -44,10 +46,22 @@ export function parseAmount(label: string): number | null {
 }
 
 const MONTHS = /jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec/i;
-export function parseDate(label: string): number | null {
+/**
+ * "October 31, 2026" -> epoch seconds. A label without a year ("March 31") must not be left to Date.parse, which assumes 2001:
+ * it is placed in the first year in which it falls no more than ~60 days before `refSecs`.
+ */
+export function parseDate(label: string, refSecs: number = Math.floor(Date.now() / 1000)): number | null {
   if (!MONTHS.test(label) || !/\d/.test(label)) return null;
-  const ms = Date.parse(`${label} 23:59:59 GMT`);
-  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+  if (/\b(19|20)\d{2}\b/.test(label)) {
+    const ms = Date.parse(`${label} 23:59:59 GMT`);
+    return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+  }
+  const refYear = new Date(refSecs * 1000).getUTCFullYear();
+  for (const year of [refYear, refYear + 1, refYear + 2]) {
+    const ms = Date.parse(`${label} ${year} 23:59:59 GMT`);
+    if (Number.isFinite(ms) && Math.floor(ms / 1000) >= refSecs - 60 * 86_400) return Math.floor(ms / 1000);
+  }
+  return null;
 }
 
 const ABOVE = /\b(above|over|more than|greater|exceed|at least|reach|hit|surpass)\b/i;
@@ -56,14 +70,20 @@ const BY = /\b(by|before|on or before)\b/i;
 /** Detects a ladder from the labels (groupItemTitle) of an event's markets; null when the markets are not one. */
 export function parseLadder(title: string, markets: readonly LadderMarket[]): Ladder | null {
   if (markets.length < 2) return null;
-  const amounts = markets.map((m) => parseAmount(m.label));
-  const dates = markets.map((m) => parseDate(m.label));
   const text = `${title} ${markets[0].question}`;
-  if (amounts.every((x) => x !== null) && ABOVE.test(text)) {
+  // "↓ 90" (dip to) and "↑ 600" (reach) move in opposite directions: a mix is not one ladder, and dips are not handled at all
+  if (markets.some((m) => /[↓⬇]/.test(m.label))) return null;
+  const amounts = markets.map((m) => parseAmount(m.label));
+  if (amounts.every((x) => x !== null) && ABOVE.test(text) && new Set(amounts).size === amounts.length) {
     return { kind: 'above', rungs: markets.map((m, i) => ({ cid: m.cid, label: m.label, x: amounts[i] as number })).sort((a, b) => a.x - b.x) };
   }
-  if (dates.every((x) => x !== null) && BY.test(text)) {
-    return { kind: 'by-date', rungs: markets.map((m, i) => ({ cid: m.cid, label: m.label, x: dates[i] as number })).sort((a, b) => a.x - b.x) };
+  // by-date: every LABEL must be a date, and the deadlines must be strictly different, or the order is meaningless
+  // (people's names under one shared deadline are not a ladder). The market's own deadline orders them when it exists: labels often omit the year.
+  const labelDates = markets.map((m) => parseDate(m.label));
+  if (labelDates.every((x) => x !== null) && BY.test(text)) {
+    const ends = markets.every((m) => typeof m.endsAt === 'number' && Number.isFinite(m.endsAt)) ? markets.map((m) => m.endsAt as number) : null;
+    const keys = ends ?? (labelDates as number[]);
+    if (new Set(keys).size === keys.length) return { kind: 'by-date', rungs: markets.map((m, i) => ({ cid: m.cid, label: m.label, x: keys[i] })).sort((a, b) => a.x - b.x) };
   }
   return null;
 }

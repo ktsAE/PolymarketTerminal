@@ -268,6 +268,12 @@ export class PolymarketClient {
     return (Array.isArray(rows) ? rows : []).map((r) => ({ outcomeIndex: num(r.outcomeIndex), size: num(r.size), avgPrice: num(r.avgPrice), curPrice: num(r.curPrice), currentValue: num(r.currentValue), cashPnl: num(r.cashPnl) }));
   }
 
+  /** Active events, busiest by 24h volume first, in raw gamma form (embedded markets carry bestBid/bestAsk, liquidity, token ids, negRisk). */
+  async activeEventsRaw(offset: number, limit = 100): Promise<Array<Record<string, any>>> {
+    const rows = (await this.get(`${GAMMA}/events?active=true&closed=false&limit=${limit}&offset=${offset}&order=volume24hr&ascending=false`)) as Array<Record<string, any>>;
+    return Array.isArray(rows) ? rows : [];
+  }
+
   /** The raw gamma event (quotes, liquidity and rules text included) for callers that need more than `mapEvent` keeps. */
   async eventRaw(slug: string): Promise<Record<string, any> | undefined> {
     const rows = (await this.get(`${GAMMA}/events?slug=${encodeURIComponent(slug)}`)) as Record<string, any>[];

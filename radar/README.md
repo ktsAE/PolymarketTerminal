@@ -154,3 +154,24 @@ next day, daylight saving included (it is 21:00 UTC, not 20:00, after the clocks
 * The query is the market title without placeholders, dates and question words ("Will 1win launch a token by ___?" -> "1win launch a token").
   Google News links are redirects; the headline's publisher comes from its title suffix, Bing's from the unwrapped link.
 * Not wired up (needs an account or key): X/Twitter search (`xurl` + X API), PandaScore results, a Solana RPC. See the research notes for why each would help.
+
+## Edge scan (`edges.ts`) - `e`, Edge tab `9`, `npm run radar -- edges`
+
+Screens every active event (busiest 400 by 24h volume by default) for STRUCTURAL edges, then re-prices the best ones from live order books.
+The list is saved to `.radar/edges.json` each run. `p` on a row opens the Decision view, `n` the news, `o` the link.
+
+| TYPE | meaning | pays |
+| --- | --- | --- |
+| LADDER | thresholds or dates priced out of order: buy YES on the easier rung and NO on the harder one | at least $1 for less than $1 |
+| SUM>1 | mutually exclusive outcomes (negRisk events) whose YES bids add up to more than $1: buy NO on all | at least n-1 for less |
+| SUM<1 | the same outcomes with YES asks adding up to less than $1: buy YES on all (LOW confidence) | $1 only if a LISTED outcome wins |
+
+What the columns mean: SCREEN is the edge on gamma's quotes (cheap, can lag). LIVE is the edge on the real order books (STALE = it was gone). `$@DEPTH` is the profit if you buy
+everything available at the best prices: "+90 points on $0 of depth" is not an opportunity, so the list is ranked by this, not by points.
+
+Rules baked in after real mistakes:
+* A date ladder needs labels that ARE dates and strictly different deadlines. `Date.parse("March 31")` assumes the year 2001; year-less labels are placed with the market's own deadline instead.
+  People's names, "50+ bps" or "↓$600B" labels under one shared deadline are not ladders (they produced fake +90 point "arbitrage").
+* A candidate with 25+ points of edge is flagged SUSPICIOUSLY LARGE: on a liquid market that is almost always a misread rule, source or deadline.
+* Everything is before fees and assumes every leg fills. A set that needs ten legs to fill together carries leg risk; a ladder only pays if both markets settle from the same facts.
+* "Nothing structural right now" is the normal answer for an efficient market, and on 2026-11-01 the scan found only micro-depth leftovers. No forecasting edge is claimed anywhere in this list.

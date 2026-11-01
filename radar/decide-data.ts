@@ -90,7 +90,7 @@ export async function loadDecision(client: PolymarketClient, store: RadarStore, 
     // keep ladder order stable for display: ascending by the label as the API lists them
     const markets: DMarket[] = chosen.map((m) => ({
       cid: String(m.conditionId), label: String(m.groupItemTitle || m.question || ''), question: String(m.question ?? ''), outcomes: json<string[]>(m.outcomes, ['Yes', 'No']).map(String), closed: Boolean(m.closed),
-      yesBid: num(m.bestBid), yesAsk: num(m.bestAsk), last: num(m.lastTradePrice), askDepthSh: null, bidDepthSh: null, liq: num(m.liquidityNum) ?? num(m.liquidity) ?? 0, vol24: num(m.volume24hr) ?? 0,
+      yesBid: num(m.bestBid), yesAsk: num(m.bestAsk), last: num(m.lastTradePrice), endsAt: typeof m.endDate === 'string' && Number.isFinite(Date.parse(m.endDate)) ? Math.floor(Date.parse(m.endDate) / 1000) : null, askDepthSh: null, bidDepthSh: null, liq: num(m.liquidityNum) ?? num(m.liquidity) ?? 0, vol24: num(m.volume24hr) ?? 0,
     }));
     const tokens = new Map(chosen.map((m) => [String(m.conditionId), json<string[]>(m.clobTokenIds, [])[0]]));
     view.progress = { loaded: 0, total: markets.length };

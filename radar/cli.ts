@@ -7,6 +7,7 @@ import { TIER_TEXT, tierAsOf } from './evidence.ts';
 import { flowSummary, INFORMATIVE_BAND, peakPositions } from './features.ts';
 import { ingestEvent } from './ingest.ts';
 import { loadDecision } from './decide-data.ts';
+import { EDGES_PATH, KIND_TEXT, saveEdges, scanAll } from './edges.ts';
 import { loadHolders, peopleOnly } from './holders.ts';
 import { loadNews } from './newsview.ts';
 import { accountAge, identityFor } from './identity.ts';
@@ -170,6 +171,23 @@ async function main(): Promise<void> {
         console.log('\nA decision is a reading of public data, not advice. ARB needs both legs filled; model calls are low confidence; wallet leads are never a trade signal.');
         return;
       }
+      case 'edges': {
+        const res = await scanAll(client, { events: flag(args, 'events', 400), minEdge: flag(args, 'min-edge', 0.02), minLiq: flag(args, 'min-liq', 500), verifyTop: args.includes('--no-verify') ? 0 : flag(args, 'verify', 12), onProgress: (stage) => process.stderr.write(`\r${stage.padEnd(70)}`) });
+        process.stderr.write('\r' + ' '.repeat(72) + '\r');
+        saveEdges(res, EDGES_PATH);
+        const top = flag(args, 'top', 25);
+        console.log(`scanned ${res.eventsScanned} events / ${res.marketsScanned} markets: ${res.candidates.length} structural candidate(s); list saved to ${EDGES_PATH}${res.errors.length ? `\n(errors: ${res.errors.join('; ')})` : ''}\n`);
+        for (const c of res.candidates.slice(0, top)) {
+          const live = c.verified === null ? (c.note ? 'unchecked' : 'not checked') : c.verified ? `LIVE +${(c.liveEdgePts ?? 0).toFixed(1)}pt, ~$${Math.round(c.profitUsd ?? 0)} at $${Math.round(c.depthUsd ?? 0)} depth` : 'STALE (gone on live books)';
+          console.log(`${KIND_TEXT[c.kind].padEnd(7)} +${c.edgePts.toFixed(1).padStart(5)}pt screen | ${live.padEnd(34)} | ${c.confidence.padEnd(6)} | liq $${Math.round(c.liqMin)} | ${c.title.slice(0, 60)}`);
+          console.log(`        ${c.legs.map((l) => `${l.action} "${l.label.slice(0, 22)}" @${l.price.toFixed(3)}`).join('  +  ')}  -> pays >= $${c.payoff.toFixed(2)} for ${c.cost.toFixed(3)}`);
+          if (c.note) console.log(`        note: ${c.note}`);
+          console.log(`        https://polymarket.com/event/${c.slug}`);
+        }
+        if (res.candidates.length === 0) console.log('nothing structural right now: that is the normal state of an efficient market, not a bug.');
+        console.log('\nStructural edges only, before fees; each leg must fill. No forecasting edge is claimed (see docs/research/radar/HOLDERS_STUDY.md).');
+        return;
+      }
       case 'research': {
         if (!args[0]) throw new Error('usage: research <event-slug>   (market state + recent headlines; find slugs with: find <text>)');
         const nv = await loadNews(client, httpFetchText, args[0]);
@@ -274,7 +292,7 @@ async function main(): Promise<void> {
         return;
       }
       default:
-        console.log('commands: tui [--interval S --no-news] | decide <slug> [--wallets] | research <slug> | people list|add|remove|check <wallet> | holders <slug> [--all] | scan [--cols N --rows N --tab games|prints|leads|decision --slug S] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
+        console.log('commands: tui [--interval S --no-news] | decide <slug> [--wallets] | research <slug> | edges [--top N --events N --min-edge D --min-liq USD --verify K --no-verify] | people list|add|remove|check <wallet> | holders <slug> [--all] | scan [--cols N --rows N --tab games|prints|leads|decision --slug S] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
     }
   } finally {
     store.close();

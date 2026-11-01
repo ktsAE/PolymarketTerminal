@@ -408,7 +408,7 @@ describe('decision tab', () => {
     expect(text).toMatch(/CREATED/);
     expect(text).toMatch(/2025-01-01/); // the watchlisted wallet's creation date
     expect(text).toMatch(/≈/); // name-match marker
-    expect(text).toMatch(/1-8 tabs/);
+    expect(text).toMatch(/1-9 tabs/);
     for (const l of lines) expect(l.length).toBeLessThanOrEqual(140 + 20); // no line overflows the terminal (width counts glyphs, not bytes)
   });
   it('never overflows its box at any terminal size, with a loaded decision', async () => {

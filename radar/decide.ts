@@ -29,6 +29,8 @@ export interface DMarket {
   yesBid: number | null;
   yesAsk: number | null;
   last: number | null;
+  /** The market's own deadline, epoch seconds (orders date ladders whose labels omit the year). */
+  endsAt?: number | null;
   /** Shares resting within 3 points of the best price, on each side of the first outcome's book. */
   askDepthSh: number | null;
   bidDepthSh: number | null;
@@ -186,7 +188,7 @@ function contextFor(flow: MarketFlow | undefined): string[] {
 
 export function decide(inp: DecideInput): Decision {
   const { event, markets, reference: ref, now } = inp;
-  const ladder = parseLadder(event.title, markets.filter((m) => !m.closed).map((m) => ({ cid: m.cid, label: m.label, question: m.question })));
+  const ladder = parseLadder(event.title, markets.filter((m) => !m.closed).map((m) => ({ cid: m.cid, label: m.label, question: m.question, endsAt: m.endsAt })));
   const quotes = new Map(markets.map((m) => [m.cid, { bid: m.yesBid, ask: m.yesAsk }]));
   const violations: Violation[] = ladder ? ladderViolations(ladder, quotes) : [];
   const ambiguity = rulesAmbiguity(event.description);
