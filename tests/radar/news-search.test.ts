@@ -128,7 +128,7 @@ describe('news tab', () => {
     expect(out).toMatch(/Reuters|nytimes\.com|El Pais/);
     expect(out).toMatch(/1h|2h|3h/);
     expect(out).toMatch(/https?:\/\//); // detail panel shows the link
-    expect(out).toMatch(/1-9 tabs/);
+    expect(out).toMatch(/1-9,0 tabs/);
   });
   it('switches with key 8 and moves within headlines', () => {
     const m: Model = { ...empty, news: { slug: 's', title: 't', query: 'q', stage: 'done', done: true, error: null, sourceErrors: [], markets: [], rules: '', hits: [1, 2, 3].map((i) => ({ title: `H${i}`, source: 's', url: `https://x/${i}`, publishedAt: null, via: 'google' as const })) } };

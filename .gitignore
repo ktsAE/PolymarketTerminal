@@ -14,3 +14,4 @@ artifacts/
 
 # Local radar database
 .radar/
+__pycache__/

@@ -1,6 +1,7 @@
 import type { DecisionView } from '../decide-data.ts';
 import type { NewsView } from '../newsview.ts';
 import { KIND_TEXT, type EdgeCandidate, type ScanResult } from '../edges.ts';
+import { NO_EDGE, type LedgerReport } from '../ledger.ts';
 import { gamePhase, type Anomaly, type WalletTag } from '../detect.ts';
 import type { Action, MarketDecision } from '../decide.ts';
 import { peopleOnly, type HolderRow, type HoldersView } from '../holders.ts';
@@ -8,9 +9,9 @@ import { accountAge, dateOf } from '../identity.ts';
 import type { NewsRow, PrintRow } from '../store.ts';
 import { c, clip, fit, sparkline, vlen } from './ansi.ts';
 
-export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search' | 'news' | 'edge';
-export const TABS: readonly Tab[] = ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge'];
-const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Anomalies', games: '2 Games', prints: '3 Big prints', holders: '4 Holders', leads: '5 Leads', decision: '6 Decision', search: '7 Search', news: '8 News', edge: '9 Edge' };
+export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search' | 'news' | 'edge' | 'ledger';
+export const TABS: readonly Tab[] = ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger'];
+const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Anomalies', games: '2 Games', prints: '3 Big prints', holders: '4 Holders', leads: '5 Leads', decision: '6 Decision', search: '7 Search', news: '8 News', edge: '9 Edge', ledger: '0 Ledger' };
 
 export interface TaggedPrint extends PrintRow {
   tag: WalletTag;
@@ -47,7 +48,19 @@ export interface Model {
   news?: NewsView | null;
   /** Edge tab: the last scan of every active event (null until `e`). */
   edges?: EdgeView | null;
+  /** Ledger tab: the pre-registered paper ledger scored from the forward logs at the last refresh. */
+  ledger?: LedgerView | null;
 }
+
+export interface LedgerView {
+  /** Epoch ms of the scoring run. */
+  at: number;
+  error: string | null;
+  report: LedgerReport | null;
+}
+
+/** Standing line of the Ledger tab: paper results never count as an edge until the ledger verdict says so. */
+export const LEDGER_STANDING = 'paper results only; NO EDGE PROVEN until n>=300 and CI>0';
 
 export interface EdgeView {
   stage: string;
@@ -518,6 +531,55 @@ export function edgeRows(m: Model, v: View, height: number): string[] {
   return out;
 }
 
+const ledgerPct = (x: number | null): string => (x === null ? '-' : `${(x * 100).toFixed(1)}%`);
+const ledgerSigned = (x: number): string => `${x >= 0 ? '+' : ''}${x.toFixed(3)}`;
+
+export function ledgerRows(m: Model, v: View, height: number): string[] {
+  const lv = m.ledger;
+  const r = lv?.report ?? null;
+  const out = [clip(`${c.bold(' Paper ledger')}${r ? c.gray(`  ${r.settled}/${r.markets} logged markets settled, ${r.skippedSnapshots} lines skipped${lv ? `  scored ${new Date(lv.at).toISOString().slice(11, 16)}Z` : ''}`) : ''}${lv?.error ? c.red(`  ${lv.error}`) : ''}`, v.cols)];
+  out.push(clip(c.yellow(`  ${LEDGER_STANDING}`), v.cols));
+  if (!r || r.markets === 0) {
+    out.push(c.gray('  no data yet: run `npm run radar -- daemon` (or forward-log, then forward-settle) to fill .radar/forward'));
+    if (!r) return out;
+  }
+  const cols = layout(
+    [
+      { key: 'id', head: 'STRATEGY', w: 17, keep: 10 },
+      { key: 'n', head: 'N', w: 5, align: 'right', keep: 9 },
+      { key: 'hit', head: 'HIT', w: 6, align: 'right', keep: 7 },
+      { key: 'be', head: 'B/E', w: 6, align: 'right', keep: 6 },
+      { key: 'roi', head: 'ROI/$1', w: 7, align: 'right', keep: 8 },
+      { key: 'ci', head: `${Math.round(r.ciLevel * 100)}% CI`, w: 17, keep: 5 },
+      { key: 'vd', head: 'VERDICT', w: 16, keep: 9, flex: true },
+    ],
+    v.cols,
+  );
+  out.push(headOf(cols));
+  const w = (k: string) => cols.find((x) => x.key === k)?.w ?? 0;
+  const room = Math.max(1, height - out.length);
+  const start = Math.max(0, Math.min(v.sel - Math.floor(room / 2), Math.max(0, r.strategies.length - room)));
+  for (const [i, s] of r.strategies.slice(start, start + room).entries()) {
+    const edge = s.verdict !== NO_EDGE;
+    out.push(
+      rowOf(
+        cols,
+        {
+          id: fit(s.id, w('id')),
+          n: fit(String(s.n), w('n'), 'right'),
+          hit: fit(ledgerPct(s.hitRate), w('hit'), 'right'),
+          be: c.gray(fit(ledgerPct(s.breakEven), w('be'), 'right')),
+          roi: signColor(s.roi, fit(s.roi === null ? '-' : ledgerSigned(s.roi), w('roi'), 'right')),
+          ci: fit(s.ci ? `[${ledgerSigned(s.ci[0])},${ledgerSigned(s.ci[1])}]` : '-', w('ci')),
+          vd: edge ? c.green(c.bold(fit(s.verdict, w('vd')))) : c.gray(fit(s.verdict, w('vd'))),
+        },
+        start + i === v.sel,
+      ),
+    );
+  }
+  return out;
+}
+
 export function printRows(m: Model, v: View, height: number): string[] {
   const cols = layout(
     [
@@ -652,6 +714,17 @@ export function detailLines(m: Model, v: View, width: number): string[] {
     for (const cv of x.caveats) out.push(line(`  ${c.gray('·')} ${cv}`));
     return out;
   }
+  if (v.tab === 'ledger') {
+    const r = m.ledger?.report;
+    const s = r?.strategies[v.sel];
+    if (!r || !s) return [];
+    return [
+      line(`${c.bold(s.id)}  ${s.description}`),
+      line(`  n=${s.n} bets on ${s.events} events over ${s.days} days, ${s.wins} wins, ${s.voids} voids; fill = T-5m ask, return = payout/ask - 1`),
+      line(`  hit rate is read against break-even (mean fill price), never alone. Verdict needs n>=${r.minBets} and the ${Math.round(r.ciLevel * 100)}% day-clustered bootstrap CI above 0 (${r.iterations} resamples, seed ${r.seed})`),
+      line(c.gray('  strategies are fixed in radar/ledger.ts before the data; tuning them on these logs voids the test')),
+    ];
+  }
   if (v.tab === 'news') {
     const h = m.news?.hits[v.sel];
     if (!h) return m.news?.rules ? [line(c.gray(`  rules: ${m.news.rules.slice(0, Math.max(40, width * 3))}`))] : [];
@@ -686,7 +759,7 @@ export function render(m: Model, v: View, nowMs: number): string[] {
   );
   const detailH = rows >= 30 && v.tab !== 'decision' ? 8 : 0;
   const bodyH = Math.max(3, rows - 3 - detailH - (detailH ? 1 : 0));
-  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : v.tab === 'search' ? searchRows(m, v, bodyH) : v.tab === 'news' ? newsRows(m, v, bodyH) : v.tab === 'edge' ? edgeRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
+  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : v.tab === 'search' ? searchRows(m, v, bodyH) : v.tab === 'news' ? newsRows(m, v, bodyH) : v.tab === 'edge' ? edgeRows(m, v, bodyH) : v.tab === 'ledger' ? ledgerRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
   const lines = [header, tabs, ...body];
   while (lines.length < 2 + bodyH) lines.push('');
   if (detailH) {
@@ -695,15 +768,15 @@ export function render(m: Model, v: View, nowMs: number): string[] {
     for (let i = 0; i < detailH; i++) lines.push(d[i] ?? '');
   }
   while (lines.length < rows - 1) lines.push('');
-  const hint = c.gray(' ↑↓ move · 1-9 tabs · / search · n news · e edges · r refresh · f category · h holders · p decide · b people/bots · o link · q quit');
+  const hint = c.gray(' ↑↓ move · 1-9,0 tabs · / search · n news · e edges · r refresh · f category · h holders · p decide · b people/bots · o link · q quit');
   // the status message goes first: the key hint is long and would push a trailing message off a narrow screen
   lines.push(clip(s.message ? `${c.yellow(` ${s.message}`)}  ${hint}` : hint, cols));
   return lines.slice(0, rows).map((l) => (vlen(l) > cols ? clip(l, cols) : l));
 }
 
-export type Key = 'up' | 'down' | 'pageup' | 'pagedown' | 'home' | 'end' | 'tab' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9';
+export type Key = 'up' | 'down' | 'pageup' | 'pagedown' | 'home' | 'end' | 'tab' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '0';
 export function listLength(m: Model, tab: Tab): number {
-  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : tab === 'search' ? (m.search?.results.length ?? 0) : tab === 'news' ? (m.news?.hits.length ?? 0) : tab === 'edge' ? (m.edges?.result?.candidates.length ?? 0) : m.leads.length;
+  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : tab === 'search' ? (m.search?.results.length ?? 0) : tab === 'news' ? (m.news?.hits.length ?? 0) : tab === 'edge' ? (m.edges?.result?.candidates.length ?? 0) : tab === 'ledger' ? (m.ledger?.report?.strategies.length ?? 0) : m.leads.length;
 }
 
 /** Pure keyboard reducer; the shell only translates raw input into these keys. */
@@ -727,5 +800,6 @@ export function moveSelection(v: View, key: Key, m: Model): View {
     case '7': return { ...v, tab: 'search', sel: 0 };
     case '8': return { ...v, tab: 'news', sel: 0 };
     case '9': return { ...v, tab: 'edge', sel: 0 };
+    case '0': return { ...v, tab: 'ledger', sel: 0 };
   }
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { charWidth, clip, fit, sparkline, strip, truncate, vlen } from '../../radar/tui/ansi';
-import { moveSelection, render, type Model, type View } from '../../radar/tui/render';
+import { LEDGER_STANDING, moveSelection, render, type Model, type View } from '../../radar/tui/render';
+import { scoreLedger } from '../../radar/ledger';
 import type { Anomaly } from '../../radar/detect';
 import type { HolderRow } from '../../radar/holders';
 import { applyFilters } from '../../radar/collect';
@@ -55,7 +56,7 @@ describe('ansi helpers', () => {
 describe('rendering', () => {
   it('never overflows its box at any terminal size, on any tab', () => {
     for (const [cols, rows] of [[60, 16], [80, 24], [100, 30], [140, 40], [220, 60]]) {
-      for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge'] as const) {
+      for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger'] as const) {
         const lines = render(model(), { tab, sel: 3, cols, rows }, Date.now());
         expect(lines, `${cols}x${rows} ${tab}`).toHaveLength(rows);
         for (const l of lines) expect(vlen(l), `${cols}x${rows} ${tab}`).toBeLessThanOrEqual(cols);
@@ -78,7 +79,7 @@ describe('rendering', () => {
 
   it('survives empty data and an error state', () => {
     const empty: Model = { ...model(), anomalies: [], games: [], prints: [], leads: [], status: { ...model().status, error: 'HTTP 500', lastPollAt: null, nextPollAt: null } };
-    for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge'] as const) expect(() => render(empty, { tab, sel: 0, cols: 100, rows: 30 }, Date.now())).not.toThrow();
+    for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger'] as const) expect(() => render(empty, { tab, sel: 0, cols: 100, rows: 30 }, Date.now())).not.toThrow();
     expect(strip(render(empty, { tab: 'anomalies', sel: 0, cols: 100, rows: 30 }, Date.now()).join('\n'))).toContain('error');
   });
 
@@ -104,7 +105,8 @@ describe('keyboard reducer', () => {
     expect(moveSelection({ ...v, tab: 'decision' }, 'tab', m).tab).toBe('search');
     expect(moveSelection({ ...v, tab: 'search' }, 'tab', m).tab).toBe('news');
     expect(moveSelection({ ...v, tab: 'news' }, 'tab', m).tab).toBe('edge');
-    expect(moveSelection({ ...v, tab: 'edge' }, 'tab', m).tab).toBe('anomalies');
+    expect(moveSelection({ ...v, tab: 'edge' }, 'tab', m).tab).toBe('ledger');
+    expect(moveSelection({ ...v, tab: 'ledger' }, 'tab', m).tab).toBe('anomalies');
     expect(moveSelection({ ...v, tab: 'anomalies' }, 'tab', m).tab).toBe('games');
   });
   it('handles an empty list', () => {
@@ -183,5 +185,60 @@ describe('games and holders tabs', () => {
     expect(moveSelection({ tab: 'anomalies', sel: 0, cols: 120, rows: 40 }, '4', m).tab).toBe('holders');
     expect(moveSelection({ tab: 'anomalies', sel: 0, cols: 120, rows: 40 }, '5', m).tab).toBe('leads');
     expect(moveSelection({ tab: 'anomalies', sel: 0, cols: 120, rows: 40 }, '6', m).tab).toBe('decision');
+  });
+});
+
+describe('ledger tab', () => {
+  // A synthetic world: one 2-outcome market per day, each with T-8h and T-5m snapshots and a result.
+  const day0 = Date.UTC(2026, 10, 1) / 1000;
+  const snaps = Array.from({ length: 12 }, (_, i) => {
+    const startTs = day0 + i * 86_400;
+    const q = (mid: number) => [{ outcome: 'A', bid: mid - 0.01, ask: mid + 0.01, mid, bidUsd: 50, askUsd: 50 }, { outcome: 'B', bid: 1 - mid - 0.01, ask: 1 - mid + 0.01, mid: 1 - mid, bidUsd: 50, askUsd: 50 }];
+    const base = { v: 1, cid: `0x${i}`, slug: `game-${i}`, title: `Game ${i}`, event: `Game ${i}`, sport: 'nba', outcomes: ['A', 'B'], startTs, vol24: 1000, holders: null, holdersAbsent: true };
+    return [{ ...base, label: 'T-8h', capturedAt: startTs - 28_800, quotes: q(0.5) }, { ...base, label: 'T-5m', capturedAt: startTs - 300, quotes: q(0.6) }];
+  }).flat();
+  const results = Array.from({ length: 12 }, (_, i) => ({ cid: `0x${i}`, winnerIdx: i % 2, payout: i % 2 ? [0, 1] : [1, 0], settledAt: day0 + i * 86_400 + 10_000 }));
+  const withLedger = (report = scoreLedger(snaps, results, { iterations: 200 })): Model => ({ ...model(), ledger: { at: Date.now(), error: null, report } });
+  const text = (m: Model, cols = 150, rows = 40, sel = 0) => strip(render(m, { tab: 'ledger', sel, cols, rows }, Date.now()).join('\n'));
+
+  it('lists every strategy with n, hit vs break-even, ROI, CI and verdict, under the standing line', () => {
+    const t = text(withLedger());
+    expect(t).toContain('0 Ledger');
+    expect(t).toContain(LEDGER_STANDING);
+    expect(t).toMatch(/STRATEGY\s+N\s+HIT\s+B\/E\s+ROI\/\$1\s+99% CI\s+VERDICT/);
+    for (const id of ['fade-move', 'follow-move', 'favorite', 'underdog', 'top-holders-lean']) expect(t).toContain(id);
+    expect(t).toMatch(/favorite\s+12\s+50\.0%\s+61\.0%/);
+    expect(t).toContain('NO EDGE PROVEN');
+    expect(t).toContain('1-9,0 tabs');
+  });
+
+  it('says there is no data yet on empty logs, and survives no ledger at all', () => {
+    expect(text(withLedger(scoreLedger([], [])))).toContain('no data yet');
+    expect(text({ ...model(), ledger: null })).toContain(LEDGER_STANDING);
+    expect(text({ ...model(), ledger: { at: Date.now(), error: 'ledger: boom', report: null } })).toContain('ledger: boom');
+  });
+
+  it('shows the selected strategy rule in the detail pane', () => {
+    expect(text(withLedger(), 150, 40, 2)).toContain('fill = T-5m ask');
+  });
+
+  it('never overflows its box at any terminal size', () => {
+    for (const m of [withLedger(), withLedger(scoreLedger([], [])), { ...model(), ledger: null }]) {
+      for (const [cols, rows] of [[40, 10], [60, 16], [80, 24], [100, 30], [140, 40], [220, 60]]) {
+        for (const sel of [0, 4]) {
+          const lines = render(m, { tab: 'ledger', sel, cols, rows }, Date.now());
+          expect(lines, `${cols}x${rows}`).toHaveLength(rows);
+          for (const l of lines) expect(vlen(l), `${cols}x${rows}`).toBeLessThanOrEqual(cols);
+        }
+      }
+    }
+  });
+
+  it('opens with key 0 and moves within the strategies', () => {
+    const m = withLedger();
+    const v: View = { tab: 'anomalies', sel: 3, cols: 120, rows: 40 };
+    expect(moveSelection(v, '0', m)).toMatchObject({ tab: 'ledger', sel: 0 });
+    expect(moveSelection({ ...v, tab: 'ledger', sel: 0 }, 'end', m).sel).toBe(4);
+    expect(moveSelection({ ...v, tab: 'ledger', sel: 0 }, 'end', { ...m, ledger: null }).sel).toBe(0);
   });
 });

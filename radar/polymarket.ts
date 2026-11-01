@@ -280,6 +280,19 @@ export class PolymarketClient {
     return Array.isArray(rows) ? rows[0] : undefined;
   }
 
+  /** Gamma's league list: sport code, its series id and tag ids (tag 64 = esports). */
+  async sportsList(): Promise<Array<{ sport: string; series: string; tags: string[] }>> {
+    const rows = (await this.get(`${GAMMA}/sports`)) as Array<Record<string, any>>;
+    return (Array.isArray(rows) ? rows : []).filter((r) => r.sport && r.series).map((r) => ({ sport: String(r.sport), series: String(r.series), tags: String(r.tags ?? '').split(',').map((t) => t.trim()).filter(Boolean) }));
+  }
+
+  /** Open events of one series in raw gamma form, optionally bounded by end date (ISO). */
+  async seriesEventsRaw(seriesId: string, opts: { endMin?: string; endMax?: string; offset?: number; limit?: number } = {}): Promise<Array<Record<string, any>>> {
+    const range = `${opts.endMin ? `&end_date_min=${encodeURIComponent(opts.endMin)}` : ''}${opts.endMax ? `&end_date_max=${encodeURIComponent(opts.endMax)}` : ''}`;
+    const rows = (await this.get(`${GAMMA}/events?active=true&closed=false&series_id=${encodeURIComponent(seriesId)}&limit=${opts.limit ?? 100}&offset=${opts.offset ?? 0}${range}`)) as Array<Record<string, any>>;
+    return Array.isArray(rows) ? rows : [];
+  }
+
   /** Public profile of a wallet: creation date, display name, linked X handle, bio. Null when the wallet never made a profile. */
   async publicProfile(wallet: string): Promise<PublicProfile | null> {
     try {

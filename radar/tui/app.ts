@@ -1,6 +1,9 @@
+import { statSync } from 'node:fs';
 import { applyFilters, buildModel, runCycle } from '../collect.ts';
 import { loadDecision } from '../decide-data.ts';
 import { EDGES_PATH, saveEdges, scanAll } from '../edges.ts';
+import { readJsonl, RESULTS_PATH, SNAPSHOTS_PATH } from '../forward.ts';
+import { scoreLedger } from '../ledger.ts';
 import { loadHolders } from '../holders.ts';
 import { loadNews } from '../newsview.ts';
 import { loadPeople, type Person } from '../people.ts';
@@ -8,7 +11,7 @@ import type { PolymarketClient } from '../polymarket.ts';
 import { httpFetchText, pollFeeds } from '../poll.ts';
 import { loadRefs, type RefConfig } from '../refs.ts';
 import type { RadarStore } from '../store.ts';
-import { listLength, moveSelection, render, visibleHolders, type Key, type Model, type View } from './render.ts';
+import { listLength, moveSelection, render, visibleHolders, type Key, type LedgerView, type Model, type View } from './render.ts';
 
 const ESC = '\x1b';
 
@@ -40,6 +43,29 @@ function readConfig(opts: TuiOptions): { people: readonly Person[]; refs: readon
   return { people, refs, problem };
 }
 
+/** Scores the forward logs; the bootstrap is only rerun when a log file changed since the last refresh. */
+let ledgerCache: { key: string; view: LedgerView } | null = null;
+function ledgerView(nowMs: number): LedgerView {
+  const stamp = (p: string) => {
+    try {
+      const st = statSync(p);
+      return `${st.size}:${st.mtimeMs}`;
+    } catch {
+      return 'none';
+    }
+  };
+  const key = `${stamp(SNAPSHOTS_PATH)}|${stamp(RESULTS_PATH)}`;
+  if (ledgerCache?.key === key) return ledgerCache.view;
+  let view: LedgerView;
+  try {
+    view = { at: nowMs, error: null, report: scoreLedger(readJsonl(SNAPSHOTS_PATH), readJsonl(RESULTS_PATH)) };
+  } catch (error) {
+    view = { at: nowMs, error: `ledger: ${error instanceof Error ? error.message : String(error)}`, report: null };
+  }
+  ledgerCache = { key, view };
+  return view;
+}
+
 function snapshotModel(store: RadarStore, prev: Model | null, nowMs: number, status: Model['status'], filter: string | null, showBots: boolean): Model {
   const b = buildModel(store, nowMs);
   return {
@@ -56,6 +82,7 @@ function snapshotModel(store: RadarStore, prev: Model | null, nowMs: number, sta
     search: prev?.search ?? null,
     news: prev?.news ?? null,
     edges: prev?.edges ?? null,
+    ledger: ledgerView(nowMs),
   };
 }
 
@@ -318,7 +345,7 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     process.stdin.on('data', (d: string) => {
       const map: Record<string, Key> = {
         [`${ESC}[A`]: 'up', [`${ESC}[B`]: 'down', [`${ESC}[5~`]: 'pageup', [`${ESC}[6~`]: 'pagedown', [`${ESC}[H`]: 'home', [`${ESC}[1~`]: 'home', [`${ESC}[F`]: 'end', [`${ESC}[4~`]: 'end',
-        '\t': 'tab', k: 'up', j: 'down', g: 'home', G: 'end', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7', '8': '8', '9': '9',
+        '\t': 'tab', k: 'up', j: 'down', g: 'home', G: 'end', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7', '8': '8', '9': '9', '0': '0',
       };
       if (model.search?.typing) return typeSearch(d);
       if (d === '/') return beginSearch();

@@ -9,7 +9,7 @@ npm run scan                # one poll, print one frame, exit (good for logs and
 npm run test:tui            # drives the real TUI through a pseudo-terminal against live data (needs network)
 ```
 
-Keys: `↑↓ / j k` move · `PgUp PgDn g G` jump · `1`-`5` or `Tab` switch tabs · `f` cycle category filter · `h` load the selected event's top holders · `b` show/hide bots and market makers · `o` show the selected link · `r` refresh now · `q` quit.
+Keys: `↑↓ / j k` move · `PgUp PgDn g G` jump · `1`-`9`, `0` or `Tab` switch tabs · `f` cycle category filter · `h` load the selected event's top holders · `b` show/hide bots and market makers · `o` show the selected link · `r` refresh now · `q` quit.
 
 Tabs: **1 Anomalies** (non-game events with reasons and an OI sparkline), **2 Games** (live and next-24h games with kickoff countdown, pre-game line moves, OI and fills),
 **3 Big prints** (large fills with the wallet's history: NEW / THIN / WHALE), **4 Holders** (top holders of the selected event, see below),
@@ -175,3 +175,37 @@ Rules baked in after real mistakes:
 * A candidate with 25+ points of edge is flagged SUSPICIOUSLY LARGE: on a liquid market that is almost always a misread rule, source or deadline.
 * Everything is before fees and assumes every leg fills. A set that needs ten legs to fill together carries leg risk; a ladder only pays if both markets settle from the same facts.
 * "Nothing structural right now" is the normal answer for an efficient market, and on 2026-11-01 the scan found only micro-depth leftovers. No forecasting edge is claimed anywhere in this list.
+
+## Forward test: logger, ledger, X log (`forward.ts`, `ledger.ts`, `xaccounts.ts`) - Ledger tab `0`
+
+Every claim of a betting edge has to survive a forward test on data logged before the games were played. The pipeline:
+
+1. **Snapshot** (`forward-log`): every upcoming moneyline (esports series plus NBA/NFL/NHL/MLB and the big soccer leagues) starting in the next 12h is
+   captured once per window: T-8h (6.5-9.5h before start), T-2h (1.5-2.5h) and T-5m (0-10 min). A line holds the live CLOB bid/ask/mid per outcome,
+   24h volume and the top-10 holders. Markets with a one-sided book are skipped. A cid+window is never written twice.
+2. **Settle** (`forward-settle`): started markets are looked up until they close; the payout vector is logged once per cid (an even split = void).
+3. **Score** (`ledger`, Ledger tab `0`): five strategies fixed in code before any data existed (fade-move, follow-move, favorite, underdog,
+   top-holders-lean), every fill at the T-5m ask. Per strategy: n, hit rate next to its break-even (mean fill price), ROI per $1 and a 99%
+   bootstrap CI that resamples whole game days.
+4. **X log** (`x-add`, `x-poll`): public posts of hand-picked accounts, read for free through r.jina.ai (profiles only, about 5 recent posts per poll).
+   `firstSeenAt` is the only time a scorer may use; a time claimed in a post never counts.
+
+```
+npm run radar -- daemon [--every 30]   # loop: snapshot every N seconds (default 30), settle every 5 min, poll X handles every 15 min
+npm run radar -- forward-log           # one snapshot pass
+npm run radar -- forward-settle        # one settle pass
+npm run radar -- ledger                # score the logs; says "no data yet" until there are snapshots
+npm run radar -- x-add <handle> [note] # add an account to .radar/x_accounts.json
+npm run radar -- x-list                # accounts and how many posts each has logged
+npm run radar -- x-poll                # one poll of every account
+```
+
+The daemon prints one status line per cycle. A failing step (network, rate limit) is reported on that line and the loop goes on. Ctrl-C stops it after the current step (twice forces it).
+Keep `--every` at 300 seconds or less: the T-5m window is 10 minutes wide.
+
+Logs live in `.radar/forward/snapshots.jsonl`, `.radar/forward/results.jsonl` (override the directory with `RADAR_FORWARD`) and `.radar/x/posts.jsonl`,
+with the account list in `.radar/x_accounts.json`. `.radar/` is gitignored: the logs stay on this machine.
+
+**An edge is claimed only by the ledger verdict.** A strategy reads `EDGE` only when it has n >= 300 settled bets AND the lower bound of its 99%
+day-clustered CI of ROI is above 0; until then it reads `NO EDGE PROVEN`, whatever its hit rate looks like. These are paper results at the quoted
+ask, before fees and slippage. Do not change a strategy after looking at its results: a strategy tuned on the logs it is scored on proves nothing.

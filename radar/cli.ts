@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Run with: node radar/cli.ts <command>   (Node >= 22.18 strips types natively)
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { SEED_CASES } from './cases.seed.ts';
 import { TIER_TEXT, tierAsOf } from './evidence.ts';
@@ -8,6 +8,10 @@ import { flowSummary, INFORMATIVE_BAND, peakPositions } from './features.ts';
 import { ingestEvent } from './ingest.ts';
 import { loadDecision } from './decide-data.ts';
 import { EDGES_PATH, KIND_TEXT, saveEdges, scanAll } from './edges.ts';
+import { FORWARD_DIR, readJsonl, RESULTS_PATH, settleSnapshots, snapshotUpcoming, SNAPSHOTS_PATH, type SettleSummary, type SnapshotSummary } from './forward.ts';
+import { formatLedger, scoreLedger } from './ledger.ts';
+import { LEDGER_STANDING } from './tui/render.ts';
+import { cleanHandle, DEFAULT_HANDLES_PATH, DEFAULT_POSTS_PATH, loadHandles, loadPosts, pollAccounts, type AccountPollResult } from './xaccounts.ts';
 import { loadHolders, peopleOnly } from './holders.ts';
 import { loadNews } from './newsview.ts';
 import { accountAge, identityFor } from './identity.ts';
@@ -94,6 +98,80 @@ function report(store: RadarStore, slug: string): void {
     }
   }
   console.log('\nNote: profit-rate z compares realized profit with entry prices; it is inflated for scalpers and market makers. Indicators, not findings. Wallet identity is unknown; a flag means "look", never "fixed".');
+}
+
+const snapText = (r: SnapshotSummary) => `snapshots: ${r.series} series, ${r.events} events, ${r.upcoming} upcoming moneylines, ${r.due} due, ${r.written} written, ${r.skippedOneSided} one-sided skipped, ${r.holdersAbsent} without holders${r.errors.length ? `, ${r.errors.length} error(s)` : ''}`;
+const settleText = (r: SettleSummary) => `settle: ${r.pending} pending, ${r.settled} settled${r.errors.length ? `, ${r.errors.length} error(s)` : ''}`;
+const xText = (rs: AccountPollResult[]) => `x: ${rs.length} handle(s), ${rs.reduce((a, r) => a + r.added, 0)} new post(s)${rs.some((r) => r.error) ? `, failed: ${rs.filter((r) => r.error).map((r) => r.handle).join(',')}` : ''}`;
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+function ledger(): void {
+  const snaps = readJsonl(SNAPSHOTS_PATH);
+  const report = scoreLedger(snaps, readJsonl(RESULTS_PATH));
+  if (report.markets === 0) console.log(`no data yet: no forward snapshots in ${SNAPSHOTS_PATH}${snaps.length ? ` (${snaps.length} line(s), none valid)` : ''}. Start the logger with: npm run radar -- daemon\n`);
+  for (const l of formatLedger(report)) console.log(l);
+  console.log(`\n${LEDGER_STANDING}. An edge is claimed only by the ledger verdict above.`);
+}
+
+/** Settling and X polling hit the network per item; they run on their own slower cadence inside the daemon loop. */
+const SETTLE_EVERY_MS = 5 * 60_000;
+const X_EVERY_MS = 15 * 60_000;
+
+/**
+ * Forward logger loop: snapshot every cycle (the T-5m window is only 10 minutes wide), settle and poll X less often.
+ * One status line per cycle; a failing step is reported on that line and the loop goes on. Ctrl-C stops after the current step.
+ */
+async function daemon(client: PolymarketClient, everySecs: number): Promise<void> {
+  let stopping = false;
+  let wake: (() => void) | null = null;
+  const onSigint = () => {
+    if (stopping) process.exit(130);
+    stopping = true;
+    console.log('\nstopping after the current step (Ctrl-C again to force)');
+    wake?.();
+  };
+  process.on('SIGINT', onSigint);
+  process.on('SIGTERM', onSigint);
+  console.log(`forward daemon: snapshot every ${everySecs}s, settle every ${SETTLE_EVERY_MS / 60_000}m, X every ${X_EVERY_MS / 60_000}m; logs in ${FORWARD_DIR} and ${DEFAULT_POSTS_PATH}. Ctrl-C stops.`);
+  let lastSettle = 0;
+  let lastX = 0;
+  for (let cycle = 1; !stopping; cycle++) {
+    const t0 = Date.now();
+    const parts: string[] = [];
+    const step = async (name: string, fn: () => Promise<string>) => {
+      if (stopping) return;
+      try {
+        parts.push(await fn());
+      } catch (e) {
+        parts.push(`${name} FAILED: ${errMsg(e)}`);
+      }
+    };
+    await step('snapshots', async () => snapText(await snapshotUpcoming(client)));
+    if (Date.now() - lastSettle >= SETTLE_EVERY_MS) {
+      lastSettle = Date.now();
+      await step('settle', async () => settleText(await settleSnapshots(client)));
+    }
+    if (Date.now() - lastX >= X_EVERY_MS) {
+      lastX = Date.now();
+      await step('x', async () => {
+        const handles = await loadHandles();
+        return handles.length ? xText(await pollAccounts(httpFetchText, handles)) : 'x: no handles';
+      });
+    }
+    console.log(`${new Date().toISOString().slice(0, 19).replace('T', ' ')}Z #${cycle} ${((Date.now() - t0) / 1000).toFixed(0)}s | ${parts.join(' | ')}`);
+    const wait = Math.max(0, everySecs * 1000 - (Date.now() - t0));
+    if (!stopping && wait > 0) await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, wait);
+      wake = () => {
+        clearTimeout(t);
+        resolve();
+      };
+    });
+    wake = null;
+  }
+  process.off('SIGINT', onSigint);
+  process.off('SIGTERM', onSigint);
+  console.log('daemon stopped');
 }
 
 async function main(): Promise<void> {
@@ -242,9 +320,57 @@ async function main(): Promise<void> {
           intervalSecs: flag(args, 'interval', 120),
           cols: cols || undefined,
           rows: rows || undefined,
-          tab: (['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news'] as const).find((t) => t === val('tab')),
+          tab: (['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger'] as const).find((t) => t === val('tab')),
           slug: val('slug'),
         });
+        return;
+      }
+      case 'forward-log': {
+        const r = await snapshotUpcoming(client);
+        console.log(snapText(r));
+        for (const e of r.errors) console.log(`  error: ${e}`);
+        console.log(`log: ${SNAPSHOTS_PATH}`);
+        return;
+      }
+      case 'forward-settle': {
+        const r = await settleSnapshots(client);
+        console.log(settleText(r));
+        for (const e of r.errors) console.log(`  error: ${e}`);
+        console.log(`log: ${RESULTS_PATH}`);
+        return;
+      }
+      case 'ledger':
+        return ledger();
+      case 'daemon':
+        return daemon(client, Math.max(5, flag(args, 'every', 30)));
+      case 'x-add': {
+        const handle = cleanHandle(args[0] ?? '');
+        if (!handle) throw new Error('usage: x-add <handle> [note]');
+        const list = await loadHandles();
+        const note = args.slice(1).join(' ').trim();
+        const i = list.findIndex((a) => a.handle.toLowerCase() === handle.toLowerCase());
+        const entry = note ? { handle, note } : { handle };
+        if (i >= 0) list[i] = note ? entry : list[i];
+        else list.push(entry);
+        mkdirSync(dirname(DEFAULT_HANDLES_PATH), { recursive: true });
+        writeFileSync(DEFAULT_HANDLES_PATH, JSON.stringify(list, null, 2) + '\n');
+        console.log(`${i < 0 ? 'added' : note ? 'updated note of' : 'already listed:'} @${handle}; ${list.length} handle(s) in ${DEFAULT_HANDLES_PATH}`);
+        return;
+      }
+      case 'x-list': {
+        const list = await loadHandles();
+        const posts = await loadPosts();
+        const count = new Map<string, number>();
+        for (const p of posts) count.set(p.handle.toLowerCase(), (count.get(p.handle.toLowerCase()) ?? 0) + 1);
+        console.log(`${list.length} handle(s) in ${DEFAULT_HANDLES_PATH}${list.length ? '' : '  (add with: x-add <handle> [note])'}; ${posts.length} post(s) logged in ${DEFAULT_POSTS_PATH}`);
+        for (const a of list) console.log(`  @${a.handle.padEnd(20)} ${String(count.get(a.handle.toLowerCase()) ?? 0).padStart(5)} posts${a.note ? `  ${a.note}` : ''}`);
+        return;
+      }
+      case 'x-poll': {
+        const list = await loadHandles();
+        if (list.length === 0) return void console.log(`no handles in ${DEFAULT_HANDLES_PATH}; add with: x-add <handle> [note]`);
+        for (const r of await pollAccounts(httpFetchText, list)) console.log(`${r.error ? 'FAIL' : 'ok  '} @${r.handle.padEnd(20)} parsed ${String(r.parsed).padStart(3)}, new ${String(r.added).padStart(3)}${r.error ? `  (${r.error})` : ''}`);
+        console.log(`log: ${DEFAULT_POSTS_PATH} (firstSeenAt is the only time a scorer may trust)`);
         return;
       }
       case 'news': {
@@ -292,7 +418,7 @@ async function main(): Promise<void> {
         return;
       }
       default:
-        console.log('commands: tui [--interval S --no-news] | decide <slug> [--wallets] | research <slug> | edges [--top N --events N --min-edge D --min-liq USD --verify K --no-verify] | people list|add|remove|check <wallet> | holders <slug> [--all] | scan [--cols N --rows N --tab games|prints|leads|decision --slug S] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
+        console.log('commands: tui [--interval S --no-news] | daemon [--every SECS] | forward-log | forward-settle | ledger | x-add <handle> [note] | x-list | x-poll | decide <slug> [--wallets] | research <slug> | edges [--top N --events N --min-edge D --min-liq USD --verify K --no-verify] | people list|add|remove|check <wallet> | holders <slug> [--all] | scan [--cols N --rows N --tab games|prints|leads|decision|edge|ledger --slug S] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
     }
   } finally {
     store.close();

@@ -187,7 +187,7 @@ describe('edge tab', () => {
     expect(out).toMatch(/\$20/); // profit at depth
     expect(out).toMatch(/no forecasting edge is claimed/);
     expect(out).toMatch(/BUY YES "\$30M" @0\.500/); // detail panel for the selected row
-    expect(out).toMatch(/1-9 tabs/);
+    expect(out).toMatch(/1-9,0 tabs/);
   });
   it('says an empty result is normal', () => {
     expect(strip(render(withResult([]), v(), Date.now()).join('\n'))).toMatch(/nothing structural right now/);
