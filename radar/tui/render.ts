@@ -2,6 +2,7 @@ import type { DecisionView } from '../decide-data.ts';
 import type { NewsView } from '../newsview.ts';
 import { KIND_TEXT, type EdgeCandidate, type ScanResult } from '../edges.ts';
 import { NO_EDGE, type LedgerReport } from '../ledger.ts';
+import { NEWMARKET_THRESHOLDS, type ScanRow, type ScanSummary } from '../newmarkets.ts';
 import { gamePhase, type Anomaly, type WalletTag } from '../detect.ts';
 import type { Action, MarketDecision } from '../decide.ts';
 import { peopleOnly, type HolderRow, type HoldersView } from '../holders.ts';
@@ -9,9 +10,9 @@ import { accountAge, dateOf } from '../identity.ts';
 import type { NewsRow, PrintRow } from '../store.ts';
 import { c, clip, fit, sparkline, vlen } from './ansi.ts';
 
-export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search' | 'news' | 'edge' | 'ledger';
-export const TABS: readonly Tab[] = ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger'];
-const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Anomalies', games: '2 Games', prints: '3 Big prints', holders: '4 Holders', leads: '5 Leads', decision: '6 Decision', search: '7 Search', news: '8 News', edge: '9 Edge', ledger: '0 Ledger' };
+export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search' | 'news' | 'edge' | 'ledger' | 'new';
+export const TABS: readonly Tab[] = ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new'];
+const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Anomalies', games: '2 Games', prints: '3 Big prints', holders: '4 Holders', leads: '5 Leads', decision: '6 Decision', search: '7 Search', news: '8 News', edge: '9 Edge', ledger: '0 Ledger', new: 'W New' };
 
 export interface TaggedPrint extends PrintRow {
   tag: WalletTag;
@@ -50,7 +51,26 @@ export interface Model {
   edges?: EdgeView | null;
   /** Ledger tab: the pre-registered paper ledger scored from the forward logs at the last refresh. */
   ledger?: LedgerView | null;
+  /** New tab: the last new-market scan (null until `w`). */
+  newMarkets?: NewMarketsView | null;
 }
+
+export interface NewMarketsView {
+  stage: string;
+  done: boolean;
+  error: string | null;
+  /** Epoch ms the scan finished (null while running or never). */
+  at: number | null;
+  summary: ScanSummary | null;
+  /** Flagged lines written to the forward log by this scan (null when not logged). */
+  logged: { written: number; duplicates: number } | null;
+}
+
+/** Standing line of the New tab: flags describe trading behavior only. */
+export const NEW_STANDING = 'behavior flags only: not evidence of insider trading; no edge proven until the forward log says so';
+
+/** Flagged rows of the last new-market scan, best score first. */
+export const flaggedNew = (m: Model): ScanRow[] => (m.newMarkets?.summary?.rows ?? []).filter((r) => r.flagged).sort((a, b) => b.score - a.score);
 
 export interface LedgerView {
   /** Epoch ms of the scoring run. */
@@ -580,6 +600,60 @@ export function ledgerRows(m: Model, v: View, height: number): string[] {
   return out;
 }
 
+const share = (x: number | null): string => (x === null ? '-' : `${Math.round(x * 100)}%`);
+
+export function newRows(m: Model, v: View, height: number): string[] {
+  const nv = m.newMarkets;
+  const sm = nv?.summary ?? null;
+  const busy = !nv ? '' : nv.done ? (nv.error ? c.red(`  ${nv.error}`) : '') : c.yellow(`  ${nv.stage}…`);
+  const counts = sm ? c.gray(`  ${sm.scanned} of ${sm.listed} new scanned, ${sm.flagged} flagged${sm.truncated ? `, ${sm.truncated} too busy` : ''}${sm.skipped ? `, ${sm.skipped} failed` : ''}${nv?.logged ? `, ${nv.logged.written} logged` : ''}${nv?.at ? `  ${new Date(nv.at).toISOString().slice(11, 16)}Z` : ''}`) : '';
+  const out = [clip(`${c.bold(' New markets')}${counts}${busy}`, v.cols)];
+  out.push(clip(c.yellow(`  ${NEW_STANDING}`), v.cols));
+  if (!nv) {
+    out.push(c.gray('  press w to scan markets created in the last 24h for unusual first-hour trading (one-sided flow, one wallet, young accounts)'));
+    return out;
+  }
+  const cols = layout(
+    [
+      { key: 'age', head: 'AGE', w: 5, align: 'right', keep: 8 },
+      { key: 'sc', head: 'SC', w: 3, align: 'right', keep: 10 },
+      { key: 'vol', head: 'VOL60M', w: 7, align: 'right', keep: 9 },
+      { key: 'top', head: 'TOPWAL', w: 6, align: 'right', keep: 6 },
+      { key: 'na', head: 'NEWACC', w: 6, align: 'right', keep: 5 },
+      { key: 'lean', head: 'LEAN', w: 12, keep: 7 },
+      { key: 'mk', head: 'MARKET', w: 30, keep: 10, flex: true },
+    ],
+    v.cols,
+  );
+  out.push(headOf(cols));
+  const w = (k: string) => cols.find((x) => x.key === k)?.w ?? 0;
+  const list = flaggedNew(m);
+  const nowSecs = Date.now() / 1000;
+  const room = Math.max(1, height - out.length);
+  const start = Math.max(0, Math.min(v.sel - Math.floor(room / 2), Math.max(0, list.length - room)));
+  for (const [i, r] of list.slice(start, start + room).entries()) {
+    const f = r.features;
+    const lean = f.leanIdx === null ? '-' : `${r.outcomes[f.leanIdx] ?? (f.leanIdx ? 'No' : 'Yes')} ${share(f.oneSided)}`;
+    out.push(
+      rowOf(
+        cols,
+        {
+          age: c.gray(fit(r.createdAt ? dur(Math.max(0, nowSecs - r.createdAt)) : '?', w('age'), 'right')),
+          sc: c.bold(fit(String(r.score), w('sc'), 'right')),
+          vol: fit(usd(f.usd), w('vol'), 'right'),
+          top: fit(share(f.topWalletShare), w('top'), 'right'),
+          na: f.newAcctShare !== null && f.newAcctShare >= NEWMARKET_THRESHOLDS.newAcctShare ? c.magenta(fit(share(f.newAcctShare), w('na'), 'right')) : fit(share(f.newAcctShare), w('na'), 'right'),
+          lean: c.cyan(fit(lean, w('lean'))),
+          mk: fit(r.title, w('mk')),
+        },
+        start + i === v.sel,
+      ),
+    );
+  }
+  if (nv.done && list.length === 0 && sm) out.push(c.gray(`  no new market crossed the flag score (${sm.scanned} scanned). Quiet first hours are the normal case.`));
+  return out;
+}
+
 export function printRows(m: Model, v: View, height: number): string[] {
   const cols = layout(
     [
@@ -714,6 +788,16 @@ export function detailLines(m: Model, v: View, width: number): string[] {
     for (const cv of x.caveats) out.push(line(`  ${c.gray('·')} ${cv}`));
     return out;
   }
+  if (v.tab === 'new') {
+    const r = flaggedNew(m)[v.sel];
+    if (!r) return [];
+    const f = r.features;
+    const out = [line(`${c.bold(r.title)}  ${c.gray(`polymarket.com/event/${r.eventSlug}`)}`)];
+    for (const why of r.reasons) out.push(line(`  ${c.cyan('·')} ${why}`));
+    out.push(line(`  first ${dur(f.windowSecs)}${f.windowComplete ? '' : ' (window still open)'}: ${f.fills} taker fills, ${f.wallets} wallets, ${usd(f.usd)}; price ${f.firstPrice === null ? '-' : f.firstPrice.toFixed(2)} -> ${f.lastPrice === null ? '-' : f.lastPrice.toFixed(2)}; ages known for ${share(f.ageCoverage)} of volume`));
+    out.push(line(c.gray('  p decide · n news · o link. Labels describe trading behavior, not who traded or why.')));
+    return out;
+  }
   if (v.tab === 'ledger') {
     const r = m.ledger?.report;
     const s = r?.strategies[v.sel];
@@ -759,7 +843,7 @@ export function render(m: Model, v: View, nowMs: number): string[] {
   );
   const detailH = rows >= 30 && v.tab !== 'decision' ? 8 : 0;
   const bodyH = Math.max(3, rows - 3 - detailH - (detailH ? 1 : 0));
-  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : v.tab === 'search' ? searchRows(m, v, bodyH) : v.tab === 'news' ? newsRows(m, v, bodyH) : v.tab === 'edge' ? edgeRows(m, v, bodyH) : v.tab === 'ledger' ? ledgerRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
+  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : v.tab === 'search' ? searchRows(m, v, bodyH) : v.tab === 'news' ? newsRows(m, v, bodyH) : v.tab === 'edge' ? edgeRows(m, v, bodyH) : v.tab === 'ledger' ? ledgerRows(m, v, bodyH) : v.tab === 'new' ? newRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
   const lines = [header, tabs, ...body];
   while (lines.length < 2 + bodyH) lines.push('');
   if (detailH) {
@@ -768,15 +852,15 @@ export function render(m: Model, v: View, nowMs: number): string[] {
     for (let i = 0; i < detailH; i++) lines.push(d[i] ?? '');
   }
   while (lines.length < rows - 1) lines.push('');
-  const hint = c.gray(' ↑↓ move · 1-9,0 tabs · / search · n news · e edges · r refresh · f category · h holders · p decide · b people/bots · o link · q quit');
+  const hint = c.gray(' ↑↓ move · 1-9,0 tabs · w new · / search · n news · e edges · r refresh · f category · h holders · p decide · b people/bots · o link · q quit');
   // the status message goes first: the key hint is long and would push a trailing message off a narrow screen
   lines.push(clip(s.message ? `${c.yellow(` ${s.message}`)}  ${hint}` : hint, cols));
   return lines.slice(0, rows).map((l) => (vlen(l) > cols ? clip(l, cols) : l));
 }
 
-export type Key = 'up' | 'down' | 'pageup' | 'pagedown' | 'home' | 'end' | 'tab' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '0';
+export type Key = 'up' | 'down' | 'pageup' | 'pagedown' | 'home' | 'end' | 'tab' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '0' | 'w';
 export function listLength(m: Model, tab: Tab): number {
-  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : tab === 'search' ? (m.search?.results.length ?? 0) : tab === 'news' ? (m.news?.hits.length ?? 0) : tab === 'edge' ? (m.edges?.result?.candidates.length ?? 0) : tab === 'ledger' ? (m.ledger?.report?.strategies.length ?? 0) : m.leads.length;
+  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : tab === 'search' ? (m.search?.results.length ?? 0) : tab === 'news' ? (m.news?.hits.length ?? 0) : tab === 'edge' ? (m.edges?.result?.candidates.length ?? 0) : tab === 'ledger' ? (m.ledger?.report?.strategies.length ?? 0) : tab === 'new' ? flaggedNew(m).length : m.leads.length;
 }
 
 /** Pure keyboard reducer; the shell only translates raw input into these keys. */
@@ -801,5 +885,6 @@ export function moveSelection(v: View, key: Key, m: Model): View {
     case '8': return { ...v, tab: 'news', sel: 0 };
     case '9': return { ...v, tab: 'edge', sel: 0 };
     case '0': return { ...v, tab: 'ledger', sel: 0 };
+    case 'w': return { ...v, tab: 'new', sel: 0 };
   }
 }

@@ -351,6 +351,18 @@ export class PolymarketClient {
     return out;
   }
 
+  /** Open markets newest-created first, in raw gamma /markets form (each carries createdAt, outcomes, clobTokenIds, events[]). */
+  async newMarketsRaw(opts: { offset?: number; limit?: number; minVolume?: number } = {}): Promise<Array<Record<string, any>>> {
+    const rows = (await this.get(`${GAMMA}/markets?order=createdAt&ascending=false&closed=false&limit=${opts.limit ?? 100}&offset=${opts.offset ?? 0}${opts.minVolume ? `&volume_num_min=${opts.minVolume}` : ''}`)) as Array<Record<string, any>>;
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  /** One page of a market's fills, newest first, at or before `end`. takerOnly=true counts each fill once, from the aggressor's side. */
+  async tradesPage(cid: string, opts: { end?: number; offset?: number; limit?: number; takerOnly?: boolean } = {}): Promise<TradeRow[]> {
+    const rows = (await this.get(`${DATA}/trades?market=${cid}&takerOnly=${opts.takerOnly ?? false}&limit=${opts.limit ?? PAGE}&offset=${opts.offset ?? 0}${opts.end !== undefined ? `&end=${opts.end}` : ''}`)) as Record<string, any>[];
+    return Array.isArray(rows) ? rows.map(mapTrade).filter((t): t is TradeRow => t !== null) : [];
+  }
+
   async walletProfile(wallet: string, opts: { skillMinCost?: number } = {}): Promise<WalletRow> {
     const first = (await this.get(`${DATA}/activity?user=${wallet}&limit=1&sortDirection=ASC`)) as Record<string, any>[];
     const traded = (await this.get(`${DATA}/traded?user=${wallet}`)) as Record<string, any>;

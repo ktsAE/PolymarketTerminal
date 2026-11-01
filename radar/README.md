@@ -9,7 +9,7 @@ npm run scan                # one poll, print one frame, exit (good for logs and
 npm run test:tui            # drives the real TUI through a pseudo-terminal against live data (needs network)
 ```
 
-Keys: `↑↓ / j k` move · `PgUp PgDn g G` jump · `1`-`9`, `0` or `Tab` switch tabs · `f` cycle category filter · `h` load the selected event's top holders · `b` show/hide bots and market makers · `o` show the selected link · `r` refresh now · `q` quit.
+Keys: `↑↓ / j k` move · `PgUp PgDn g G` jump · `1`-`9`, `0` or `Tab` switch tabs · `w` New tab (scans new markets) · `f` cycle category filter · `h` load the selected event's top holders · `b` show/hide bots and market makers · `o` show the selected link · `r` refresh now · `q` quit.
 
 Tabs: **1 Anomalies** (non-game events with reasons and an OI sparkline), **2 Games** (live and next-24h games with kickoff countdown, pre-game line moves, OI and fills),
 **3 Big prints** (large fills with the wallet's history: NEW / THIN / WHALE), **4 Holders** (top holders of the selected event, see below),
@@ -191,7 +191,8 @@ Every claim of a betting edge has to survive a forward test on data logged befor
    `firstSeenAt` is the only time a scorer may use; a time claimed in a post never counts.
 
 ```
-npm run radar -- daemon [--every 30]   # loop: snapshot every N seconds (default 30), settle every 5 min, poll X handles every 15 min
+npm run radar -- daemon [--every 30]   # loop: snapshot every N seconds (default 30), settle every 5 min, poll X handles every 15 min,
+                                       #       new-market scan every 10 min, new-market scoring every 30 min
 npm run radar -- forward-log           # one snapshot pass
 npm run radar -- forward-settle        # one settle pass
 npm run radar -- ledger                # score the logs; says "no data yet" until there are snapshots
@@ -209,3 +210,35 @@ with the account list in `.radar/x_accounts.json`. `.radar/` is gitignored: the 
 **An edge is claimed only by the ledger verdict.** A strategy reads `EDGE` only when it has n >= 300 settled bets AND the lower bound of its 99%
 day-clustered CI of ROI is above 0; until then it reads `NO EDGE PROVEN`, whatever its hit rate looks like. These are paper results at the quoted
 ask, before fees and slippage. Do not change a strategy after looking at its results: a strategy tuned on the logs it is scored on proves nothing.
+
+## New-market watcher (`newmarkets.ts`) - New tab `w`, `new-scan`, `new-score`
+
+Markets created in the last 24h whose **first hour** of trading looks unusual. The scanner lists new markets by creation time (gamma,
+`closed=false`, volume >= $1k), drops crypto up/down candle markets, takes the busiest 150, and reads their **taker fills only** (with both
+counterparties included every fill appears twice and net flow cancels to ~50/50). For the biggest early wallets it looks up the first
+Polymarket activity to get account age (at most 80 lookups per scan, cached for the process).
+
+Each market gets plain behavior labels and a score; it is flagged at score >= 4. The labels, all fixed in `NEWMARKET_THRESHOLDS` before any outcome data:
+`one-sided flow 91% to Yes`, `top wallet 64% of volume`, `accounts under 30d old 45% of volume`, `price drift 14 pts toward Yes` (only scored when the
+move goes with the flow), `largest print $3k (30% of volume)`, `$30k in first hour`. Fewer than $1k or 5 fills in the first hour scores 0. A market with
+more fills than the scanner pages through is counted as "too busy" and not scored.
+
+```
+npm run radar -- new-scan [--hours 24 --top 20]   # scan once, print the ranked rows with reasons and links, append flagged ones to the forward log
+npm run radar -- new-score                         # fill in +1h/+6h/+24h prices and resolutions for logged markets, print the tallies and paper ROI
+```
+
+The New tab (`w`) scans the 60 busiest new markets (about a minute) and shows the flagged ones: age, score, 60-minute volume, top-wallet share,
+new-account share and lean (side and its share of flow). The detail pane lists the reasons. `p` decides and `n` searches news on the selected
+market's event, `o` shows its link. Opening the tab reuses a scan under 10 minutes old; `w` on the tab rescans. Every TUI scan also logs its flagged lines.
+
+Forward log, in `.radar/forward/` (gitignored, `RADAR_FORWARD` overrides the directory):
+* `newmarkets.jsonl`: one line per flagged market per hour (cid + hour bucket is never written twice): features, score, reasons, leaning side, and the
+  live bid/ask/mid of the leaning outcome at capture.
+* `newmarkets-results.jsonl` (append-only): the leaning-side price of the last taker fill at +1h, +6h and +24h after capture (written once the horizon
+  has passed), and the resolution payout. `new-score` reports continuation vs reversal against the capture mid, and the ROI of buying one share of
+  the leaning side at the capture ask held to resolution, before fees.
+
+**Honesty rule.** A flag describes trading behavior, never who traded or why: it is not evidence of insider trading, and the code never says so.
+No edge is claimed until the forward log shows one: the tallies are read only after enough flagged markets have resolved, and the thresholds are
+not tuned on the log they are scored on (the event study owns any revision). Markets that resolve within the scan window drop out of `closed=false`.

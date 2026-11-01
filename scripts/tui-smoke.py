@@ -2,7 +2,7 @@
 """Drives the real radar TUI through a pseudo-terminal against live Polymarket data.
 
 Checks what unit tests cannot: raw mode, the alternate screen, keystrokes, background polling, a clean quit.
-Usage: python3 scripts/tui-smoke.py        (needs network; ~40s)
+Usage: python3 scripts/tui-smoke.py        (needs network; several minutes: decision, edge and new-market scans run live)
 Exit code 0 = every check passed.
 """
 import os, pty, re, select, signal, struct, sys, time, fcntl, termios
@@ -144,6 +144,22 @@ ltext = plain("\n".join(screen()[:ROWS]))
 check("0 opens the ledger tab", "0 Ledger" in plain(screen()[1]) and "Paper ledger" in plain(screen()[2]))
 check("ledger tab shows the standing no-edge line", "NO EDGE PROVEN until n>=300 and CI>0" in ltext)
 check("ledger tab lists strategies or says there is no data yet", "STRATEGY" in ltext or "no data yet" in ltext)
+# new markets: w opens the New tab with its standing line, scans the busiest new markets and lists the flagged ones (or says none crossed)
+os.write(fd, b"w"); pump(1.5)
+wtext = plain("\n".join(screen()[:ROWS]))
+check("w opens the new-markets tab", "W New" in plain(screen()[1]) and "New markets" in plain(screen()[2]))
+check("new tab shows the standing behavior-only line", "not evidence of insider trading" in wtext and "no edge proven until the forward log says so" in wtext)
+t6 = time.time()
+while time.time() - t6 < 200:
+    pump(1)
+    h = plain(screen()[2])
+    if "flagged" in h and "…" not in h: break
+wtext = plain("\n".join(screen()[:ROWS]))
+print(f"  new-market scan took {time.time() - t6:.0f}s: {plain(screen()[2]).strip()}")
+check("new-market scan finished with its counts", "flagged" in plain(screen()[2]) and "…" not in plain(screen()[2]))
+check("new tab lists flagged markets or says none crossed", ("VOL60M" in wtext and "TOPWAL" in wtext) or "no new market crossed" in wtext)
+os.write(fd, b"o"); pump(0.8)
+check("o on the new tab shows a link or says nothing is selected", "polymarket.com/event/" in plain(screen()[ROWS - 1]) or "nothing selected" in plain(screen()[ROWS - 1]))
 pump(6)
 check("still alive after background activity", alive())
 os.write(fd, b"q")

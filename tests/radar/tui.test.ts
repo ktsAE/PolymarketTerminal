@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { charWidth, clip, fit, sparkline, strip, truncate, vlen } from '../../radar/tui/ansi';
-import { LEDGER_STANDING, moveSelection, render, type Model, type View } from '../../radar/tui/render';
+import { LEDGER_STANDING, moveSelection, NEW_STANDING, render, type Model, type View } from '../../radar/tui/render';
+import type { EarlyFeatures, ScanRow, ScanSummary } from '../../radar/newmarkets';
 import { scoreLedger } from '../../radar/ledger';
 import type { Anomaly } from '../../radar/detect';
 import type { HolderRow } from '../../radar/holders';
@@ -56,7 +57,7 @@ describe('ansi helpers', () => {
 describe('rendering', () => {
   it('never overflows its box at any terminal size, on any tab', () => {
     for (const [cols, rows] of [[60, 16], [80, 24], [100, 30], [140, 40], [220, 60]]) {
-      for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger'] as const) {
+      for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new'] as const) {
         const lines = render(model(), { tab, sel: 3, cols, rows }, Date.now());
         expect(lines, `${cols}x${rows} ${tab}`).toHaveLength(rows);
         for (const l of lines) expect(vlen(l), `${cols}x${rows} ${tab}`).toBeLessThanOrEqual(cols);
@@ -79,7 +80,7 @@ describe('rendering', () => {
 
   it('survives empty data and an error state', () => {
     const empty: Model = { ...model(), anomalies: [], games: [], prints: [], leads: [], status: { ...model().status, error: 'HTTP 500', lastPollAt: null, nextPollAt: null } };
-    for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger'] as const) expect(() => render(empty, { tab, sel: 0, cols: 100, rows: 30 }, Date.now())).not.toThrow();
+    for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new'] as const) expect(() => render(empty, { tab, sel: 0, cols: 100, rows: 30 }, Date.now())).not.toThrow();
     expect(strip(render(empty, { tab: 'anomalies', sel: 0, cols: 100, rows: 30 }, Date.now()).join('\n'))).toContain('error');
   });
 
@@ -106,7 +107,8 @@ describe('keyboard reducer', () => {
     expect(moveSelection({ ...v, tab: 'search' }, 'tab', m).tab).toBe('news');
     expect(moveSelection({ ...v, tab: 'news' }, 'tab', m).tab).toBe('edge');
     expect(moveSelection({ ...v, tab: 'edge' }, 'tab', m).tab).toBe('ledger');
-    expect(moveSelection({ ...v, tab: 'ledger' }, 'tab', m).tab).toBe('anomalies');
+    expect(moveSelection({ ...v, tab: 'ledger' }, 'tab', m).tab).toBe('new');
+    expect(moveSelection({ ...v, tab: 'new' }, 'tab', m).tab).toBe('anomalies');
     expect(moveSelection({ ...v, tab: 'anomalies' }, 'tab', m).tab).toBe('games');
   });
   it('handles an empty list', () => {
@@ -240,5 +242,80 @@ describe('ledger tab', () => {
     expect(moveSelection(v, '0', m)).toMatchObject({ tab: 'ledger', sel: 0 });
     expect(moveSelection({ ...v, tab: 'ledger', sel: 0 }, 'end', m).sel).toBe(4);
     expect(moveSelection({ ...v, tab: 'ledger', sel: 0 }, 'end', { ...m, ledger: null }).sel).toBe(0);
+  });
+});
+
+describe('new-markets tab', () => {
+  // Date is faked per test (tests/setup.ts), so times are read inside each builder, never at describe time.
+  const nowSecs = () => Math.floor(Date.now() / 1000);
+  const features = (over: Partial<EarlyFeatures> = {}): EarlyFeatures => ({
+    firstTs: nowSecs() - 7_200, windowSecs: 3_600, windowComplete: true, fills: 9, usd: 4_769, wallets: 3, topWalletShare: 0.96, newAcctShare: 0.45, ageCoverage: 0.9,
+    yesUsd: 4_700, noUsd: 69, oneSided: 0.97, leanIdx: 0, firstPrice: 0.5, lastPrice: 0.64, drift: 0.14, largestUsd: 3_000, largestShare: 0.63, tradesPerMin: 0.15, ...over,
+  });
+  const row = (i: number, over: Partial<ScanRow> = {}): ScanRow => ({
+    cid: `0x${i}`, slug: `mk-${i}`, eventSlug: `ev-new-${i}`, title: i % 4 === 0 ? `日本語 新市場 ${i} 🚀 with a really long market question that must be cut cleanly` : `New market number ${i}`,
+    outcomes: ['Yes', 'No'], tokenIds: ['1', '2'], createdAt: nowSecs() - 3 * 3600 - i * 60, features: features(), score: 4 + (i % 3),
+    reasons: ['one-sided flow 97% to Yes', 'top wallet 96% of volume', 'accounts under 30d old 45% of volume'], flagged: true, ...over,
+  });
+  const summary = (rows: ScanRow[], over: Partial<ScanSummary> = {}): ScanSummary => ({
+    listed: 169, excluded: 0, considered: 60, scanned: 60, noTrades: 0, skipped: 0, truncated: 0, ageLookups: 40, flagged: rows.filter((r) => r.flagged).length, rows, lines: [], errors: [], ...over,
+  });
+  const withNew = (rows: ScanRow[], over: Partial<NonNullable<Model['newMarkets']>> = {}): Model => ({ ...model(), newMarkets: { stage: 'done', done: true, error: null, at: Date.now(), summary: summary(rows), logged: { written: 2, duplicates: 0 }, ...over } });
+  const many = () => Array.from({ length: 40 }, (_, i) => row(i));
+  const text = (m: Model, cols = 150, rows = 40, sel = 0) => strip(render(m, { tab: 'new', sel, cols, rows }, Date.now()).join('\n'));
+
+  it('ranks flagged markets with age, score, 60-min volume, shares and lean, under the standing line', () => {
+    const m = withNew([row(1, { score: 4 }), row(2, { score: 6, title: 'Top scorer' }), row(3, { flagged: false, score: 1, title: 'Quiet market' })]);
+    const t = text(m);
+    expect(t).toContain('W New');
+    expect(t).toContain(NEW_STANDING);
+    expect(t).toContain('not evidence of insider trading');
+    expect(t).toMatch(/AGE\s+SC\s+VOL60M\s+TOPWAL\s+NEWACC\s+LEAN\s+MARKET/);
+    expect(t).toMatch(/3\.0h\s+6\s+\$5k\s+96%\s+45%\s+Yes 97%\s+Top scorer/);
+    expect(t.indexOf('Top scorer')).toBeLessThan(t.indexOf('New market number 1'));
+    expect(t).not.toContain('Quiet market');
+    expect(t).toContain('60 of 169 new scanned, 2 flagged, 2 logged');
+    expect(t).toContain('w new');
+  });
+
+  it('lists the selected market reasons and link in the detail pane', () => {
+    const t = text(withNew([row(1, { score: 6 }), row(2, { score: 4, reasons: ['price drift 14 pts toward Yes'] })]), 150, 40, 1);
+    expect(t).toContain('price drift 14 pts toward Yes');
+    expect(t).toContain('polymarket.com/event/ev-new-2');
+    expect(t).toContain('p decide · n news');
+  });
+
+  it('prompts for w before a scan, shows progress, the empty result and errors', () => {
+    expect(text({ ...model(), newMarkets: null })).toContain('press w to scan');
+    expect(text({ ...model(), newMarkets: null })).toContain(NEW_STANDING);
+    expect(text(withNew([], { done: false, stage: 'scanning', summary: null, at: null, logged: null }))).toContain('scanning…');
+    expect(text(withNew([row(1, { flagged: false })]))).toContain('no new market crossed the flag score (60 scanned)');
+    const failed = text(withNew([], { error: 'HTTP 429', summary: null, at: null, logged: null }));
+    expect(failed).toContain('HTTP 429');
+    expect(failed).toContain(NEW_STANDING);
+  });
+
+  it('never overflows its box at any terminal size', () => {
+    for (const m of [withNew(many()), withNew([]), withNew([], { done: false, summary: null }), { ...model(), newMarkets: null }, withNew([row(1, { features: features({ newAcctShare: null, leanIdx: null, ageCoverage: null, firstPrice: null, lastPrice: null }) })])]) {
+      for (const [cols, rows] of [[40, 10], [60, 16], [80, 24], [100, 30], [140, 40], [220, 60]]) {
+        for (const sel of [0, 4, 39]) {
+          const lines = render(m, { tab: 'new', sel, cols, rows }, Date.now());
+          expect(lines, `${cols}x${rows}`).toHaveLength(rows);
+          for (const l of lines) expect(vlen(l), `${cols}x${rows}`).toBeLessThanOrEqual(cols);
+        }
+      }
+    }
+  });
+
+  it('opens with key w and moves within the flagged markets only', () => {
+    const m = withNew([...many(), row(99, { flagged: false })]);
+    const v: View = { tab: 'anomalies', sel: 3, cols: 120, rows: 40 };
+    expect(moveSelection(v, 'w', m)).toMatchObject({ tab: 'new', sel: 0 });
+    expect(moveSelection({ ...v, tab: 'new', sel: 0 }, 'end', m).sel).toBe(39);
+    expect(moveSelection({ ...v, tab: 'new', sel: 0 }, 'end', { ...m, newMarkets: null }).sel).toBe(0);
+  });
+
+  it('keeps the selected row on screen when scrolling', () => {
+    expect(text(withNew(many()), 120, 30, 37)).toContain('New market number 37');
   });
 });

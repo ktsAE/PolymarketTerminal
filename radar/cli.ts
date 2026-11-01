@@ -10,7 +10,8 @@ import { loadDecision } from './decide-data.ts';
 import { EDGES_PATH, KIND_TEXT, saveEdges, scanAll } from './edges.ts';
 import { FORWARD_DIR, readJsonl, RESULTS_PATH, settleSnapshots, snapshotUpcoming, SNAPSHOTS_PATH, type SettleSummary, type SnapshotSummary } from './forward.ts';
 import { formatLedger, scoreLedger } from './ledger.ts';
-import { LEDGER_STANDING } from './tui/render.ts';
+import { LEDGER_STANDING, NEW_STANDING } from './tui/render.ts';
+import { logFlagged, NEWMARKET_THRESHOLDS, NEWMARKETS_PATH, NEWMARKETS_RESULTS_PATH, scanNewMarkets, scoreNewMarketLog, type NewMarketScore, type ScanSummary } from './newmarkets.ts';
 import { cleanHandle, DEFAULT_HANDLES_PATH, DEFAULT_POSTS_PATH, loadHandles, loadPosts, pollAccounts, type AccountPollResult } from './xaccounts.ts';
 import { loadHolders, peopleOnly } from './holders.ts';
 import { loadNews } from './newsview.ts';
@@ -113,9 +114,51 @@ function ledger(): void {
   console.log(`\n${LEDGER_STANDING}. An edge is claimed only by the ledger verdict above.`);
 }
 
+const newScanText = (s: ScanSummary, logged: { written: number; duplicates: number }) => `new: ${s.listed} listed, ${s.scanned} scanned, ${s.flagged} flagged, ${logged.written} logged${s.truncated ? `, ${s.truncated} too busy` : ''}${s.skipped ? `, ${s.skipped} failed` : ''}`;
+const newScoreText = (r: NewMarketScore) => `new-score: ${r.logged} logged, ${r.written} result(s) written${r.errors.length ? `, ${r.errors.length} error(s)` : ''}`;
+const ratio = (a: number, n: number) => (n ? `${a}/${n} (${Math.round((a / n) * 100)}%)` : '0/0');
+
+async function newScan(client: PolymarketClient, hours: number, top: number): Promise<void> {
+  const t0 = Date.now();
+  process.stderr.write(`scanning markets created in the last ${hours}h (taker fills, first hour)…`);
+  const s = await scanNewMarkets(client, { hours });
+  process.stderr.write('\r' + ' '.repeat(72) + '\r');
+  const logged = logFlagged(s.lines);
+  console.log(`listed ${s.listed}, excluded ${s.excluded} (crypto candles), considered ${s.considered}, scanned ${s.scanned}, no trades ${s.noTrades}, too busy ${s.truncated}, failed ${s.skipped}, age lookups ${s.ageLookups}, flagged ${s.flagged} (score >= ${NEWMARKET_THRESHOLDS.flagScore}) in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+  console.log(`forward log: ${logged.written} new line(s), ${logged.duplicates} already logged this hour -> ${NEWMARKETS_PATH}`);
+  for (const e of s.errors.slice(0, 5)) console.log(`  error: ${e}`);
+  const nowSecs = Date.now() / 1000;
+  const pctOf = (x: number | null) => (x === null ? '-' : `${Math.round(x * 100)}%`);
+  console.log('');
+  for (const r of s.rows.slice(0, top)) {
+    const f = r.features;
+    const lean = f.leanIdx === null ? '-' : `${r.outcomes[f.leanIdx] ?? f.leanIdx} ${pctOf(f.oneSided)}`;
+    const age = r.createdAt ? `${((nowSecs - r.createdAt) / 3600).toFixed(1)}h` : '?';
+    console.log(`${r.flagged ? 'FLAG' : '    '} score ${r.score}  age ${age.padStart(5)}  1h ${usd(f.usd).padStart(8)}  fills ${String(f.fills).padStart(4)}  top wallet ${pctOf(f.topWalletShare).padStart(4)}  new accts ${pctOf(f.newAcctShare).padStart(4)}  lean ${lean}  | ${r.title.slice(0, 70)}`);
+    for (const why of r.reasons) console.log(`       · ${why}`);
+    console.log(`       https://polymarket.com/event/${r.eventSlug}`);
+  }
+  if (s.rows.length === 0) console.log('no scorable new markets in the window.');
+  console.log(`\n${NEW_STANDING}.`);
+}
+
+async function newScore(client: PolymarketClient): Promise<void> {
+  const r = await scoreNewMarketLog(client);
+  console.log(newScoreText(r));
+  if (r.logged === 0) console.log(`no data yet: nothing logged in ${NEWMARKETS_PATH}. Fill it with: npm run radar -- new-scan (or daemon)`);
+  for (const [k, t] of Object.entries(r.horizons)) console.log(`  ${k.padEnd(10)} n=${t.n}  continuation ${ratio(t.continuation, t.n)}  reversal ${ratio(t.reversal, t.n)}  flat ${t.flat}   (leaning-side price vs capture mid)`);
+  console.log(`  resolution n=${r.resolution.n}  continuation ${ratio(r.resolution.continuation, r.resolution.n)}  reversal ${ratio(r.resolution.reversal, r.resolution.n)}  void ${r.resolution.void}`);
+  console.log(`  paper ROI  n=${r.roi.n}  stake ${r.roi.stake.toFixed(2)}  pnl ${r.roi.pnl >= 0 ? '+' : ''}${r.roi.pnl.toFixed(2)}  roi ${r.roi.roi === null ? '-' : `${(r.roi.roi * 100).toFixed(1)}%`}   (1 share of the leaning side at the capture ask, held to resolution, before fees)`);
+  for (const e of r.errors.slice(0, 5)) console.log(`  error: ${e}`);
+  console.log(`results: ${NEWMARKETS_RESULTS_PATH}\n${NEW_STANDING}.`);
+}
+
 /** Settling and X polling hit the network per item; they run on their own slower cadence inside the daemon loop. */
 const SETTLE_EVERY_MS = 5 * 60_000;
 const X_EVERY_MS = 15 * 60_000;
+/** The new-market scan costs ~100+ requests, and scoring walks the whole log; both run far less often than snapshots. */
+const NEW_SCAN_EVERY_MS = 10 * 60_000;
+const NEW_SCORE_EVERY_MS = 30 * 60_000;
 
 /**
  * Forward logger loop: snapshot every cycle (the T-5m window is only 10 minutes wide), settle and poll X less often.
@@ -132,9 +175,11 @@ async function daemon(client: PolymarketClient, everySecs: number): Promise<void
   };
   process.on('SIGINT', onSigint);
   process.on('SIGTERM', onSigint);
-  console.log(`forward daemon: snapshot every ${everySecs}s, settle every ${SETTLE_EVERY_MS / 60_000}m, X every ${X_EVERY_MS / 60_000}m; logs in ${FORWARD_DIR} and ${DEFAULT_POSTS_PATH}. Ctrl-C stops.`);
+  console.log(`forward daemon: snapshot every ${everySecs}s, settle every ${SETTLE_EVERY_MS / 60_000}m, X every ${X_EVERY_MS / 60_000}m, new-market scan every ${NEW_SCAN_EVERY_MS / 60_000}m, new-market scoring every ${NEW_SCORE_EVERY_MS / 60_000}m; logs in ${FORWARD_DIR} and ${DEFAULT_POSTS_PATH}. Ctrl-C stops.`);
   let lastSettle = 0;
   let lastX = 0;
+  let lastNewScan = 0;
+  let lastNewScore = 0;
   for (let cycle = 1; !stopping; cycle++) {
     const t0 = Date.now();
     const parts: string[] = [];
@@ -157,6 +202,17 @@ async function daemon(client: PolymarketClient, everySecs: number): Promise<void
         const handles = await loadHandles();
         return handles.length ? xText(await pollAccounts(httpFetchText, handles)) : 'x: no handles';
       });
+    }
+    if (Date.now() - lastNewScan >= NEW_SCAN_EVERY_MS) {
+      lastNewScan = Date.now();
+      await step('new', async () => {
+        const s = await scanNewMarkets(client, { hours: 24 });
+        return newScanText(s, logFlagged(s.lines));
+      });
+    }
+    if (Date.now() - lastNewScore >= NEW_SCORE_EVERY_MS) {
+      lastNewScore = Date.now();
+      await step('new-score', async () => newScoreText(await scoreNewMarketLog(client)));
     }
     console.log(`${new Date().toISOString().slice(0, 19).replace('T', ' ')}Z #${cycle} ${((Date.now() - t0) / 1000).toFixed(0)}s | ${parts.join(' | ')}`);
     const wait = Math.max(0, everySecs * 1000 - (Date.now() - t0));
@@ -320,7 +376,7 @@ async function main(): Promise<void> {
           intervalSecs: flag(args, 'interval', 120),
           cols: cols || undefined,
           rows: rows || undefined,
-          tab: (['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger'] as const).find((t) => t === val('tab')),
+          tab: (['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new'] as const).find((t) => t === val('tab')),
           slug: val('slug'),
         });
         return;
@@ -341,6 +397,10 @@ async function main(): Promise<void> {
       }
       case 'ledger':
         return ledger();
+      case 'new-scan':
+        return newScan(client, Math.max(1, flag(args, 'hours', 24)), Math.max(1, flag(args, 'top', 20)));
+      case 'new-score':
+        return newScore(client);
       case 'daemon':
         return daemon(client, Math.max(5, flag(args, 'every', 30)));
       case 'x-add': {
@@ -418,7 +478,7 @@ async function main(): Promise<void> {
         return;
       }
       default:
-        console.log('commands: tui [--interval S --no-news] | daemon [--every SECS] | forward-log | forward-settle | ledger | x-add <handle> [note] | x-list | x-poll | decide <slug> [--wallets] | research <slug> | edges [--top N --events N --min-edge D --min-liq USD --verify K --no-verify] | people list|add|remove|check <wallet> | holders <slug> [--all] | scan [--cols N --rows N --tab games|prints|leads|decision|edge|ledger --slug S] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
+        console.log('commands: tui [--interval S --no-news] | daemon [--every SECS] | forward-log | forward-settle | ledger | new-scan [--hours N --top K] | new-score | x-add <handle> [note] | x-list | x-poll | decide <slug> [--wallets] | research <slug> | edges [--top N --events N --min-edge D --min-liq USD --verify K --no-verify] | people list|add|remove|check <wallet> | holders <slug> [--all] | scan [--cols N --rows N --tab games|prints|leads|decision|edge|ledger|new --slug S] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
     }
   } finally {
     store.close();

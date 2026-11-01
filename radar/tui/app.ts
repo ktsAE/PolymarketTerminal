@@ -4,6 +4,7 @@ import { loadDecision } from '../decide-data.ts';
 import { EDGES_PATH, saveEdges, scanAll } from '../edges.ts';
 import { readJsonl, RESULTS_PATH, SNAPSHOTS_PATH } from '../forward.ts';
 import { scoreLedger } from '../ledger.ts';
+import { logFlagged, scanNewMarkets } from '../newmarkets.ts';
 import { loadHolders } from '../holders.ts';
 import { loadNews } from '../newsview.ts';
 import { loadPeople, type Person } from '../people.ts';
@@ -11,9 +12,13 @@ import type { PolymarketClient } from '../polymarket.ts';
 import { httpFetchText, pollFeeds } from '../poll.ts';
 import { loadRefs, type RefConfig } from '../refs.ts';
 import type { RadarStore } from '../store.ts';
-import { listLength, moveSelection, render, visibleHolders, type Key, type LedgerView, type Model, type View } from './render.ts';
+import { flaggedNew, listLength, moveSelection, render, visibleHolders, type Key, type LedgerView, type Model, type View } from './render.ts';
 
 const ESC = '\x1b';
+/** Opening the New tab reuses a scan younger than this; pressing w on the tab always rescans. */
+const NEW_TAB_RESCAN_MS = 10 * 60_000;
+/** The TUI scans the 60 busiest new markets (~1.5 min) so the tab fills while you wait; `new-scan` and the daemon scan up to 150. */
+const TUI_SCAN = { hours: 24, maxMarkets: 60 } as const;
 
 export interface TuiOptions {
   intervalSecs?: number;
@@ -83,6 +88,7 @@ function snapshotModel(store: RadarStore, prev: Model | null, nowMs: number, sta
     news: prev?.news ?? null,
     edges: prev?.edges ?? null,
     ledger: ledgerView(nowMs),
+    newMarkets: prev?.newMarkets ?? null,
   };
 }
 
@@ -93,7 +99,7 @@ function seriesFor(store: RadarStore, m: Model, v: View, nowSecs: number): numbe
 
 /** The event the user is looking at, for actions like "load holders" or "show link". */
 function selectedSlug(m: Model, v: View): string | undefined {
-  return v.tab === 'anomalies' ? m.anomalies[v.sel]?.slug : v.tab === 'games' ? m.games[v.sel]?.slug : v.tab === 'prints' ? m.prints[v.sel]?.eventSlug : v.tab === 'holders' ? m.holders?.slug : v.tab === 'decision' ? m.decision?.slug : v.tab === 'search' ? m.search?.results[v.sel]?.slug : v.tab === 'news' ? m.news?.slug : v.tab === 'edge' ? m.edges?.result?.candidates[v.sel]?.slug : undefined;
+  return v.tab === 'anomalies' ? m.anomalies[v.sel]?.slug : v.tab === 'games' ? m.games[v.sel]?.slug : v.tab === 'prints' ? m.prints[v.sel]?.eventSlug : v.tab === 'holders' ? m.holders?.slug : v.tab === 'decision' ? m.decision?.slug : v.tab === 'search' ? m.search?.results[v.sel]?.slug : v.tab === 'news' ? m.news?.slug : v.tab === 'edge' ? m.edges?.result?.candidates[v.sel]?.slug : v.tab === 'new' ? flaggedNew(m)[v.sel]?.eventSlug || undefined : undefined;
 }
 
 export async function runTui(store: RadarStore, client: PolymarketClient, opts: TuiOptions = {}): Promise<void> {
@@ -146,6 +152,10 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
       const cfg = readConfig(opts);
       const dv = await loadDecision(client, store, opts.slug, { people: cfg.people, refs: cfg.refs });
       model = { ...model, decision: dv };
+    }
+    if (view.tab === 'new') {
+      const sum = await scanNewMarkets(client, TUI_SCAN);
+      model = { ...model, newMarkets: { stage: 'done', done: true, error: sum.errors.length ? `${sum.errors.length} error(s): ${sum.errors[0]}` : null, at: Date.now(), summary: sum, logged: logFlagged(sum.lines) } };
     }
     process.stdout.write(render(model, view, Date.now()).join('\n') + '\n');
     return;
@@ -256,6 +266,41 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     );
   };
 
+  // New markets: `w` opens the tab and scans when there is no recent scan; `w` on the tab rescans. Flagged lines go to the forward log.
+  let newToken = 0;
+  const startNewScan = () => {
+    const token = ++newToken;
+    model = { ...model, newMarkets: { stage: 'scanning the 60 busiest markets created in the last 24h', done: false, error: null, at: null, summary: model.newMarkets?.summary ?? null, logged: null } };
+    paint();
+    scanNewMarkets(client, TUI_SCAN).then(
+      (sum) => {
+        if (token !== newToken) return;
+        let error: string | null = sum.errors.length ? `${sum.errors.length} error(s): ${sum.errors[0]}` : null;
+        let logged: { written: number; duplicates: number } | null = null;
+        try {
+          logged = logFlagged(sum.lines);
+        } catch (e) {
+          error = `could not write the forward log: ${e instanceof Error ? e.message : String(e)}`;
+        }
+        model = { ...model, newMarkets: { stage: 'done', done: true, error, at: Date.now(), summary: sum, logged } };
+        view = { ...view, sel: Math.min(view.sel, Math.max(0, listLength(model, 'new') - 1)) };
+        paint();
+      },
+      (error) => {
+        if (token !== newToken) return;
+        model = { ...model, newMarkets: { stage: 'failed', done: true, error: error instanceof Error ? error.message : String(error), at: null, summary: model.newMarkets?.summary ?? null, logged: null } };
+        paint();
+      },
+    );
+  };
+  const openNew = () => {
+    const nv = model.newMarkets;
+    const wasOn = view.tab === 'new';
+    press('w');
+    const stale = !nv || (nv.done && (wasOn || nv.at === null || Date.now() - nv.at > NEW_TAB_RESCAN_MS));
+    if (stale) startNewScan();
+  };
+
   // News: `n` searches headlines for the selected event; a newer request makes older progress irrelevant.
   let newsToken = 0;
   const openNews = (slug: string) => {
@@ -350,6 +395,7 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
       if (model.search?.typing) return typeSearch(d);
       if (d === '/') return beginSearch();
       if (d === 'e') return startEdgeScan();
+      if (d === 'w') return openNew();
       if (d === 'n') {
         const slug = selectedSlug(model, view);
         if (!slug) {
