@@ -1,0 +1,24 @@
+# systemd USER unit for the radar forward logger.
+# Install (run these yourself, they write outside the repo):
+#   mkdir -p ~/.config/systemd/user
+#   cp ~/PolymarketTerminal/scripts/radar-daemon.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now radar-daemon
+#   loginctl enable-linger $USER      # keeps it running after you log out (not while the laptop sleeps or is off)
+# Watch:  journalctl --user -u radar-daemon -f      Stop:  systemctl --user disable --now radar-daemon
+[Unit]
+Description=Polymarket radar forward logger (snapshots, jumps, X posts, settlement)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/kskroyal/PolymarketTerminal
+Environment=PATH=/home/kskroyal/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/kskroyal/.local/bin/node --no-warnings radar/cli.ts daemon --every 30
+Restart=always
+RestartSec=20
+# the daemon only writes under .radar/ in the project directory
+Nice=10
+
+[Install]
+WantedBy=default.target

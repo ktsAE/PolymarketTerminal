@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Run with: node radar/cli.ts <command>   (Node >= 22.18 strips types natively)
+import { execFile } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { SEED_CASES } from './cases.seed.ts';
@@ -175,6 +176,55 @@ async function jumps(client: PolymarketClient, top: number): Promise<void> {
   }
   if (flags.length === 0) console.log('no market jumped 15+ points in the last 30 minutes: that is the normal case.');
   console.log(`\nnot logged here: the daemon logs flags to ${JUMPS_PATH}.\n${JUMPS_STANDING}.`);
+}
+
+/**
+ * `watch`: a terminal-only alert loop. Scans for jumps every few minutes and prints a line plus a desktop notification (notify-send)
+ * for each NEW flag. Writes nothing to disk, needs no daemon and no extra keys. A flag is a lead to inspect, never a trade signal.
+ */
+/** Game-style slugs end in a date (nba-bkn-ind-2026-11-01) or start with a league code. */
+const SPORTS_SLUG = /(-20\d\d-\d\d-\d\d)|^(nba|nfl|nhl|mlb|cbb|cfb|epl|lal|bun|sea|fl1|ucl|mls|wta|atp|ufc|cs2|csgo|dota2|lol|val|cricket|f1)-/;
+
+async function watchJumps(client: PolymarketClient, everyMin: number, notify: boolean, calmOnly: boolean, noSports: boolean): Promise<void> {
+  let stopping = false;
+  let wake: (() => void) | null = null;
+  const onSig = () => {
+    if (stopping) process.exit(130);
+    stopping = true;
+    wake?.();
+  };
+  process.on('SIGINT', onSig);
+  process.on('SIGTERM', onSig);
+  const seen = new Map<string, number>();
+  const REALERT_MS = 6 * 3600_000;
+  const stamp = () => new Date().toISOString().slice(11, 16) + 'Z';
+  console.log(`watching for 15-point jumps every ${everyMin} min${calmOnly ? ' (calm-rule flags only)' : ''}${noSports ? ' (sports and esports skipped)' : ''}; markets already at 0.97+/0.03- are skipped; ${notify ? 'desktop notifications on' : 'notifications off'}; Ctrl-C stops. Leads, not trade signals.`);
+  while (!stopping) {
+    try {
+      const sc = await scanJumpsWithProgress(client, () => undefined);
+      const now = Date.now();
+      for (const [k, t] of seen) if (now - t > REALERT_MS) seen.delete(k);
+      // a price that ended at 0.97+ or 0.03- is a market that has already decided (e.g. a game finishing), not a surprise
+      const fresh = sc.flags.filter((f) => (!calmOnly || f.calm) && !seen.has(f.cid) && f.pNow > 0.03 && f.pNow < 0.97 && (!noSports || !SPORTS_SLUG.test(f.eventSlug)));
+      for (const f of fresh) {
+        seen.set(f.cid, now);
+        const line = `${f.direction === 'up' ? 'UP' : 'DOWN'} ${f.title.slice(0, 60)} | ${f.outcomes[0]} ${f.pRef.toFixed(2)}->${f.pNow.toFixed(2)} in 30m | ${f.calm ? 'calm' : 'loose'} | vol30m ${usd(f.vol30m)}`;
+        console.log(`${stamp()} ${line}\n       https://polymarket.com/event/${f.eventSlug}`);
+        if (notify) execFile('notify-send', ['-a', 'polymarket-radar', 'Price jump (a lead, not a signal)', `${line}\nhttps://polymarket.com/event/${f.eventSlug}`], () => undefined);
+      }
+      console.log(`${stamp()} scanned ${sc.markets} markets: ${sc.flags.length} flag(s), ${fresh.length} new${sc.errors.length ? `, ${sc.errors.length} error(s): ${sc.errors[0].slice(0, 80)}` : ''}`);
+    } catch (error) {
+      console.log(`${stamp()} scan failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await new Promise<void>((resolve) => {
+      wake = resolve;
+      setTimeout(resolve, everyMin * 60_000);
+    });
+    wake = null;
+  }
+  process.off('SIGINT', onSig);
+  process.off('SIGTERM', onSig);
+  console.log('watch stopped');
 }
 
 function jumpsScore(): void {
@@ -462,6 +512,8 @@ async function main(): Promise<void> {
       }
       case 'jumps-score':
         return jumpsScore();
+      case 'watch':
+        return watchJumps(client, Math.max(1, flag(args, 'every', 5)), !args.includes('--no-notify'), args.includes('--calm-only'), args.includes('--no-sports'));
       case 'daemon':
         return daemon(client, Math.max(5, flag(args, 'every', 30)));
       case 'x-add': {

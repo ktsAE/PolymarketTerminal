@@ -281,3 +281,9 @@ output states.
 
 **Leads, not signals; no edge shown.** A jump flag is something to look at, not a trade and not evidence of wrongdoing. **An edge is claimed only by a
 score verdict**: `EDGE` needs n >= 300 settled bets and the lower bound of the 99% CI of ROI above 0; until then every strategy reads `NO EDGE PROVEN`.
+
+## Terminal alerts without the daemon: `npm run radar -- watch`
+
+Scans for 15-point price jumps every few minutes (`--every 5`) and prints a line plus a desktop notification (`notify-send`) for each new flag. Writes nothing to disk and needs
+no daemon. Options: `--no-notify`, `--calm-only` (frozen calm rule only), `--no-sports` (skips game-style slugs and league codes). Markets already at 0.97+/0.03- are skipped because
+they have decided. A flag is a lead to inspect, never a trade signal; most jumps on live games are the game finishing.
