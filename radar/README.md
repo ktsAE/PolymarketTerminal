@@ -292,3 +292,11 @@ Pre-game exception: the match-winner (moneyline) market of a sports or esports g
 Spreads, totals, props and anything in play stay excluded. Pre-game flags are scored in their own block (`jumps-score` prints it second) so they never mix with the non-sports results.
 Untested: the backtest sample had no game start times, so there is no pre-game-only backtest; an earlier esports line-move test (fade, last ~8h before kickoff) was positive but not significant.
 `watch --no-sports` hides pre-game flags too.
+
+## Polymarket Data API v2 (v1 was retired on 2026-11-02)
+
+Every `data-api.polymarket.com` v1 route now answers HTTP 410 ("Data API v1 has been retired"). The radar client (`radar/polymarket.ts`) speaks v2 through one helper, `dataPage`:
+responses are `{ data, pagination }` in snake_case (converted back to the camelCase the rest of the code reads), markets are selected with `condition` (not `market`), and paging is by
+opaque `next_cursor`: v2 rejects `offset` and ignores time-window parameters, but has no 10,000-row cap. Replaced routes: `/traded` -> `/v2/user-stats` (`data.trades`),
+`/closed-positions` -> `/v2/positions?status=CLOSED`, `/v1/leaderboard` -> `/v2/leaderboard`. A 410 now fails at once as "endpoint retired".
+Not ported: the Python research scripts (`holders-study.py`, `surge-study.py`, `newmarket-study.py`, `wallet-form-study.py`) still call v1 in their `fetch` step, so they cannot re-download until ported; their cached data and `report` steps are unaffected.

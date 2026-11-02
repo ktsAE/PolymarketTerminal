@@ -1,3 +1,4 @@
+import { cursorPage } from './v2';
 import { describe, expect, it } from 'vitest';
 import { PolymarketClient, type FetchJson } from '../../radar/polymarket';
 import type { TradeRow } from '../../radar/store';
@@ -165,11 +166,11 @@ function fakeClient(): { c: PolymarketClient; calls: string[] } {
     if (url.includes('/markets?order=createdAt')) return [market('0xA', 'young-one', NOW - 2 * 86_400), market('0xD', 'broken', NOW - 86_400), market('0xX', 'btc-updown-5m', NOW - 600), market('0xE', 'empty', NOW - 3600)];
     if (url.includes('/events?active=true'))
       return [{ slug: 'busy-event', markets: [market('0xB', 'busy', NOW - 90 * 86_400, { volume24hr: 900_000 }), market('0xC', 'quiet-old', NOW - 60 * 86_400, { volume24hr: 1000 }), market('0xA', 'young-one', NOW - 2 * 86_400, { volume24hr: 10 })] }];
-    if (url.includes('/trades?market=')) {
-      const cid = /market=(\w+)/.exec(url)?.[1] as string;
+    if (url.includes('/v2/trades?')) {
+      const cid = /condition=(\w+)/.exec(url)?.[1] as string;
       if (cid === '0xD') throw new Error('HTTP 500');
       if (!(cid in trades)) throw new Error(`unexpected trades ${cid}`);
-      return Number(/offset=(\d+)/.exec(url)?.[1] ?? 0) === 0 ? trades[cid].map((t) => rawFill(cid, t)) : [];
+      return cursorPage(trades[cid].map((t) => rawFill(cid, t)), new URL(url).searchParams);
     }
     if (url.includes('/book?token_id=n0xA')) return { bids: [{ price: '0.30', size: '100' }], asks: [{ price: '0.35', size: '200' }, { price: '0.33', size: '50' }] };
     if (url.includes('/book?token_id=')) return { bids: [], asks: [] };

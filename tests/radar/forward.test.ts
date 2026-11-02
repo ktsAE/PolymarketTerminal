@@ -1,3 +1,4 @@
+import { v2 } from './v2';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -87,7 +88,7 @@ function fakeApi(books: Record<string, { bids: Array<[number, number]>; asks: Ar
       const b = books[tok] ?? { bids: [], asks: [] };
       return { bids: b.bids.map(([price, size]) => ({ price: String(price), size: String(size) })), asks: b.asks.map(([price, size]) => ({ price: String(price), size: String(size) })) };
     }
-    if (url.includes('/holders')) return [{ holders: [{ proxyWallet: '0xAA', outcomeIndex: 0, amount: 100 }, { proxyWallet: '0xbb', outcomeIndex: 1, amount: 300 }] }];
+    if (url.includes('/v2/holders')) return v2([{ tokenId: 't', holders: [{ proxyWallet: '0xAA', outcomeIndex: 0, amount: 100 }, { proxyWallet: '0xbb', outcomeIndex: 1, amount: 300 }] }]);
     const slug = /slug=([\w-]+)/.exec(url)?.[1];
     if (slug && closed[slug]) return [closed[slug]];
     if (slug) return [];

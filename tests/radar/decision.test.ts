@@ -1,3 +1,4 @@
+import { v2 } from './v2';
 import { describe, expect, it } from 'vitest';
 import { decide, rulesAmbiguity, type DMarket, type DWallet, type DecideInput, type Reference } from '../../radar/decide';
 import { bookQuote, loadDecision } from '../../radar/decide-data';
@@ -302,18 +303,18 @@ function fakeApi(calls: string[] = []): FetchJson {
       return b;
     }
     if (url.includes('api.dexscreener.com')) throw new Error('reference tests inject their own fetch');
-    if (url.includes('/trades?market=')) return [fill(url.includes(CID_A) ? CID_A : CID_B, W_NEW, 'BUY', 0, 0.9, 400, NOW - 600), fill(CID_B, W_INSIDER, 'BUY', 1, 0.5, 3000, NOW - 300)];
-    if (url.includes('/holders?')) return [{ token: 't', holders: [{ proxyWallet: W_NEW, amount: 400, outcomeIndex: 0, name: 'fresh-face' }, { proxyWallet: W_INSIDER, amount: 3000, outcomeIndex: 1, name: 'Jonathan Smithers' }, { proxyWallet: W_NOPROFILE, amount: 50, outcomeIndex: 1, name: null }] }];
+    if (url.includes('/v2/trades?')) return v2([fill(url.includes(CID_A) ? CID_A : CID_B, W_NEW, 'BUY', 0, 0.9, 400, NOW - 600), fill(CID_B, W_INSIDER, 'BUY', 1, 0.5, 3000, NOW - 300)]);
+    if (url.includes('/v2/holders?')) return v2([{ tokenId: 't', holders: [{ proxyWallet: W_NEW, amount: 400, outcomeIndex: 0, name: 'fresh-face' }, { proxyWallet: W_INSIDER, amount: 3000, outcomeIndex: 1, name: 'Jonathan Smithers' }, { proxyWallet: W_NOPROFILE, amount: 50, outcomeIndex: 1, name: null }] }]);
     if (url.includes('/public-profile?')) {
       if (url.includes(W_NOPROFILE)) throw new Error('HTTP 404');
       if (url.includes(W_INSIDER)) return { createdAt: '2025-01-01T00:00:00Z', name: 'Jonathan Smithers', xUsername: 'jsmithers_ac', bio: '', verifiedBadge: false };
       return { createdAt: new Date((NOW - 3 * 86_400) * 1000).toISOString(), name: 'fresh-face', pseudonym: 'Brave-Fox', xUsername: null, bio: null, verifiedBadge: false };
     }
-    if (url.includes('/activity?') && url.includes('sortDirection=ASC')) return [{ timestamp: NOW - 100 * 86_400 }];
-    if (url.includes('/activity?')) return Array.from({ length: 30 }, (_, i) => ({ timestamp: NOW - i * 86_400, type: 'TRADE', side: 'BUY', usdcSize: 500, conditionId: `0x${i}` }));
-    if (url.includes('/traded?')) return { traded: 12 };
-    if (url.includes('/v1/leaderboard?')) return [{ pnl: 5_000, vol: 90_000, userName: 'lb' }];
-    if (url.includes('/positions?')) return [{ outcomeIndex: url.includes(W_NEW.slice(2)) ? 0 : 1, size: 1000, avgPrice: 0.5, curPrice: 0.9, currentValue: 900, cashPnl: 400 }];
+    if (url.includes('/v2/activity?') && url.includes('sort_direction=ASC')) return v2([{ timestamp: NOW - 100 * 86_400 }]);
+    if (url.includes('/v2/activity?')) return v2(Array.from({ length: 30 }, (_, i) => ({ timestamp: NOW - i * 86_400, type: 'TRADE', side: 'BUY', usdcSize: 500, conditionId: `0x${i}` })));
+    if (url.includes('/v2/user-stats?')) return v2({ trades: 12 });
+    if (url.includes('/v2/leaderboard?')) return v2({ pnl: 5_000, volume: 90_000, userName: 'lb' });
+    if (url.includes('/v2/positions?')) return v2([{ outcomeIndex: url.includes(W_NEW.slice(2)) ? 0 : 1, currentSize: 1000, avgPrice: 0.5, currentPrice: 0.9, currentValue: 900, unrealizedPnl: 400 }]);
     throw new Error(`unexpected ${url}`);
   };
 }

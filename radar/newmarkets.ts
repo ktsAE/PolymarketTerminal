@@ -9,7 +9,7 @@ import type { TradeRow } from './store.ts';
  * (one-sided aggressor flow, one wallet dominating, money from very young accounts, a fast price move).
  * Every flag is a set of plain behavior labels; nothing here says anything about who traded or why.
  *
- * Flow is read from TAKER fills only (data-api takerOnly=true): with both sides included every fill
+ * Flow is read from TAKER fills only (data-api v2 taker_only=true): with both sides included every fill
  * appears twice, once per counterparty, and net flow cancels to ~50/50 by construction.
  */
 
@@ -49,7 +49,6 @@ export const NEWMARKETS_RESULTS_PATH = join(FORWARD_DIR, 'newmarkets-results.jso
 export const DEFAULT_EXCLUDE = /-updown-|up-or-down/i;
 
 const PAGE = 1000;
-const OFFSET_CAP = 9000;
 
 export interface EarlyFeatures {
   /** First taker fill (epoch seconds); null when there were none. */
@@ -323,24 +322,15 @@ const isoSecs = (v: unknown): number | null => {
 };
 const tradeKey = (t: TradeRow): string => [t.tx ?? '', t.wallet, t.side, t.outcomeIndex, t.price, t.size, t.ts].join('|');
 
-/** All taker fills of a market, newest-first pages sliding by `end`, up to `maxPages`. complete=false when the oldest fill was not reached. */
+/** All taker fills of a market, newest first, following the v2 cursor up to `maxPages` pages. complete=false when the oldest fill was not reached. */
 export async function takerTrades(client: PolymarketClient, cid: string, maxPages = 10): Promise<{ trades: TradeRow[]; complete: boolean }> {
   const out = new Map<string, TradeRow>();
-  let end: number | undefined;
-  let pages = 0;
-  while (pages < maxPages) {
-    let minTs = Infinity;
-    for (let offset = 0; offset <= OFFSET_CAP && pages < maxPages; offset += PAGE) {
-      const rows = await client.tradesPage(cid, { end, offset, limit: PAGE, takerOnly: true });
-      pages++;
-      for (const t of rows) {
-        out.set(tradeKey(t), t);
-        if (t.ts < minTs) minTs = t.ts;
-      }
-      if (rows.length < PAGE) return { trades: [...out.values()], complete: true };
-    }
-    if (!Number.isFinite(minTs) || minTs === end) break;
-    end = minTs;
+  let cursor: string | undefined;
+  for (let pages = 0; pages < maxPages; pages++) {
+    const { rows, next } = await client.tradesCursor(cid, { cursor, limit: PAGE, takerOnly: true });
+    for (const t of rows) out.set(tradeKey(t), t);
+    if (!next) return { trades: [...out.values()], complete: true };
+    cursor = next;
   }
   return { trades: [...out.values()], complete: false };
 }
@@ -541,7 +531,7 @@ export async function scoreNewMarketLog(client: PolymarketClient, path: string =
     for (const h of HORIZONS) {
       if (done.has(resultKey(l.cid, l.bucket, h.kind)) || nowSecs < l.capturedAt + h.secs) continue;
       try {
-        const [last] = await client.tradesPage(l.cid, { end: l.capturedAt + h.secs, limit: 1, takerOnly: true });
+        const last = await client.lastTradeAtOrBefore(l.cid, l.capturedAt + h.secs, { takerOnly: true });
         const price = last ? r4(last.outcomeIndex === l.leanIdx ? last.price : 1 - last.price) : null;
         write({ cid: l.cid, bucket: l.bucket, kind: h.kind, at: nowSecs, price });
       } catch (e) {

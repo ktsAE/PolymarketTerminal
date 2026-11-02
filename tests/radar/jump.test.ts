@@ -1,3 +1,4 @@
+import { v2 } from './v2';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -117,7 +118,7 @@ function fakeApi(opts: { books?: Record<string, { bids: Array<[number, number]>;
       const b = opts.books?.[tok] ?? { bids: [], asks: [] };
       return { bids: b.bids.map(([price, size]) => ({ price: String(price), size: String(size) })), asks: b.asks.map(([price, size]) => ({ price: String(price), size: String(size) })) };
     }
-    if (url.includes('/trades?market=')) return opts.trades ?? [];
+    if (url.includes('/v2/trades?')) return v2(opts.trades ?? []);
     const slug = /slug=([\w-]+)/.exec(url)?.[1];
     if (slug) return opts.closed?.[slug] ? [opts.closed[slug]] : [];
     throw new Error(`unexpected ${url}`);

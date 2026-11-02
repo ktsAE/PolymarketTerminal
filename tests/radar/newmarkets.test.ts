@@ -1,3 +1,4 @@
+import { cursorPage, v2 } from './v2';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -132,18 +133,16 @@ function fakeApi(f: Fake) {
     calls.push(url);
     const u = new URL(url);
     if (u.pathname === '/markets') return f.markets.slice(Number(u.searchParams.get('offset')), Number(u.searchParams.get('offset')) + Number(u.searchParams.get('limit')));
-    if (u.pathname === '/trades') {
-      const cid = u.searchParams.get('market')!;
+    if (u.pathname === '/v2/trades') {
+      const cid = u.searchParams.get('condition')!;
       if (f.failCids?.includes(cid)) throw new Error('HTTP 500');
-      expect(u.searchParams.get('takerOnly')).toBe('true');
-      const end = u.searchParams.get('end');
-      const rows = (f.trades[cid] ?? []).filter((t) => end === null || Number(t.timestamp) <= Number(end)).sort((a, b) => Number(b.timestamp) - Number(a.timestamp));
-      const off = Number(u.searchParams.get('offset') ?? 0);
-      return rows.slice(off, off + Number(u.searchParams.get('limit')));
+      expect(u.searchParams.get('taker_only')).toBe('true');
+      const rows = [...(f.trades[cid] ?? [])].sort((a, b) => Number(b.timestamp) - Number(a.timestamp));
+      return cursorPage(rows, u.searchParams);
     }
-    if (u.pathname === '/activity') {
+    if (u.pathname === '/v2/activity') {
       const w = u.searchParams.get('user')!;
-      return f.firstSeen?.[w] !== undefined ? [{ timestamp: f.firstSeen[w] }] : [];
+      return v2(f.firstSeen?.[w] !== undefined ? [{ timestamp: f.firstSeen[w] }] : []);
     }
     if (u.pathname === '/book') return { bids: [{ price: '0.6', size: '100' }], asks: [{ price: '0.64', size: '50' }] };
     if (u.pathname === '/events') return f.events?.[u.searchParams.get('slug')!] ? [f.events[u.searchParams.get('slug')!]] : [];

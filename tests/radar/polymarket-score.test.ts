@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { cursorPage, v2 } from './v2';
 import { ingestEvent } from '../../radar/ingest';
 import { mapEvent, mapTrade, PolymarketClient, parseStart, type FetchJson } from '../../radar/polymarket';
 import { scoreMarket, T, type WalletProfile } from '../../radar/score';
@@ -39,25 +40,49 @@ describe('market trade fetching', () => {
     const urls: string[] = [];
     const client = new PolymarketClient(async (u) => (urls.push(u), []), fast);
     await client.marketTrades(CID);
-    expect(urls[0]).toContain('takerOnly=false');
+    expect(urls[0]).toContain('/v2/trades?');
+    expect(urls[0]).toContain('condition=' + CID);
+    expect(urls[0]).toContain('taker_only=false');
   });
 
-  it('keeps going past the 10,000-row offset cap by slicing the time window', async () => {
+  it('follows the v2 cursor to the end, with no offset and no depth cap (v1 stopped at 10,000 rows)', async () => {
     const total = 12_500;
     const all = Array.from({ length: total }, (_, i) => raw(i));
     const calls: string[] = [];
     const fetchJson: FetchJson = async (url) => {
       calls.push(url);
-      const u = new URL(url);
-      const offset = Number(u.searchParams.get('offset'));
-      const end = u.searchParams.get('end');
-      if (offset > 9000) throw new Error('offset beyond cap'); // mirrors the real API
-      const rows = all.filter((r) => (end === null ? true : (r.timestamp as number) <= Number(end)));
-      return rows.slice(offset, offset + 1000);
+      return cursorPage(all, new URL(url).searchParams); // rejects offset= and market= like the real API
     };
     const trades = await new PolymarketClient(fetchJson, fast).marketTrades(CID);
     expect(new Set(trades.map((t) => t.tx)).size).toBe(total);
-    expect(calls.some((c) => c.includes('&end='))).toBe(true);
+    expect(calls).toHaveLength(13);
+    expect(calls.some((c) => c.includes('offset='))).toBe(false);
+    expect(calls[1]).toContain('cursor=c1000');
+  });
+
+  it('stops early at maxFills and keeps only fills at or before `end`', async () => {
+    const all = Array.from({ length: 5000 }, (_, i) => raw(i)); // timestamps fall by one per row
+    const client = new PolymarketClient(async (url) => cursorPage(all, new URL(url).searchParams), fast);
+    expect((await client.marketTrades(CID, { maxFills: 2000 })).length).toBe(2000);
+    const cut = 2_000_000 - 100;
+    const some = await client.marketTrades(CID, { end: cut });
+    expect(some.length).toBe(5000 - 100);
+    expect(some.every((t) => t.ts <= cut)).toBe(true);
+  });
+
+  it('lastTradeAtOrBefore walks back to the right fill, returns null past the start, and throws when it cannot reach', async () => {
+    const all = Array.from({ length: 3000 }, (_, i) => raw(i)); // ts = 2_000_000 - i, newest first
+    const client = new PolymarketClient(async (url) => cursorPage(all, new URL(url).searchParams), fast);
+    expect((await client.lastTradeAtOrBefore(CID, 2_000_000 - 1500))?.ts).toBe(2_000_000 - 1500);
+    expect(await client.lastTradeAtOrBefore(CID, 1_000_000)).toBeNull();
+    await expect(client.lastTradeAtOrBefore(CID, 2_000_000 - 2500, { maxPages: 1 })).rejects.toThrow(/could not reach/);
+  });
+
+  it('an HTTP 410 (endpoint retired) fails at once with a clear message instead of retrying', async () => {
+    let n = 0;
+    const gone = new PolymarketClient(async () => (n++, Promise.reject(new Error('HTTP 410'))), { ...fast, retries: 3 });
+    await expect(gone.marketTrades(CID)).rejects.toThrow(/endpoint retired \(HTTP 410\)/);
+    expect(n).toBe(1);
   });
 
   it('retries transient failures and then gives up with a clear error', async () => {
@@ -151,10 +176,10 @@ describe('ingest (end to end against a fake API)', () => {
           { conditionId: `0x${'b'.repeat(64)}`, sportsMarketType: 'round_handicap_game_1', question: 'thin', outcomes: '["O","U"]', outcomePrices: '["0","1"]', clobTokenIds: '[]', volume: 0, closed: true },
         ] }];
       }
-      if (url.includes('/trades?')) return [raw(1, { proxyWallet: wallet, size: 30_000, price: 0.4, timestamp: Date.parse('2026-08-24T14:00:00Z') / 1000 })];
-      if (url.includes('/activity?')) return [{ timestamp: 1_700_000_000 }];
-      if (url.includes('/traded?')) return { traded: 7 };
-      if (url.includes('/closed-positions?')) return [];
+      if (url.includes('/v2/trades?')) return v2([raw(1, { proxyWallet: wallet, size: 30_000, price: 0.4, timestamp: Date.parse('2026-08-24T14:00:00Z') / 1000 })]);
+      if (url.includes('/v2/activity?')) return v2([{ timestamp: 1_700_000_000 }]);
+      if (url.includes('/v2/user-stats?')) return v2({ proxyWallet: wallet, trades: 7 });
+      if (url.includes('/v2/positions?') && url.includes('status=CLOSED')) return v2([]);
       throw new Error(`unexpected ${url}`);
     };
     const store = openStore();
@@ -162,7 +187,7 @@ describe('ingest (end to end against a fake API)', () => {
     const first = await ingestEvent(client, store, 'ev', { now: () => 1_800_000_000_000 });
     expect(first).toMatchObject({ markets: 2, tradedMarkets: 1, newTrades: 1, profiled: 1 });
     expect(store.getWallet(wallet)).toMatchObject({ firstSeen: 1_700_000_000, traded: 7 });
-    expect(calls.filter((c) => c.includes('/trades?')).every((c) => c.includes('takerOnly=false'))).toBe(true);
+    expect(calls.filter((c) => c.includes('/v2/trades?')).every((c) => c.includes('taker_only=false'))).toBe(true);
 
     const again = await ingestEvent(client, store, 'ev', { now: () => 1_800_000_000_000 });
     expect(again).toMatchObject({ newTrades: 0, profiled: 0 });

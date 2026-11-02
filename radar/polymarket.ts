@@ -9,7 +9,23 @@ const GAMMA = 'https://gamma-api.polymarket.com';
 const DATA = 'https://data-api.polymarket.com';
 const CLOB = 'https://clob.polymarket.com';
 const PAGE = 1000;
-const OFFSET_CAP = 9000; // data API rejects offset > 10000; stay below and slice by time window instead
+/** Data API v2 (v1 was retired on 2026-11-02 and answers HTTP 410). Responses are `{ data, pagination }` in snake_case; paging is by opaque cursor, with no offset cap. */
+const DATA_V2 = `${DATA}/v2`;
+const MAX_CURSOR_PAGES = 300;
+
+const camelKey = (k: string): string => k.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+/** snake_case -> camelCase, deep, so the rest of the radar keeps reading proxyWallet / conditionId / outcomeIndex as it always did. */
+export function camelKeys(x: unknown): any {
+  if (Array.isArray(x)) return x.map(camelKeys);
+  if (x && typeof x === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(x as Record<string, unknown>)) out[camelKey(k)] = camelKeys(v);
+    return out;
+  }
+  return x;
+}
+
+type Q = Record<string, string | number | boolean | undefined | null>;
 
 export interface GammaEvent {
   slug: string;
@@ -189,11 +205,24 @@ export class PolymarketClient {
       } catch (error) {
         // A 404 is an answer ("no such profile"), not a glitch: retrying it only burns seconds.
         if (error instanceof Error && /^HTTP 404/.test(error.message)) throw new NotFoundError(url);
+        // 410 Gone: the endpoint was retired. Retrying cannot help, so fail at once with a message that names the cause.
+        if (error instanceof Error && /^HTTP 410/.test(error.message)) throw new Error(`endpoint retired (HTTP 410): ${url}`);
         lastError = error;
         await this.sleep(400 * 2 ** attempt);
       }
     }
     throw new Error(`request failed after ${this.retries + 1} attempts: ${url}: ${String(lastError)}`);
+  }
+
+  /** One page of a Data API v2 route: payload unwrapped from `data`, keys camelCased, plus the cursor of the next page (null at the end). */
+  private async dataPage(path: string, q: Q = {}): Promise<{ data: any; next: string | null }> {
+    const qs = Object.entries(q)
+      .filter(([, v]) => v !== undefined && v !== null)
+      .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`)
+      .join('&');
+    const r = (await this.get(`${DATA_V2}/${path}${qs ? `?${qs}` : ''}`)) as Record<string, any> | null;
+    const next = r?.pagination?.next_cursor;
+    return { data: camelKeys(r?.data ?? null), next: typeof next === 'string' && next ? next : null };
   }
 
   async eventBySlug(slug: string): Promise<GammaEvent | undefined> {
@@ -216,23 +245,19 @@ export class PolymarketClient {
 
   /** The platform-wide feed of fills at least `minUsd`, newest first. */
   async bigPrints(opts: { minUsd: number; limit?: number }): Promise<PrintRow[]> {
-    const rows = (await this.get(`${DATA}/trades?limit=${opts.limit ?? 500}&filterType=CASH&filterAmount=${opts.minUsd}&takerOnly=false`)) as Record<string, any>[];
+    const { data: rows } = await this.dataPage('trades', { limit: Math.min(opts.limit ?? 500, 1000), filter_type: 'CASH', filter_amount: opts.minUsd, taker_only: false });
     return Array.isArray(rows) ? rows.map(mapPrint).filter((x): x is PrintRow => x !== null) : [];
   }
 
   /** Cheap wallet profile (two calls): first activity and markets traded. */
   async walletLite(wallet: string): Promise<{ firstSeen: number | null; traded: number | null }> {
-    const first = (await this.get(`${DATA}/activity?user=${wallet}&limit=1&sortDirection=ASC`)) as Record<string, any>[];
-    const traded = (await this.get(`${DATA}/traded?user=${wallet}`)) as Record<string, any>;
-    return {
-      firstSeen: Array.isArray(first) && first[0] ? num(first[0].timestamp, NaN) || null : null,
-      traded: traded && typeof traded.traded === 'number' ? traded.traded : null,
-    };
+    const [first, traded] = await Promise.all([this.firstActivityTs(wallet), this.marketsTraded(wallet)]);
+    return { firstSeen: first, traded };
   }
 
   /** Top holders of a market's outcome tokens (up to `limit` per outcome). */
   async holders(cid: string, limit = 20): Promise<Array<{ wallet: string; name: string | null; outcomeIndex: number; shares: number }>> {
-    const groups = (await this.get(`${DATA}/holders?market=${cid}&limit=${limit}`)) as Array<Record<string, any>>;
+    const { data: groups } = await this.dataPage('holders', { condition: cid, limit });
     const out: Array<{ wallet: string; name: string | null; outcomeIndex: number; shares: number }> = [];
     for (const g of Array.isArray(groups) ? groups : [])
       for (const h of (g.holders as Array<Record<string, any>>) ?? [])
@@ -242,30 +267,29 @@ export class PolymarketClient {
 
   /** A wallet's most recent activity (trades, rewards, rebates, merges...), newest first. */
   async activityRecords(wallet: string, limit = 500): Promise<ActivityRec[]> {
-    const rows = (await this.get(`${DATA}/activity?user=${wallet}&limit=${limit}`)) as Array<Record<string, any>>;
+    const { data: rows } = await this.dataPage('activity', { user: wallet, limit: Math.min(limit, 500) });
     return (Array.isArray(rows) ? rows : []).map((r) => ({ ts: num(r.timestamp), type: String(r.type ?? ''), side: String(r.side ?? ''), usd: num(r.usdcSize), cid: String(r.conditionId ?? '') }));
   }
 
   async firstActivityTs(wallet: string): Promise<number | null> {
-    const rows = (await this.get(`${DATA}/activity?user=${wallet}&limit=1&sortDirection=ASC`)) as Array<Record<string, any>>;
+    const { data: rows } = await this.dataPage('activity', { user: wallet, limit: 1, sort_direction: 'ASC' });
     return Array.isArray(rows) && rows[0] ? num(rows[0].timestamp, NaN) || null : null;
   }
 
   async marketsTraded(wallet: string): Promise<number | null> {
-    const r = (await this.get(`${DATA}/traded?user=${wallet}`)) as Record<string, any>;
-    return r && typeof r.traded === 'number' ? r.traded : null;
+    const { data: r } = await this.dataPage('user-stats', { user: wallet });
+    return r && typeof r.trades === 'number' ? r.trades : null;
   }
 
   /** All-time or recent PnL and volume from Polymarket's own leaderboard (null when the wallet is not ranked). */
   async leaderboard(wallet: string, period: 'all' | 'week'): Promise<{ pnl: number; vol: number; name: string | null } | null> {
-    const rows = (await this.get(`${DATA}/v1/leaderboard?user=${wallet}&timePeriod=${period}&orderBy=PNL`)) as Array<Record<string, any>>;
-    const r = Array.isArray(rows) ? rows[0] : undefined;
-    return r ? { pnl: num(r.pnl), vol: num(r.vol), name: r.userName ? String(r.userName) : null } : null;
+    const { data: r } = await this.dataPage('leaderboard', { user: wallet, time_period: period === 'week' ? 'WEEK' : 'ALL', order_by: 'PNL' });
+    return r && typeof r === 'object' && !Array.isArray(r) ? { pnl: num(r.pnl), vol: num(r.volume), name: r.userName ? String(r.userName) : null } : null;
   }
 
   async positions(wallet: string, cid: string): Promise<Array<{ outcomeIndex: number; size: number; avgPrice: number; curPrice: number; currentValue: number; cashPnl: number }>> {
-    const rows = (await this.get(`${DATA}/positions?user=${wallet}&market=${cid}&limit=10`)) as Array<Record<string, any>>;
-    return (Array.isArray(rows) ? rows : []).map((r) => ({ outcomeIndex: num(r.outcomeIndex), size: num(r.size), avgPrice: num(r.avgPrice), curPrice: num(r.curPrice), currentValue: num(r.currentValue), cashPnl: num(r.cashPnl) }));
+    const { data: rows } = await this.dataPage('positions', { user: wallet, condition: cid, limit: 10 });
+    return (Array.isArray(rows) ? rows : []).map((r) => ({ outcomeIndex: num(r.outcomeIndex), size: num(r.currentSize), avgPrice: num(r.avgPrice), curPrice: num(r.currentPrice), currentValue: num(r.currentValue), cashPnl: num(r.unrealizedPnl) }));
   }
 
   /** Active events, busiest by 24h volume first, in raw gamma form (embedded markets carry bestBid/bestAsk, liquidity, token ids, negRisk). */
@@ -324,29 +348,15 @@ export class PolymarketClient {
    */
   async marketTrades(cid: string, opts: { end?: number; maxFills?: number } = {}): Promise<TradeRow[]> {
     const out: TradeRow[] = [];
-    let end = opts.end;
-    for (let guard = 0; guard < 50 && out.length < (opts.maxFills ?? Infinity); guard++) {
-      let offset = 0;
-      let exhausted = false;
-      let minTs = Infinity;
-      for (; offset <= OFFSET_CAP; offset += PAGE) {
-        const url = `${DATA}/trades?market=${cid}&takerOnly=false&limit=${PAGE}&offset=${offset}${end !== undefined ? `&end=${end}` : ''}`;
-        const rows = (await this.get(url)) as Record<string, any>[];
-        if (!Array.isArray(rows)) break;
-        for (const raw of rows) {
-          const t = mapTrade(raw);
-          if (t) {
-            out.push(t);
-            if (t.ts < minTs) minTs = t.ts;
-          }
-        }
-        if (rows.length < PAGE) {
-          exhausted = true;
-          break;
-        }
+    let cursor: string | undefined;
+    for (let page = 0; page < MAX_CURSOR_PAGES && out.length < (opts.maxFills ?? Infinity); page++) {
+      const { data: rows, next } = await this.dataPage('trades', { condition: cid, taker_only: false, limit: PAGE, cursor });
+      for (const raw of Array.isArray(rows) ? rows : []) {
+        const t = mapTrade(raw);
+        if (t && (opts.end === undefined || t.ts <= opts.end)) out.push(t);
       }
-      if (exhausted || !Number.isFinite(minTs) || minTs === end) break;
-      end = minTs; // slice the next window just below what we already have; duplicates are dropped by the store
+      if (!next) break;
+      cursor = next;
     }
     return out;
   }
@@ -357,23 +367,40 @@ export class PolymarketClient {
     return Array.isArray(rows) ? rows : [];
   }
 
-  /** One page of a market's fills, newest first, at or before `end`. takerOnly=true counts each fill once, from the aggressor's side. */
-  async tradesPage(cid: string, opts: { end?: number; offset?: number; limit?: number; takerOnly?: boolean } = {}): Promise<TradeRow[]> {
-    const rows = (await this.get(`${DATA}/trades?market=${cid}&takerOnly=${opts.takerOnly ?? false}&limit=${opts.limit ?? PAGE}&offset=${opts.offset ?? 0}${opts.end !== undefined ? `&end=${opts.end}` : ''}`)) as Record<string, any>[];
-    return Array.isArray(rows) ? rows.map(mapTrade).filter((t): t is TradeRow => t !== null) : [];
+  /** One page of a market's fills, newest first, with the cursor of the next page (null at the end). takerOnly=true counts each fill once, from the aggressor's side. v2 has no time-window or offset parameter: walk with the cursor. */
+  async tradesCursor(cid: string, opts: { cursor?: string; limit?: number; takerOnly?: boolean } = {}): Promise<{ rows: TradeRow[]; next: string | null }> {
+    const { data, next } = await this.dataPage('trades', { condition: cid, taker_only: opts.takerOnly ?? false, limit: Math.min(opts.limit ?? PAGE, 1000), cursor: opts.cursor });
+    return { rows: Array.isArray(data) ? data.map(mapTrade).filter((t): t is TradeRow => t !== null) : [], next };
+  }
+
+  /** The newest page of a market's fills (kept for callers that only need the latest trades). */
+  async tradesPage(cid: string, opts: { limit?: number; takerOnly?: boolean } = {}): Promise<TradeRow[]> {
+    return (await this.tradesCursor(cid, opts)).rows;
+  }
+
+  /** The most recent fill at or before `end` (null when there is none). Walks newest-first pages; throws when `maxPages` pages were not enough to get back to `end`, so a caller never records "no trade" for a market it simply did not reach. */
+  async lastTradeAtOrBefore(cid: string, end: number, opts: { takerOnly?: boolean; maxPages?: number } = {}): Promise<TradeRow | null> {
+    let cursor: string | undefined;
+    const maxPages = opts.maxPages ?? 40;
+    for (let page = 0; page < maxPages; page++) {
+      const { rows, next } = await this.tradesCursor(cid, { cursor, takerOnly: opts.takerOnly });
+      const hit = rows.find((t) => t.ts <= end);
+      if (hit) return hit;
+      if (!next) return null;
+      cursor = next;
+    }
+    throw new Error(`could not reach ${new Date(end * 1000).toISOString()} within ${maxPages} pages of fills`);
   }
 
   async walletProfile(wallet: string, opts: { skillMinCost?: number } = {}): Promise<WalletRow> {
-    const first = (await this.get(`${DATA}/activity?user=${wallet}&limit=1&sortDirection=ASC`)) as Record<string, any>[];
-    const traded = (await this.get(`${DATA}/traded?user=${wallet}`)) as Record<string, any>;
-    const closed = await this.closedPositions(wallet, 400);
+    const [firstSeen, traded, closed] = await Promise.all([this.firstActivityTs(wallet), this.marketsTraded(wallet), this.closedPositions(wallet, 400)]);
     const minCost = opts.skillMinCost ?? 5000;
     const big = closed.filter((p) => p.cost >= minCost);
     const units: Unit[] = big.map((p) => ({ q: p.avgPrice, win: p.pnl > 0 ? 1 : 0 }));
     return {
       wallet: wallet.toLowerCase(),
-      firstSeen: Array.isArray(first) && first[0] ? num(first[0].timestamp, NaN) || null : null,
-      traded: traded && typeof traded.traded === 'number' ? traded.traded : null,
+      firstSeen,
+      traded,
       bigPositions: big.length,
       skillZ: units.length >= 10 ? clusteredZ(units).z : null,
       fetchedAt: Math.floor(this.now() / 1000),
@@ -382,13 +409,14 @@ export class PolymarketClient {
 
   async closedPositions(wallet: string, max = 400): Promise<Array<{ avgPrice: number; cost: number; pnl: number }>> {
     const out: Array<{ avgPrice: number; cost: number; pnl: number }> = [];
-    for (let offset = 0; offset < max; offset += 50) {
-      const rows = (await this.get(`${DATA}/closed-positions?user=${wallet}&limit=50&offset=${offset}&sortBy=TIMESTAMP&sortDirection=DESC`)) as Record<string, any>[];
-      if (!Array.isArray(rows)) break;
-      for (const r of rows) out.push({ avgPrice: num(r.avgPrice), cost: num(r.totalBought) * num(r.avgPrice), pnl: num(r.realizedPnl) });
-      if (rows.length < 50) break;
+    let cursor: string | undefined;
+    while (out.length < max) {
+      const { data: rows, next } = await this.dataPage('positions', { user: wallet, status: 'CLOSED', limit: 50, cursor });
+      for (const r of Array.isArray(rows) ? rows : []) out.push({ avgPrice: num(r.avgPrice), cost: num(r.totalSize) * num(r.avgPrice), pnl: num(r.realizedPnl) });
+      if (!next) break;
+      cursor = next;
     }
-    return out;
+    return out.slice(0, max);
   }
 }
 
