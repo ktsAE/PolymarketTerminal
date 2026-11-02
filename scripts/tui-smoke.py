@@ -2,7 +2,7 @@
 """Drives the real radar TUI through a pseudo-terminal against live Polymarket data.
 
 Checks what unit tests cannot: raw mode, the alternate screen, keystrokes, background polling, a clean quit.
-Usage: python3 scripts/tui-smoke.py        (needs network; several minutes: decision, edge and new-market scans run live)
+Usage: python3 scripts/tui-smoke.py        (needs network; several minutes: decision, edge, new-market and jump scans run live)
 Exit code 0 = every check passed.
 """
 import os, pty, re, select, signal, struct, sys, time, fcntl, termios
@@ -58,8 +58,8 @@ while time.time() - t0 < 60:
 check("rows appear within 30s of launch", time.time() - t0 < 30)
 first = selected()
 check("a row is selected initially", len(first) == 1)
-os.write(fd, b"j"); pump(0.8)
-check("j moves the selection down", selected() == [first[0] + 1] if first else False)
+os.write(fd, b"\x1b[B"); pump(0.8)
+check("down arrow moves the selection down", selected() == [first[0] + 1] if first else False)
 os.write(fd, b"\x1b[A"); pump(0.8)
 check("up arrow moves it back", selected() == first)
 os.write(fd, b"2"); pump(1.0)
@@ -99,8 +99,8 @@ text = plain("\n".join(screen()[:ROWS]))
 check("decision table has its columns", "ACTION" in text and "BID/ASK" in text and "1H FLOW" in text)
 check("decision says what it will and will not claim", "never from following wallets" in text)
 check("decision finished loading", "…" not in plain("\n".join(screen()[2:4])))
-os.write(fd, b"j"); pump(0.8)
-check("j on the decision tab does not crash it", alive())
+os.write(fd, b"\x1b[B"); pump(0.8)
+check("down arrow on the decision tab does not crash it", alive())
 os.write(fd, b"2"); pump(0.8); os.write(fd, b"6"); pump(0.8)
 check("6 returns to the decision tab with the result kept", "ACTION" in plain("\n".join(screen()[2:7])))
 # search: / opens a prompt, typed letters are text (not commands), Enter lists results, p decides on the selected one
@@ -160,6 +160,22 @@ check("new-market scan finished with its counts", "flagged" in plain(screen()[2]
 check("new tab lists flagged markets or says none crossed", ("VOL60M" in wtext and "TOPWAL" in wtext) or "no new market crossed" in wtext)
 os.write(fd, b"o"); pump(0.8)
 check("o on the new tab shows a link or says nothing is selected", "polymarket.com/event/" in plain(screen()[ROWS - 1]) or "nothing selected" in plain(screen()[ROWS - 1]))
+# jumps: j opens the Jumps tab with its standing line and scans the busiest markets for calm-then-jump moves (nothing is logged by the TUI)
+os.write(fd, b"j"); pump(1.5)
+jtext = plain("\n".join(screen()[:ROWS]))
+check("j opens the jumps tab", "j Jumps" in plain(screen()[1]) and "Calm-then-jump" in plain(screen()[2]))
+check("jumps tab shows the standing leads-not-signals line", "leads, not signals; no edge shown" in jtext)
+t7 = time.time()
+while time.time() - t7 < 200:
+    pump(1)
+    h = plain(screen()[2])
+    if "flag(s)" in h and "…" not in h: break
+jtext = plain("\n".join(screen()[:ROWS]))
+print(f"  jump scan took {time.time() - t7:.0f}s: {plain(screen()[2]).strip()}")
+check("jump scan finished with its counts", "screened" in plain(screen()[2]) and "flag(s)" in plain(screen()[2]) and "…" not in plain(screen()[2]))
+check("jumps tab lists flags or says none jumped", ("PRICE 30M" in jtext and "VOL30M" in jtext) or "no market jumped" in jtext)
+os.write(fd, b"o"); pump(0.8)
+check("o on the jumps tab shows a link or says nothing is selected", "polymarket.com/event/" in plain(screen()[ROWS - 1]) or "nothing selected" in plain(screen()[ROWS - 1]))
 pump(6)
 check("still alive after background activity", alive())
 os.write(fd, b"q")

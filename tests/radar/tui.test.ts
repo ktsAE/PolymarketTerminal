@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { charWidth, clip, fit, sparkline, strip, truncate, vlen } from '../../radar/tui/ansi';
-import { LEDGER_STANDING, moveSelection, NEW_STANDING, render, type Model, type View } from '../../radar/tui/render';
+import { JUMPS_STANDING, LEDGER_STANDING, moveSelection, NEW_STANDING, render, type Model, type View } from '../../radar/tui/render';
+import { scoreJumps, type JumpFlag } from '../../radar/jump';
+import type { EdgeCandidate, ScanResult } from '../../radar/edges';
 import type { EarlyFeatures, ScanRow, ScanSummary } from '../../radar/newmarkets';
 import { scoreLedger } from '../../radar/ledger';
 import type { Anomaly } from '../../radar/detect';
@@ -57,7 +59,7 @@ describe('ansi helpers', () => {
 describe('rendering', () => {
   it('never overflows its box at any terminal size, on any tab', () => {
     for (const [cols, rows] of [[60, 16], [80, 24], [100, 30], [140, 40], [220, 60]]) {
-      for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new'] as const) {
+      for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new', 'jumps'] as const) {
         const lines = render(model(), { tab, sel: 3, cols, rows }, Date.now());
         expect(lines, `${cols}x${rows} ${tab}`).toHaveLength(rows);
         for (const l of lines) expect(vlen(l), `${cols}x${rows} ${tab}`).toBeLessThanOrEqual(cols);
@@ -80,7 +82,7 @@ describe('rendering', () => {
 
   it('survives empty data and an error state', () => {
     const empty: Model = { ...model(), anomalies: [], games: [], prints: [], leads: [], status: { ...model().status, error: 'HTTP 500', lastPollAt: null, nextPollAt: null } };
-    for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new'] as const) expect(() => render(empty, { tab, sel: 0, cols: 100, rows: 30 }, Date.now())).not.toThrow();
+    for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new', 'jumps'] as const) expect(() => render(empty, { tab, sel: 0, cols: 100, rows: 30 }, Date.now())).not.toThrow();
     expect(strip(render(empty, { tab: 'anomalies', sel: 0, cols: 100, rows: 30 }, Date.now()).join('\n'))).toContain('error');
   });
 
@@ -108,7 +110,8 @@ describe('keyboard reducer', () => {
     expect(moveSelection({ ...v, tab: 'news' }, 'tab', m).tab).toBe('edge');
     expect(moveSelection({ ...v, tab: 'edge' }, 'tab', m).tab).toBe('ledger');
     expect(moveSelection({ ...v, tab: 'ledger' }, 'tab', m).tab).toBe('new');
-    expect(moveSelection({ ...v, tab: 'new' }, 'tab', m).tab).toBe('anomalies');
+    expect(moveSelection({ ...v, tab: 'new' }, 'tab', m).tab).toBe('jumps');
+    expect(moveSelection({ ...v, tab: 'jumps' }, 'tab', m).tab).toBe('anomalies');
     expect(moveSelection({ ...v, tab: 'anomalies' }, 'tab', m).tab).toBe('games');
   });
   it('handles an empty list', () => {
@@ -212,6 +215,7 @@ describe('ledger tab', () => {
     expect(t).toMatch(/favorite\s+12\s+50\.0%\s+61\.0%/);
     expect(t).toContain('NO EDGE PROVEN');
     expect(t).toContain('1-9,0 tabs');
+    expect(t).toContain('j jumps');
   });
 
   it('says there is no data yet on empty logs, and survives no ledger at all', () => {
@@ -233,6 +237,31 @@ describe('ledger tab', () => {
           for (const l of lines) expect(vlen(l), `${cols}x${rows}`).toBeLessThanOrEqual(cols);
         }
       }
+    }
+  });
+
+  it('appends the calm-then-jump block from the jump log, standing line unchanged', () => {
+    const t0 = Date.UTC(2026, 10, 1, 12) / 1000;
+    const jl = [
+      { v: 1, kind: 'flag', id: `0xj|${t0}`, cid: '0xj', slug: 'm', eventSlug: 'ev-j', title: 'Jumped', outcomes: ['Yes', 'No'], tokenIds: ['1', '2'], direction: 'up', upIdx: 0, pRef: 0.3, pNow: 0.5, move: 0.2, calmRange: 0.05, calmPoints: 20, calm: true, vol30m: 900, freshShare: 0.6, quotes: [], detectedAt: t0, flaggedAt: t0 },
+      { v: 1, kind: 'entry', id: `0xj|${t0}`, cid: '0xj', capturedAt: t0 + 400, lagSecs: 400, quotes: [{ outcome: 'Yes', bid: 0.49, ask: 0.51, mid: 0.5, bidUsd: 10, askUsd: 10 }, { outcome: 'No', bid: 0.49, ask: 0.51, mid: 0.5, bidUsd: 10, askUsd: 10 }] },
+      { v: 1, kind: 'result', cid: '0xj', winnerIdx: 1, payout: [0, 1], settledAt: t0 + 9000 },
+    ];
+    const m: Model = { ...model(), ledger: { at: Date.now(), error: null, report: scoreLedger(snaps, results, { iterations: 200 }), jumps: scoreJumps(jl, { iterations: 200 }) } };
+    const t = text(m, 200, 60);
+    expect(t).toContain(LEDGER_STANDING);
+    expect(t).toContain('Calm-then-jump forward test');
+    expect(t).toContain('Calm-then-jump forward log: 1 flags (1 calm, 0 loose-only), 1 entries, 1 scorable');
+    expect(t).toMatch(/jump-fade\s+n=1 /);
+    expect(t).toContain('NO EDGE PROVEN');
+    expect(t.indexOf('fade-move')).toBeLessThan(t.indexOf('Calm-then-jump'));
+    const empty = text({ ...model(), ledger: { at: Date.now(), error: null, report: scoreLedger([], []), jumps: scoreJumps([]) } }, 200, 60);
+    expect(empty).toContain('no jump flags logged yet');
+    expect(empty).toContain(LEDGER_STANDING);
+    for (const [cols, rows] of [[40, 10], [60, 16], [80, 24], [140, 40], [220, 60]]) {
+      const lines = render(m, { tab: 'ledger', sel: 0, cols, rows }, Date.now());
+      expect(lines).toHaveLength(rows);
+      for (const l of lines) expect(vlen(l), `${cols}x${rows}`).toBeLessThanOrEqual(cols);
     }
   });
 
@@ -276,6 +305,7 @@ describe('new-markets tab', () => {
     expect(t).not.toContain('Quiet market');
     expect(t).toContain('60 of 169 new scanned, 2 flagged, 2 logged');
     expect(t).toContain('w new');
+    expect(t).toContain('j jumps');
   });
 
   it('lists the selected market reasons and link in the detail pane', () => {
@@ -317,5 +347,103 @@ describe('new-markets tab', () => {
 
   it('keeps the selected row on screen when scrolling', () => {
     expect(text(withNew(many()), 120, 30, 37)).toContain('New market number 37');
+  });
+});
+
+describe('jumps tab', () => {
+  const flag = (i: number, over: Partial<JumpFlag> = {}): JumpFlag => ({
+    cid: `0xj${i}`, slug: `mk-${i}`, eventSlug: `ev-jump-${i}`, title: i % 4 === 0 ? `日本語 ジャンプ ${i} 🚀 with a really long market question that must be cut cleanly` : `Jump market ${i}`,
+    outcomes: ['Yes', 'No'], tokenIds: ['1', '2'], direction: i % 2 ? 'down' : 'up', upIdx: i % 2, pRef: 0.3, pNow: 0.3 + (i % 2 ? -0.16 : 0.16) - i * 0.001, move: (i % 2 ? -0.16 : 0.16) - i * 0.001,
+    calmRange: 0.05, calmPoints: 30, calm: i % 3 !== 0, vol30m: 12_000, freshShare: i % 5 ? 0.42 : null,
+    quotes: [{ outcome: 'Yes', bid: 0.45, ask: 0.47 }, { outcome: 'No', bid: 0.53, ask: 0.55 }], detectedAt: Math.floor(Date.now() / 1000), ...over,
+  });
+  const withJumps = (flags: JumpFlag[], over: Partial<NonNullable<Model['jumps']>> = {}): Model => ({
+    ...model(), jumps: { stage: 'done', done: true, error: null, at: Date.now(), scan: { events: 500, markets: 400, screened: 61, checked: 61, flags, reasons: { 'small-move': 18 }, errors: [] }, ...over },
+  });
+  const many = () => Array.from({ length: 40 }, (_, i) => flag(i));
+  const text = (m: Model, cols = 150, rows = 40, sel = 0) => strip(render(m, { tab: 'jumps', sel, cols, rows }, Date.now()).join('\n'));
+
+  it('lists live flags with direction, pRef->pNow, rule, volume and fresh share, under the standing line', () => {
+    const t = text(withJumps([flag(1, { title: 'Small mover', move: -0.15, pNow: 0.15 }), flag(2, { title: 'Big mover', move: 0.3, pRef: 0.2, pNow: 0.5, calm: false })]));
+    expect(t).toContain('j Jumps');
+    expect(t).toContain(JUMPS_STANDING);
+    expect(t).toContain('leads, not signals; no edge shown');
+    expect(t).toMatch(/DIR\s+PRICE 30M\s+RULE\s+VOL30M\s+FRESH\s+MARKET/);
+    expect(t).toMatch(/UP\s+0\.20->0\.50\s+loose\s+\$12k\s+42%\s+Big mover/);
+    expect(t).toMatch(/DOWN\s+0\.30->0\.15\s+calm\s+\$12k/);
+    expect(t.indexOf('Big mover')).toBeLessThan(t.indexOf('Small mover'));
+    expect(t).toContain('400 markets, 61 screened, 61 checked, 2 flag(s)');
+    expect(t).toContain('j jumps');
+  });
+
+  it('shows the selected flag with its link and actions in the detail pane', () => {
+    const t = text(withJumps([flag(2), flag(1)]), 150, 40, 1); // sorted by |move|: flag 1 (16.1 pts) first, so row 1 is flag 2
+    expect(t).toContain('polymarket.com/event/ev-jump-2');
+    expect(t).toContain('p decide · n news · o link');
+    expect(t).toContain('Yes 0.45/0.47');
+  });
+
+  it('prompts for j before a scan, shows progress, the empty result and errors', () => {
+    expect(text({ ...model(), jumps: null })).toContain('press j to scan');
+    expect(text({ ...model(), jumps: null })).toContain(JUMPS_STANDING);
+    expect(text(withJumps([], { done: false, stage: 'checking price history 3, 0 jump(s) so far', scan: null, at: null }))).toContain('checking price history 3, 0 jump(s) so far…');
+    expect(text(withJumps([]))).toContain('no market jumped 15+ points in the last 30 minutes (61 checked)');
+    const failed = text(withJumps([], { error: 'HTTP 429', scan: null, at: null }));
+    expect(failed).toContain('HTTP 429');
+    expect(failed).toContain(JUMPS_STANDING);
+  });
+
+  it('never overflows its box at any terminal size', () => {
+    for (const m of [withJumps(many()), withJumps([]), withJumps([], { done: false, scan: null }), { ...model(), jumps: null }, withJumps([flag(1, { freshShare: null, outcomes: ['Team Spirit', 'NAVI'] })])]) {
+      for (const [cols, rows] of [[40, 10], [60, 16], [80, 24], [100, 30], [140, 40], [220, 60]]) {
+        for (const sel of [0, 4, 39]) {
+          const lines = render(m, { tab: 'jumps', sel, cols, rows }, Date.now());
+          expect(lines, `${cols}x${rows}`).toHaveLength(rows);
+          for (const l of lines) expect(vlen(l), `${cols}x${rows}`).toBeLessThanOrEqual(cols);
+        }
+      }
+    }
+  });
+
+  it('opens with key j and moves within the flags', () => {
+    const m = withJumps(many());
+    const v: View = { tab: 'anomalies', sel: 3, cols: 120, rows: 40 };
+    expect(moveSelection(v, 'j', m)).toMatchObject({ tab: 'jumps', sel: 0 });
+    expect(moveSelection({ ...v, tab: 'jumps', sel: 0 }, 'end', m).sel).toBe(39);
+    expect(moveSelection({ ...v, tab: 'jumps', sel: 0 }, 'end', { ...m, jumps: null }).sel).toBe(0);
+  });
+});
+
+describe('edge tab REF rows', () => {
+  const cand = (over: Partial<EdgeCandidate> = {}): EdgeCandidate => ({
+    kind: 'LADDER', slug: 'ev-ladder', title: 'Structural ladder', legs: [{ cid: '0x1', label: '>$30M', action: 'BUY YES', price: 0.4, yesToken: '1', noToken: '2' }], payoff: 1, cost: 0.95, edgePts: 5,
+    confidence: 'medium', liqMin: 5_000, vol24: 20_000, caveats: [], verified: true, liveEdgePts: 4, depthUsd: 300, profitUsd: 12, note: null, ...over,
+  });
+  const ref = cand({ kind: 'REF', slug: 'onewin-fdv', title: 'Onewin FDV above $70M?', payoff: 0.62, cost: 0.5, edgePts: 12, confidence: 'low', verified: true, liveEdgePts: 12, caveats: ['model range from a DEX price; confirm: official mint'] });
+  const result = (unmapped: string[]): ScanResult => ({ at: Date.now(), eventsScanned: 400, marketsScanned: 2_000, candidates: [cand(), ref], errors: [], unmapped });
+  const withEdges = (unmapped: string[]): Model => ({ ...model(), edges: { stage: 'done', done: true, error: null, result: result(unmapped) } });
+  const text = (m: Model, cols = 150, rows = 40, sel = 0) => strip(render(m, { tab: 'edge', sel, cols, rows }, Date.now()).join('\n'));
+
+  it('shows REF rows with their type label, a model edge and low confidence, plus the unmapped note', () => {
+    const m = withEdges(['Predict.fun FDV above ___ one day after launch?', 'Other token FDV?']);
+    const t = text(m);
+    expect(t).toMatch(/REF\s+~\+12\.0pt\s+\+12pt\s+\$\d+\s+low\s+.*Onewin FDV above \$70M\?/);
+    expect(t).toMatch(/LADDER\s+\+4\.0pt/);
+    expect(t).toContain('2 token markets have no reference price (add to .radar/refs.json)');
+    expect(t).toContain('no forecasting edge is claimed');
+    const raw = render(m, { tab: 'edge', sel: 0, cols: 150, rows: 40 }, Date.now()).join('\n');
+    expect(raw).toContain('\x1b[33mREF'); // yellow = low confidence styling
+    expect(text(m, 150, 40, 1)).toContain('NOT guaranteed');
+  });
+
+  it('prints no unmapped line when every token ladder is mapped, and never overflows', () => {
+    expect(text(withEdges([]))).not.toContain('no reference price');
+    for (const m of [withEdges([]), withEdges(['x'])]) {
+      for (const [cols, rows] of [[40, 10], [80, 24], [220, 60]]) {
+        const lines = render(m, { tab: 'edge', sel: 1, cols, rows }, Date.now());
+        expect(lines).toHaveLength(rows);
+        for (const l of lines) expect(vlen(l), `${cols}x${rows}`).toBeLessThanOrEqual(cols);
+      }
+    }
   });
 });

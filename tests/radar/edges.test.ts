@@ -2,7 +2,9 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { rank, saveEdges, scanAll, screenEvent, verifyCandidate, type EdgeCandidate } from '../../radar/edges';
+import { KIND_TEXT, looksLikeTokenLadder, rank, saveEdges, scanAll, scanReferenced, screenEvent, verifyCandidate, type EdgeCandidate } from '../../radar/edges';
+import { fairRange, oneDayAfterLaunch } from '../../radar/fairvalue';
+import type { RefConfig } from '../../radar/refs';
 import { parseDate, parseLadder } from '../../radar/ladder';
 import { PolymarketClient, type FetchJson } from '../../radar/polymarket';
 import { strip, vlen } from '../../radar/tui/ansi';
@@ -157,7 +159,7 @@ describe('scanning everything', () => {
   it('saves the list as JSON', () => {
     const dir = mkdtempSync(join(tmpdir(), 'edges-'));
     const file = join(dir, 'sub', 'edges.json');
-    saveEdges({ at: Date.UTC(2026, 10, 1), eventsScanned: 1, marketsScanned: 2, candidates: screenEvent(ladderEvent), errors: [] }, file);
+    saveEdges({ at: Date.UTC(2026, 10, 1), eventsScanned: 1, marketsScanned: 2, candidates: screenEvent(ladderEvent), errors: [], unmapped: [] }, file);
     const j = JSON.parse(readFileSync(file, 'utf8'));
     expect(j.generatedAt).toBe('2026-11-01T00:00:00.000Z');
     expect(j.candidates).toHaveLength(1);
@@ -171,7 +173,7 @@ describe('edge tab', () => {
     status: { lastPollAt: 1, nextPollAt: null, busy: false, error: null, events: 0, historySecs: 0, printsWindowMin: null, message: null },
   };
   const v = (over: Partial<View> = {}): View => ({ tab: 'edge', sel: 0, cols: 130, rows: 36, ...over });
-  const withResult = (cands: EdgeCandidate[], over: Record<string, unknown> = {}): Model => ({ ...empty, edges: { stage: 'done', done: true, error: null, result: { at: Date.UTC(2026, 10, 1, 12), eventsScanned: 400, marketsScanned: 3000, candidates: cands, errors: [] }, ...over } });
+  const withResult = (cands: EdgeCandidate[], over: Record<string, unknown> = {}): Model => ({ ...empty, edges: { stage: 'done', done: true, error: null, result: { at: Date.UTC(2026, 10, 1, 12), eventsScanned: 400, marketsScanned: 3000, candidates: cands, errors: [], unmapped: [] }, ...over } });
   it('explains how to start a scan', () => {
     expect(strip(render(empty, v(), Date.now()).join('\n'))).toMatch(/press e to scan every active market/);
   });
@@ -204,5 +206,129 @@ describe('edge tab', () => {
       expect(lines, `${cols}x${rows}`).toHaveLength(rows);
       for (const l of lines) expect(vlen(l), `${cols}x${rows}`).toBeLessThanOrEqual(cols);
     }
+  });
+});
+
+describe('external-price (REF) rows', () => {
+  const NOW_MS = Date.UTC(2026, 10, 2, 12);
+  const nowSecs = NOW_MS / 1000;
+  const launch = nowSecs - 3_600;
+  const days = (oneDayAfterLaunch(launch) - nowSecs) / 86_400;
+  const SUPPLY = 1e9;
+  const PRICE = 0.15; // FDV $150M
+  const ref: RefConfig = { match: 'tok-fdv', kind: 'dex-token', chain: 'solana', mint: 'MINTtok', supply: SUPPLY, sigmaDay: 0.8, checks: ['the mint is the official one'] };
+  const f100 = fairRange(PRICE * SUPPLY, 100e6, 0.8, days);
+  const f200 = fairRange(PRICE * SUPPLY, 200e6, 0.8, days);
+  const dex = { pairs: [{ chainId: 'solana', dexId: 'raydium', priceUsd: String(PRICE), liquidity: { usd: 400_000 }, volume: { h1: 50_000 }, pairCreatedAt: launch * 1000 }] };
+  const tokEvent = (a100: number, a200: number) => ev('Tok FDV above ___ one day after launch?', [mk('a', '$100M', a100 - 0.02, a100), mk('b', '$200M', a200 - 0.02, a200)], { description: 'Resolves on the most liquid source once the token is actively and publicly tradable.' });
+  const book = (ask: number) => ({ bids: [[(ask - 0.02).toFixed(3), '500']] as Array<[string, string]>, asks: [[ask.toFixed(3), '500']] as Array<[string, string]> });
+  const books = (a100: number, a200: number) => ({ ya: book(a100), na: book(1 - a100 + 0.02), yb: book(a200), nb: book(1 - a200 + 0.02) });
+  function world(events: unknown[][], bk: Record<string, { bids: Array<[string, string]>; asks: Array<[string, string]> }>, dexBody: unknown = dex): { c: PolymarketClient; f: FetchJson; calls: string[] } {
+    const calls: string[] = [];
+    const f: FetchJson = async (url) => {
+      calls.push(url);
+      if (url.includes('dexscreener')) {
+        if (dexBody instanceof Error) throw dexBody;
+        return dexBody;
+      }
+      if (url.includes('/events?active=true')) return events[Number(/offset=(\d+)/.exec(url)?.[1] ?? 0) / 100] ?? [];
+      if (url.includes('/book?token_id=')) {
+        const b = bk[/token_id=(\w+)/.exec(url)?.[1] as string];
+        if (!b) throw new Error('HTTP 404');
+        return { bids: b.bids.map(([price, size]) => ({ price, size })), asks: b.asks.map(([price, size]) => ({ price, size })) };
+      }
+      throw new Error(`unexpected ${url}`);
+    };
+    return { c: new PolymarketClient(f, fast), f, calls };
+  }
+
+  it('emits a REF row when the live ask is below the model range, priced from live books with Decision caveats', async () => {
+    // in-order ladder (no ARB), $100M ask below the model's low end, $200M inside its range
+    const ask = Math.round((f100.lo - 0.04) * 100) / 100;
+    const mid200 = Math.round((f200.lo + 0.02) * 100) / 100;
+    expect(mid200 + 0.02).toBeLessThan(ask);
+    const { c, f } = world([], books(ask, mid200));
+    const r = await scanReferenced(c, [ref], { events: [tokEvent(ask, mid200)], fetchJson: f, now: () => NOW_MS });
+    expect(r.errors).toEqual([]);
+    expect(r.candidates).toHaveLength(1);
+    const x = r.candidates[0];
+    expect(x.kind).toBe('REF');
+    expect(x.legs.map((l) => `${l.action} ${l.label}`)).toEqual(['BUY YES $100M']);
+    expect(x.edgePts).toBeCloseTo((f100.lo - ask) * 100, 6);
+    expect(x.confidence).toBe('low');
+    expect(x.verified).toBe(true);
+    expect(x.depthUsd).toBeCloseTo(500 * ask);
+    const cav = x.caveats.join('\n');
+    expect(cav).toMatch(/rules needs the token "actively and publicly tradable"/);
+    expect(cav).toMatch(/reference price comes from 1 pool/);
+    expect(cav).toMatch(/confirm: the mint is the official one/);
+    expect(KIND_TEXT.REF).toBe('REF');
+  });
+  it('emits BUY NO when the YES bid is above the model range', async () => {
+    const yesAsk = Math.round((f200.hi + 0.25) * 100) / 100;
+    const in100 = Math.round((f100.hi - 0.05) * 100) / 100;
+    expect(yesAsk).toBeLessThan(in100);
+    const { c, f } = world([], books(in100, yesAsk));
+    const r = await scanReferenced(c, [ref], { events: [tokEvent(in100, yesAsk)], fetchJson: f, now: () => NOW_MS });
+    expect(r.candidates).toHaveLength(1);
+    const x = r.candidates.find((k) => k.legs[0].label === '$200M') as EdgeCandidate;
+    expect(x.legs[0].action).toBe('BUY NO');
+    expect(x.edgePts).toBeCloseTo((1 - f200.hi - (1 - yesAsk + 0.02)) * 100, 6);
+  });
+  it('emits nothing when every live ask sits inside the range', async () => {
+    const m100 = Math.round(((f100.lo + f100.hi) / 2) * 100) / 100;
+    const m200 = Math.round(((f200.lo + f200.hi) / 2) * 100) / 100;
+    const { c, f } = world([], books(m100, m200));
+    const r = await scanReferenced(c, [ref], { events: [tokEvent(m100, m200)], fetchJson: f, now: () => NOW_MS });
+    expect(r).toEqual({ candidates: [], errors: [] });
+  });
+  it('captures a per-reference failure instead of throwing', async () => {
+    const { c, f } = world([], books(0.3, 0.2), new Error('HTTP 429'));
+    const r = await scanReferenced(c, [ref], { events: [tokEvent(0.3, 0.2)], fetchJson: f, now: () => NOW_MS });
+    expect(r.candidates).toEqual([]);
+    expect(r.errors).toEqual([expect.stringMatching(/^ref tok-fdv \(tok-fdv-above-.*\): HTTP 429/)]);
+    const none = await scanReferenced(world([], books(0.3, 0.2), { pairs: [] }).c, [ref], { events: [tokEvent(0.3, 0.2)], fetchJson: world([], {}, { pairs: [] }).f, now: () => NOW_MS });
+    expect(none.errors[0]).toMatch(/no pool with liquidity/);
+  });
+  it('scanAll adds REF rows only when refs exist, lists unmapped token ladders, and records ref errors', async () => {
+    // in-order ladder (no ARB), $100M ask below the model's low end, $200M inside its range
+    const ask = Math.round((f100.lo - 0.04) * 100) / 100;
+    const mid200 = Math.round((f200.lo + 0.02) * 100) / 100;
+    expect(mid200 + 0.02).toBeLessThan(ask);
+    const other = ev('Foo FDV above ___ one day after launch?', [mk('c', '$1B', 0.4, 0.42), mk('d', '$2B', 0.2, 0.22)]);
+    const btc = ev('Bitcoin above ___ on November 3?', [mk('e', '$100k', 0.4, 0.42), mk('g', '$110k', 0.2, 0.22)]);
+    const evs = [[tokEvent(ask, mid200), other, btc]];
+    const w = world(evs, books(ask, mid200));
+    const r = await scanAll(w.c, { events: 100, refs: [ref], fetchJson: w.f, now: () => NOW_MS, verifyTop: 0 });
+    expect(r.candidates.filter((x) => x.kind === 'REF')).toHaveLength(1);
+    expect(r.unmapped).toEqual([other.title]);
+    expect(r.errors).toEqual([]);
+
+    const w0 = world(evs, books(ask, mid200));
+    const r0 = await scanAll(w0.c, { events: 100, refs: [], fetchJson: w0.f, now: () => NOW_MS, verifyTop: 0 });
+    expect(r0.candidates.some((x) => x.kind === 'REF')).toBe(false);
+    expect(w0.calls.some((u) => u.includes('dexscreener'))).toBe(false);
+    expect(r0.unmapped).toEqual([tokEvent(ask, mid200).title, other.title]);
+
+    const we = world(evs, books(ask, mid200), new Error('HTTP 500'));
+    const re = await scanAll(we.c, { events: 100, refs: [ref], fetchJson: we.f, now: () => NOW_MS, verifyTop: 0 });
+    expect(re.errors).toEqual([expect.stringMatching(/^ref tok-fdv .*HTTP 500/)]);
+  });
+  it('detects token ladders by title only (no auto-mapping)', () => {
+    expect(looksLikeTokenLadder('1win FDV above ___ one day after launch?')).toBe(true);
+    expect(looksLikeTokenLadder('Pump.fun market cap above ___ on Dec 31?')).toBe(true);
+    expect(looksLikeTokenLadder('Bitcoin above ___ on November 3?')).toBe(false);
+    expect(looksLikeTokenLadder('Anthropic IPO Closing Market Cap')).toBe(false);
+  });
+  it('ranks REF rows by edge with unchecked ones, never above a live-confirmed structural edge', () => {
+    const b = (over: Partial<EdgeCandidate>): EdgeCandidate => ({ ...screenEvent(ladderEvent)[0], ...over });
+    const r = rank([
+      b({ verified: null, edgePts: 5, title: 'unchecked' }),
+      b({ kind: 'REF', verified: true, edgePts: 40, liveEdgePts: 40, profitUsd: 10_000, title: 'ref' }),
+      b({ verified: true, profitUsd: 3, title: 'live' }),
+      b({ verified: false, title: 'stale' }),
+      b({ verified: null, edgePts: 60, title: 'big unchecked' }),
+    ]);
+    expect(r.map((x) => x.title)).toEqual(['live', 'big unchecked', 'ref', 'unchecked', 'stale']);
   });
 });

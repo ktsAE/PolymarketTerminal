@@ -1,7 +1,10 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { decide, type DMarket, type Reference } from './decide.ts';
+import { bookQuote } from './decide-data.ts';
 import { ladderViolations, parseLadder } from './ladder.ts';
-import type { PolymarketClient } from './polymarket.ts';
+import { httpFetchJson, type FetchJson, type PolymarketClient } from './polymarket.ts';
+import { fetchDexReference, loadRefs, refFor, type RefConfig } from './refs.ts';
 
 /**
  * Edge scan over every active event: STRUCTURAL edges only, i.e. prices that contradict each other so that a set of bets pays more than it costs
@@ -10,12 +13,15 @@ import type { PolymarketClient } from './polymarket.ts';
  *   LADDER   thresholds/dates priced out of order: buy YES on the easier rung and NO on the harder one for less than $1; pays >= $1.
  *   SUM_BID  mutually exclusive outcomes (negRisk event) whose YES bids add up to more than $1: buy NO on all of them; pays >= n-1 for less.
  *   SUM_ASK  the same outcomes whose YES asks add up to less than $1: buy YES on all; pays $1 ONLY IF a listed outcome wins (low confidence).
+ *   REF      NOT structural: a rung of a token-FDV ladder whose live ask sits outside the fair-value RANGE that the Decision view (decide.ts)
+ *            derives from a hand-configured external price (.radar/refs.json). A model call, always low confidence; its "payoff" is the model's
+ *            nearest range edge, not a guaranteed payout. Token -> DEX pair mapping is never guessed (lookalike mints exist).
  *
  * Stage 1 screens gamma's quotes (cheap, can lag). Stage 2 re-prices the best candidates from live order books and measures depth.
  * Everything is before fees and assumes every leg fills at the price shown; a profit that needs ten legs to fill together is not free money.
  */
 
-export type EdgeKind = 'LADDER' | 'SUM_BID' | 'SUM_ASK';
+export type EdgeKind = 'LADDER' | 'SUM_BID' | 'SUM_ASK' | 'REF';
 
 export interface Leg {
   cid: string;
@@ -32,7 +38,7 @@ export interface EdgeCandidate {
   slug: string;
   title: string;
   legs: Leg[];
-  /** Guaranteed minimum payoff of the whole set, in dollars per share set. */
+  /** Guaranteed minimum payoff of the whole set, in dollars per share set (REF: the model range's nearest edge, NOT guaranteed). */
   payoff: number;
   /** Cost of the set at screen prices; edge = payoff - cost (dollars per set, shown in points = x100). */
   cost: number;
@@ -177,12 +183,147 @@ export async function verifyCandidate(client: PolymarketClient, c: EdgeCandidate
   return c;
 }
 
+/** Event titles that look like a token FDV / market-cap / token-price ladder (the kind an external DEX price can value). Majors' spot-price ladders are not included. */
+export const TOKEN_LADDER_RE = /\bfdv\b|market ?cap|\bmcap\b|\btoken\b[^?]*\bprice\b|\bprice\b[^?]*\btoken\b/i;
+export const looksLikeTokenLadder = (title: string): boolean => TOKEN_LADDER_RE.test(title) && !/\bIPO\b|\bstocks?\b|\bshares\b/i.test(title); // company market caps have no DEX price
+
+export interface RefScanOptions {
+  minEdge?: number; // dollars, default 0.02
+  /** Active events to look through; when absent they are read from the client (busiest first). */
+  events?: Array<Record<string, any>>;
+  maxEvents?: number; // default 400, only when events are not given
+  fetchJson?: FetchJson; // for the DEX reference, default httpFetchJson
+  now?: () => number; // epoch ms
+}
+
+export interface RefScanResult {
+  candidates: EdgeCandidate[];
+  /** One entry per reference/event that could not be priced. */
+  errors: string[];
+}
+
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/**
+ * External-price edges: for every active event matched by a refs.json entry, rebuild the Decision view's verdict (decide.ts, which owns the
+ * fair-value math) from live order books and the DEX reference, and emit a REF candidate for each rung whose live ask is outside the model
+ * range by >= minEdge. Never throws: per-reference failures land in `errors`.
+ */
+export async function scanReferenced(client: PolymarketClient, refs: readonly RefConfig[], opts: RefScanOptions = {}): Promise<RefScanResult> {
+  const out: RefScanResult = { candidates: [], errors: [] };
+  if (refs.length === 0) return out;
+  const minEdge = opts.minEdge ?? 0.02;
+  const now = opts.now ?? Date.now;
+  let events = opts.events;
+  if (!events) {
+    events = [];
+    const want = opts.maxEvents ?? 400;
+    try {
+      for (let off = 0; off < want; off += 100) {
+        const page = await client.activeEventsRaw(off, Math.min(100, want - off));
+        if (page.length === 0) break;
+        events.push(...page);
+      }
+    } catch (error) {
+      out.errors.push(`ref scan events: ${errText(error)}`);
+    }
+  }
+  for (const raw of events) {
+    const slug = String(raw.slug ?? '');
+    const cfg = refFor(slug, refs);
+    if (!cfg) continue;
+    try {
+      out.candidates.push(...(await refEvent(client, cfg, raw, minEdge, opts.fetchJson ?? httpFetchJson, Math.floor(now() / 1000))));
+    } catch (error) {
+      out.errors.push(`ref ${cfg.match} (${slug}): ${errText(error)}`);
+    }
+  }
+  return out;
+}
+
+interface Priced {
+  m: DMarket;
+  raw: Record<string, any>;
+  yesToken: string | null;
+  noToken: string | null;
+  /** Best NO ask and its top-level size, from the live NO book (null when not read). */
+  noAsk: { price: number; size: number } | null;
+  yesTop: { price: number; size: number } | null;
+  live: boolean;
+}
+
+async function refEvent(client: PolymarketClient, cfg: RefConfig, raw: Record<string, any>, minEdge: number, fetchJson: FetchJson, nowSecs: number): Promise<EdgeCandidate[]> {
+  const title = String(raw.title ?? raw.slug);
+  const rows = ((raw.markets ?? []) as Array<Record<string, any>>).filter((m) => m.conditionId && !m.closed && m.active !== false && m.acceptingOrders !== false);
+  if (rows.length === 0) return [];
+  const priced: Priced[] = [];
+  for (const r of rows) {
+    const t = toks(r.clobTokenIds);
+    const m: DMarket = {
+      cid: String(r.conditionId), label: String(r.groupItemTitle || r.question || ''), question: String(r.question ?? ''), outcomes: ['Yes', 'No'], closed: false,
+      yesBid: num(r.bestBid), yesAsk: num(r.bestAsk), last: num(r.lastTradePrice),
+      endsAt: typeof r.endDate === 'string' && Number.isFinite(Date.parse(r.endDate)) ? Math.floor(Date.parse(r.endDate) / 1000) : null,
+      askDepthSh: null, bidDepthSh: null, liq: num(r.liquidityNum) ?? num(r.liquidity) ?? 0, vol24: num(r.volume24hr) ?? 0,
+    };
+    const p: Priced = { m, raw: r, yesToken: t[0] ?? null, noToken: t[1] ?? null, noAsk: null, yesTop: null, live: false };
+    try {
+      if (!p.yesToken || !p.noToken) throw new Error('no token ids');
+      const yb = await client.book(p.yesToken);
+      const q = bookQuote(yb);
+      m.yesBid = q.bid; m.yesAsk = q.ask; m.bidDepthSh = q.bidDepthSh; m.askDepthSh = q.askDepthSh;
+      p.yesTop = yb.asks[0] ? { price: yb.asks[0].price, size: yb.asks[0].size } : null;
+      const nb = await client.book(p.noToken);
+      p.noAsk = nb.asks[0] ? { price: nb.asks[0].price, size: nb.asks[0].size } : null;
+      p.live = true;
+    } catch {
+      // keep gamma's quote; the candidate is then unverified
+    }
+    priced.push(p);
+  }
+
+  const reference: Reference | null = await fetchDexReference(fetchJson, cfg, title, nowSecs);
+  if (!reference) throw new Error('no pool with liquidity was found for the configured mint');
+  const d = decide({ event: { slug: String(raw.slug), title, description: String(raw.description ?? '') }, markets: priced.map((p) => p.m), flows: {}, wallets: {}, reference, now: nowSecs });
+  const refNotes = d.notes.filter((n) => /^reference |pools disagree|reference token is thin/.test(n));
+
+  const out: EdgeCandidate[] = [];
+  for (const md of d.markets) {
+    if (!md.fair) continue;
+    const p = priced.find((x) => x.m.cid === md.cid) as Priced;
+    const { lo, hi } = md.fair;
+    // YES is cheap when its ask is below the model's low end; NO is cheap when its ask is below 1 - the model's high end
+    const yesAsk = p.m.yesAsk;
+    const noAsk = p.live ? p.noAsk?.price ?? null : p.m.yesBid !== null ? 1 - p.m.yesBid : null;
+    const pick = yesAsk !== null && lo - yesAsk >= minEdge ? { action: 'BUY YES' as const, ask: yesAsk, payoff: lo, top: p.yesTop }
+      : noAsk !== null && 1 - hi - noAsk >= minEdge ? { action: 'BUY NO' as const, ask: noAsk, payoff: 1 - hi, top: p.noAsk }
+      : null;
+    if (!pick) continue;
+    const edge = pick.payoff - pick.ask;
+    const depthUsd = p.live && pick.top ? pick.top.size * pick.top.price : null;
+    out.push({
+      kind: 'REF', slug: String(raw.slug), title, payoff: pick.payoff, cost: pick.ask, edgePts: edge * 100, confidence: 'low',
+      legs: [{ cid: md.cid, label: md.label, action: pick.action, price: pick.ask, yesToken: p.yesToken, noToken: p.noToken }],
+      liqMin: p.m.liq, vol24: num(raw.volume24hr) ?? 0,
+      caveats: [
+        `model call, not an arbitrage: model range ${(lo * 100).toFixed(0)}-${(hi * 100).toFixed(0)}% from ${reference.source}; "payoff" is the range's nearest edge and nothing is guaranteed`,
+        ...(edge >= SUSPICIOUS ? [`SUSPICIOUSLY LARGE (${(edge * 100).toFixed(0)} points): check the mint, the launch time and the rules before believing it`] : []),
+        ...md.reasons, ...md.risks, ...md.invalidates, ...refNotes, ...reference.checks.map((c) => `confirm: ${c}`),
+      ],
+      verified: p.live ? true : null, liveEdgePts: p.live ? edge * 100 : null, depthUsd, profitUsd: depthUsd === null ? null : edge * depthUsd,
+      note: p.live ? null : 'priced from gamma quotes (live books could not be read): not confirmed',
+    });
+  }
+  return out;
+}
+
 export interface ScanResult {
   at: number; // epoch ms
   eventsScanned: number;
   marketsScanned: number;
   candidates: EdgeCandidate[];
   errors: string[];
+  /** Titles of active events that look like token FDV / market-cap / price ladders but match no refs.json entry (never auto-mapped). */
+  unmapped: string[];
 }
 
 export interface ScanRun extends ScanOptions {
@@ -190,18 +331,31 @@ export interface ScanRun extends ScanOptions {
   verifyTop?: number; // default 12
   now?: () => number;
   onProgress?: (stage: string, partial: ScanResult) => void;
+  /** External references (default: loadRefs() from .radar/refs.json; [] disables REF rows). */
+  refs?: readonly RefConfig[];
+  fetchJson?: FetchJson;
 }
 
-/** Ranks live-confirmed candidates first by the profit available at the depth you can buy, then unchecked ones by screen edge, stale ones last. */
+/**
+ * Ranks live-confirmed structural candidates first by the profit available at the depth you can buy, then unchecked ones and REF (model)
+ * rows by edge (a REF row never outranks a live-confirmed structural one), stale ones last.
+ */
 export function rank(cs: EdgeCandidate[]): EdgeCandidate[] {
-  const score = (c: EdgeCandidate): number => (c.verified === false ? -1000 : c.verified ? 1000 + (c.profitUsd ?? 0) : c.edgePts);
+  const score = (c: EdgeCandidate): number => (c.verified === false ? -1000 : c.kind === 'REF' ? Math.min(999, c.liveEdgePts ?? c.edgePts) : c.verified ? 1000 + (c.profitUsd ?? 0) : c.edgePts);
   return [...cs].sort((a, b) => score(b) - score(a) || b.liqMin - a.liqMin);
 }
 
 export async function scanAll(client: PolymarketClient, run: ScanRun = {}): Promise<ScanResult> {
   const now = run.now ?? Date.now;
-  const result: ScanResult = { at: now(), eventsScanned: 0, marketsScanned: 0, candidates: [], errors: [] };
-  const emit = (stage: string) => run.onProgress?.(stage, { ...result, candidates: [...result.candidates] });
+  const result: ScanResult = { at: now(), eventsScanned: 0, marketsScanned: 0, candidates: [], errors: [], unmapped: [] };
+  let refs: readonly RefConfig[] = [];
+  try {
+    refs = run.refs ?? loadRefs();
+  } catch (error) {
+    result.errors.push(`refs: ${errText(error)}`);
+  }
+  const refEvents: Array<Record<string, any>> = [];
+  const emit = (stage: string) => run.onProgress?.(stage, { ...result, candidates: [...result.candidates], unmapped: [...result.unmapped] });
   const want = run.events ?? 400;
   for (let offset = 0; offset < want; offset += 100) {
     emit(`reading events ${offset + 1}-${Math.min(want, offset + 100)}`);
@@ -217,6 +371,10 @@ export async function scanAll(client: PolymarketClient, run: ScanRun = {}): Prom
       result.eventsScanned++;
       result.marketsScanned += ((raw.markets ?? []) as unknown[]).length;
       result.candidates.push(...screenEvent(raw, run));
+      const slug = String(raw.slug ?? '');
+      const title = String(raw.title ?? slug);
+      if (refFor(slug, refs)) refEvents.push(raw);
+      else if (looksLikeTokenLadder(title) && !result.unmapped.includes(title)) result.unmapped.push(title);
     }
     result.candidates = rank(result.candidates);
     emit(`screened ${result.eventsScanned} events, ${result.candidates.length} candidate(s)`);
@@ -227,15 +385,21 @@ export async function scanAll(client: PolymarketClient, run: ScanRun = {}): Prom
     await verifyCandidate(client, c);
     result.candidates = rank(result.candidates);
   }
+  if (refs.length > 0 && refEvents.length > 0) {
+    emit(`pricing ${refEvents.length} referenced event(s) against external prices`);
+    const r = await scanReferenced(client, refs, { events: refEvents, minEdge: run.minEdge, fetchJson: run.fetchJson, now });
+    result.candidates = rank([...result.candidates, ...r.candidates]);
+    result.errors.push(...r.errors);
+  }
   emit('done');
   return result;
 }
 
 export function saveEdges(result: ScanResult, path: string): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify({ ...result, generatedAt: new Date(result.at).toISOString(), note: 'structural edges only, before fees; verify before acting' }, null, 2) + '\n');
+  writeFileSync(path, JSON.stringify({ ...result, generatedAt: new Date(result.at).toISOString(), note: 'structural edges plus REF model calls (external price, low confidence), before fees; verify before acting' }, null, 2) + '\n');
 }
 
 export const EDGES_PATH = process.env.RADAR_EDGES ?? '.radar/edges.json';
 
-export const KIND_TEXT: Record<EdgeKind, string> = { LADDER: 'LADDER', SUM_BID: 'SUM>1', SUM_ASK: 'SUM<1' };
+export const KIND_TEXT: Record<EdgeKind, string> = { LADDER: 'LADDER', SUM_BID: 'SUM>1', SUM_ASK: 'SUM<1', REF: 'REF' };

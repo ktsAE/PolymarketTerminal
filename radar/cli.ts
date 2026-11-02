@@ -10,7 +10,8 @@ import { loadDecision } from './decide-data.ts';
 import { EDGES_PATH, KIND_TEXT, saveEdges, scanAll } from './edges.ts';
 import { FORWARD_DIR, readJsonl, RESULTS_PATH, settleSnapshots, snapshotUpcoming, SNAPSHOTS_PATH, type SettleSummary, type SnapshotSummary } from './forward.ts';
 import { formatLedger, scoreLedger } from './ledger.ts';
-import { LEDGER_STANDING, NEW_STANDING } from './tui/render.ts';
+import { captureEntries, formatJumps, JUMPS_PATH, logJumps, scanJumps, scoreJumps, settleJumps, validFlagLine, type EntrySummary, type JumpScan, type JumpSettleSummary } from './jump.ts';
+import { JUMPS_STANDING, LEDGER_STANDING, NEW_STANDING, unmappedNote } from './tui/render.ts';
 import { logFlagged, NEWMARKET_THRESHOLDS, NEWMARKETS_PATH, NEWMARKETS_RESULTS_PATH, scanNewMarkets, scoreNewMarketLog, type NewMarketScore, type ScanSummary } from './newmarkets.ts';
 import { cleanHandle, DEFAULT_HANDLES_PATH, DEFAULT_POSTS_PATH, loadHandles, loadPosts, pollAccounts, type AccountPollResult } from './xaccounts.ts';
 import { loadHolders, peopleOnly } from './holders.ts';
@@ -18,7 +19,7 @@ import { loadNews } from './newsview.ts';
 import { accountAge, identityFor } from './identity.ts';
 import { addPerson, describePerson, loadPeople, matchPeople, PEOPLE_PATH, removePerson } from './people.ts';
 import { loadRefs, REFS_PATH } from './refs.ts';
-import { runTui } from './tui/app.ts';
+import { runTui, scanJumpsWithProgress } from './tui/app.ts';
 import { FEEDS } from './news.ts';
 import { httpFetchText, pollFeeds } from './poll.ts';
 import { PolymarketClient, httpFetchJson } from './polymarket.ts';
@@ -153,12 +154,45 @@ async function newScore(client: PolymarketClient): Promise<void> {
   console.log(`results: ${NEWMARKETS_RESULTS_PATH}\n${NEW_STANDING}.`);
 }
 
+const jumpScanText = (s: JumpScan, logged: number) => `jumps: ${s.markets} markets, ${s.screened} screened, ${s.flags.length} flag(s), ${logged} logged${s.errors.length ? `, ${s.errors.length} error(s)` : ''}`;
+const entryText = (r: EntrySummary) => `jump-entries: ${r.due} due, ${r.written} written${r.skippedOneSided ? `, ${r.skippedOneSided} one-sided` : ''}${r.errors.length ? `, ${r.errors.length} error(s)` : ''}`;
+const jumpSettleText = (r: JumpSettleSummary) => `jump-settle: ${r.pending} pending, ${r.settled} settled${r.errors.length ? `, ${r.errors.length} error(s)` : ''}`;
+const share = (x: number | null) => (x === null ? '-' : `${Math.round(x * 100)}%`);
+
+/** Live calm-then-jump scan, printed only: the daemon is what logs flags (with entries captured 5-15 min later). */
+async function jumps(client: PolymarketClient, top: number): Promise<void> {
+  const t0 = Date.now();
+  const s = await scanJumpsWithProgress(client, (stage) => process.stderr.write(`\r${stage.slice(0, 70).padEnd(70)}`));
+  process.stderr.write('\r' + ' '.repeat(72) + '\r');
+  const reasons = Object.entries(s.reasons).map(([k, n]) => `${k} ${n}`).join(', ');
+  console.log(`read ${s.events} events: ${s.markets} busiest markets, ${s.screened} moved 5+ pts in 1h, ${s.checked} checked on price history, ${s.flags.length} flag(s) in ${((Date.now() - t0) / 1000).toFixed(0)}s${reasons ? ` (rejected: ${reasons})` : ''}`);
+  for (const e of s.errors.slice(0, 5)) console.log(`  error: ${e}`);
+  console.log('');
+  const flags = [...s.flags].sort((a, b) => Math.abs(b.move) - Math.abs(a.move));
+  for (const f of flags.slice(0, top)) {
+    console.log(`${f.direction === 'up' ? 'UP  ' : 'DOWN'} ${f.outcomes[0]} ${f.pRef.toFixed(2)}->${f.pNow.toFixed(2)} in 30m  ${f.calm ? 'calm ' : 'loose'}  vol30m ${usd(f.vol30m).padStart(8)}  freshShare ${share(f.freshShare).padStart(4)}  | ${f.title.slice(0, 70)}`);
+    console.log(`       https://polymarket.com/event/${f.eventSlug}`);
+  }
+  if (flags.length === 0) console.log('no market jumped 15+ points in the last 30 minutes: that is the normal case.');
+  console.log(`\nnot logged here: the daemon logs flags to ${JUMPS_PATH}.\n${JUMPS_STANDING}.`);
+}
+
+function jumpsScore(): void {
+  const lines = readJsonl(JUMPS_PATH);
+  if (!lines.some(validFlagLine)) console.log(`no data yet: no jump flags in ${JUMPS_PATH}${lines.length ? ` (${lines.length} line(s), none a valid flag)` : ''}. Start the logger with: npm run radar -- daemon\n`);
+  for (const l of formatJumps(scoreJumps(lines))) console.log(l);
+  console.log(`\n${JUMPS_STANDING}. An edge is claimed only by a score verdict above.`);
+}
+
 /** Settling and X polling hit the network per item; they run on their own slower cadence inside the daemon loop. */
 const SETTLE_EVERY_MS = 5 * 60_000;
 const X_EVERY_MS = 15 * 60_000;
 /** The new-market scan costs ~100+ requests, and scoring walks the whole log; both run far less often than snapshots. */
 const NEW_SCAN_EVERY_MS = 10 * 60_000;
 const NEW_SCORE_EVERY_MS = 30 * 60_000;
+/** The jump scan reads ~400 markets plus price histories; entries are captured every cycle (5-15 min window), results settled slowly. */
+const JUMP_SCAN_EVERY_MS = 5 * 60_000;
+const JUMP_SETTLE_EVERY_MS = 15 * 60_000;
 
 /**
  * Forward logger loop: snapshot every cycle (the T-5m window is only 10 minutes wide), settle and poll X less often.
@@ -175,11 +209,13 @@ async function daemon(client: PolymarketClient, everySecs: number): Promise<void
   };
   process.on('SIGINT', onSigint);
   process.on('SIGTERM', onSigint);
-  console.log(`forward daemon: snapshot every ${everySecs}s, settle every ${SETTLE_EVERY_MS / 60_000}m, X every ${X_EVERY_MS / 60_000}m, new-market scan every ${NEW_SCAN_EVERY_MS / 60_000}m, new-market scoring every ${NEW_SCORE_EVERY_MS / 60_000}m; logs in ${FORWARD_DIR} and ${DEFAULT_POSTS_PATH}. Ctrl-C stops.`);
+  console.log(`forward daemon: snapshot every ${everySecs}s, settle every ${SETTLE_EVERY_MS / 60_000}m, X every ${X_EVERY_MS / 60_000}m, new-market scan every ${NEW_SCAN_EVERY_MS / 60_000}m, new-market scoring every ${NEW_SCORE_EVERY_MS / 60_000}m, jump scan every ${JUMP_SCAN_EVERY_MS / 60_000}m (entries each cycle, settle every ${JUMP_SETTLE_EVERY_MS / 60_000}m); logs in ${FORWARD_DIR} and ${DEFAULT_POSTS_PATH}. Ctrl-C stops.`);
   let lastSettle = 0;
   let lastX = 0;
   let lastNewScan = 0;
   let lastNewScore = 0;
+  let lastJumpScan = 0;
+  let lastJumpSettle = 0;
   for (let cycle = 1; !stopping; cycle++) {
     const t0 = Date.now();
     const parts: string[] = [];
@@ -213,6 +249,18 @@ async function daemon(client: PolymarketClient, everySecs: number): Promise<void
     if (Date.now() - lastNewScore >= NEW_SCORE_EVERY_MS) {
       lastNewScore = Date.now();
       await step('new-score', async () => newScoreText(await scoreNewMarketLog(client)));
+    }
+    if (Date.now() - lastJumpScan >= JUMP_SCAN_EVERY_MS) {
+      lastJumpScan = Date.now();
+      await step('jumps', async () => {
+        const s = await scanJumps(client);
+        return jumpScanText(s, logJumps(s.flags).length);
+      });
+    }
+    await step('jump-entries', async () => entryText(await captureEntries(client)));
+    if (Date.now() - lastJumpSettle >= JUMP_SETTLE_EVERY_MS) {
+      lastJumpSettle = Date.now();
+      await step('jump-settle', async () => jumpSettleText(await settleJumps(client)));
     }
     console.log(`${new Date().toISOString().slice(0, 19).replace('T', ' ')}Z #${cycle} ${((Date.now() - t0) / 1000).toFixed(0)}s | ${parts.join(' | ')}`);
     const wait = Math.max(0, everySecs * 1000 - (Date.now() - t0));
@@ -310,16 +358,18 @@ async function main(): Promise<void> {
         process.stderr.write('\r' + ' '.repeat(72) + '\r');
         saveEdges(res, EDGES_PATH);
         const top = flag(args, 'top', 25);
-        console.log(`scanned ${res.eventsScanned} events / ${res.marketsScanned} markets: ${res.candidates.length} structural candidate(s); list saved to ${EDGES_PATH}${res.errors.length ? `\n(errors: ${res.errors.join('; ')})` : ''}\n`);
+        const nRef = res.candidates.filter((c) => c.kind === 'REF').length;
+        console.log(`scanned ${res.eventsScanned} events / ${res.marketsScanned} markets: ${res.candidates.length - nRef} structural candidate(s), ${nRef} REF model call(s); list saved to ${EDGES_PATH}${res.errors.length ? `\n(errors: ${res.errors.join('; ')})` : ''}\n`);
         for (const c of res.candidates.slice(0, top)) {
-          const live = c.verified === null ? (c.note ? 'unchecked' : 'not checked') : c.verified ? `LIVE +${(c.liveEdgePts ?? 0).toFixed(1)}pt, ~$${Math.round(c.profitUsd ?? 0)} at $${Math.round(c.depthUsd ?? 0)} depth` : 'STALE (gone on live books)';
+          const live = c.kind === 'REF' ? `MODEL ~+${(c.liveEdgePts ?? c.edgePts).toFixed(1)}pt${c.verified ? ' on live books' : ' on screen quotes'}` : c.verified === null ? (c.note ? 'unchecked' : 'not checked') : c.verified ? `LIVE +${(c.liveEdgePts ?? 0).toFixed(1)}pt, ~$${Math.round(c.profitUsd ?? 0)} at $${Math.round(c.depthUsd ?? 0)} depth` : 'STALE (gone on live books)';
           console.log(`${KIND_TEXT[c.kind].padEnd(7)} +${c.edgePts.toFixed(1).padStart(5)}pt screen | ${live.padEnd(34)} | ${c.confidence.padEnd(6)} | liq $${Math.round(c.liqMin)} | ${c.title.slice(0, 60)}`);
-          console.log(`        ${c.legs.map((l) => `${l.action} "${l.label.slice(0, 22)}" @${l.price.toFixed(3)}`).join('  +  ')}  -> pays >= $${c.payoff.toFixed(2)} for ${c.cost.toFixed(3)}`);
+          console.log(`        ${c.legs.map((l) => `${l.action} "${l.label.slice(0, 22)}" @${l.price.toFixed(3)}`).join('  +  ')}  -> ${c.kind === 'REF' ? `fair range edge $${c.payoff.toFixed(2)} (NOT guaranteed)` : `pays >= $${c.payoff.toFixed(2)}`} for ${c.cost.toFixed(3)}`);
           if (c.note) console.log(`        note: ${c.note}`);
           console.log(`        https://polymarket.com/event/${c.slug}`);
         }
         if (res.candidates.length === 0) console.log('nothing structural right now: that is the normal state of an efficient market, not a bug.');
-        console.log('\nStructural edges only, before fees; each leg must fill. No forecasting edge is claimed (see docs/research/radar/HOLDERS_STUDY.md).');
+        if (res.unmapped.length) console.log(`\n${unmappedNote(res.unmapped.length)}: ${res.unmapped.slice(0, 5).join(' | ')}${res.unmapped.length > 5 ? ' | …' : ''}`);
+        console.log('\nStructural edges before fees; each leg must fill. REF rows are low-confidence model calls from an external price, not guaranteed. No forecasting edge is claimed (see docs/research/radar/HOLDERS_STUDY.md).');
         return;
       }
       case 'research': {
@@ -376,7 +426,7 @@ async function main(): Promise<void> {
           intervalSecs: flag(args, 'interval', 120),
           cols: cols || undefined,
           rows: rows || undefined,
-          tab: (['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new'] as const).find((t) => t === val('tab')),
+          tab: (['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new', 'jumps'] as const).find((t) => t === val('tab')),
           slug: val('slug'),
         });
         return;
@@ -401,6 +451,17 @@ async function main(): Promise<void> {
         return newScan(client, Math.max(1, flag(args, 'hours', 24)), Math.max(1, flag(args, 'top', 20)));
       case 'new-score':
         return newScore(client);
+      case 'jumps':
+        return jumps(client, Math.max(1, flag(args, 'top', 25)));
+      case 'jumps-settle': {
+        const r = await settleJumps(client);
+        console.log(jumpSettleText(r));
+        for (const e of r.errors.slice(0, 5)) console.log(`  error: ${e}`);
+        console.log(`log: ${JUMPS_PATH}`);
+        return;
+      }
+      case 'jumps-score':
+        return jumpsScore();
       case 'daemon':
         return daemon(client, Math.max(5, flag(args, 'every', 30)));
       case 'x-add': {
@@ -478,7 +539,7 @@ async function main(): Promise<void> {
         return;
       }
       default:
-        console.log('commands: tui [--interval S --no-news] | daemon [--every SECS] | forward-log | forward-settle | ledger | new-scan [--hours N --top K] | new-score | x-add <handle> [note] | x-list | x-poll | decide <slug> [--wallets] | research <slug> | edges [--top N --events N --min-edge D --min-liq USD --verify K --no-verify] | people list|add|remove|check <wallet> | holders <slug> [--all] | scan [--cols N --rows N --tab games|prints|leads|decision|edge|ledger|new --slug S] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
+        console.log('commands: tui [--interval S --no-news] | daemon [--every SECS] | forward-log | forward-settle | ledger | new-scan [--hours N --top K] | new-score | jumps [--top N] | jumps-settle | jumps-score | x-add <handle> [note] | x-list | x-poll | decide <slug> [--wallets] | research <slug> | edges [--top N --events N --min-edge D --min-liq USD --verify K --no-verify] | people list|add|remove|check <wallet> | holders <slug> [--all] | scan [--cols N --rows N --tab games|prints|leads|decision|edge|ledger|new|jumps --slug S] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
     }
   } finally {
     store.close();

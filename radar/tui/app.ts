@@ -4,21 +4,48 @@ import { loadDecision } from '../decide-data.ts';
 import { EDGES_PATH, saveEdges, scanAll } from '../edges.ts';
 import { readJsonl, RESULTS_PATH, SNAPSHOTS_PATH } from '../forward.ts';
 import { scoreLedger } from '../ledger.ts';
+import { JUMPS_PATH, scanJumps, scoreJumps, type JumpScan } from '../jump.ts';
 import { logFlagged, scanNewMarkets } from '../newmarkets.ts';
 import { loadHolders } from '../holders.ts';
 import { loadNews } from '../newsview.ts';
 import { loadPeople, type Person } from '../people.ts';
-import type { PolymarketClient } from '../polymarket.ts';
+import { httpFetchJson, type PolymarketClient } from '../polymarket.ts';
 import { httpFetchText, pollFeeds } from '../poll.ts';
 import { loadRefs, type RefConfig } from '../refs.ts';
 import type { RadarStore } from '../store.ts';
-import { flaggedNew, listLength, moveSelection, render, visibleHolders, type Key, type LedgerView, type Model, type View } from './render.ts';
+import { flaggedNew, jumpFlags, listLength, moveSelection, render, visibleHolders, type Key, type LedgerView, type Model, type View } from './render.ts';
 
 const ESC = '\x1b';
 /** Opening the New tab reuses a scan younger than this; pressing w on the tab always rescans. */
 const NEW_TAB_RESCAN_MS = 10 * 60_000;
 /** The TUI scans the 60 busiest new markets (~1.5 min) so the tab fills while you wait; `new-scan` and the daemon scan up to 150. */
 const TUI_SCAN = { hours: 24, maxMarkets: 60 } as const;
+/** Opening the Jumps tab reuses a scan younger than this; pressing j on the tab always rescans. */
+const JUMPS_TAB_RESCAN_MS = 5 * 60_000;
+
+/**
+ * scanJumps with progress: scanJumps has no progress callback, so the client's event reads and the price-history fetches are
+ * observed through a thin wrapper. Writes nothing, like scanJumps.
+ */
+export function scanJumpsWithProgress(client: PolymarketClient, onProgress: (stage: string) => void): Promise<JumpScan> {
+  const tracked = Object.create(client) as PolymarketClient;
+  let histories = 0;
+  let books = 0;
+  tracked.activeEventsRaw = (offset: number, limit?: number) => {
+    onProgress(`reading events ${offset + 1}-${offset + (limit ?? 100)}`);
+    return client.activeEventsRaw(offset, limit);
+  };
+  tracked.book = (token: string) => {
+    books++;
+    return client.book(token);
+  };
+  return scanJumps(tracked, {
+    fetchJson: (url: string) => {
+      if (url.includes('prices-history')) onProgress(`checking price history ${++histories}, ${Math.floor(books / 2)} jump(s) so far`);
+      return httpFetchJson(url);
+    },
+  });
+}
 
 export interface TuiOptions {
   intervalSecs?: number;
@@ -59,13 +86,18 @@ function ledgerView(nowMs: number): LedgerView {
       return 'none';
     }
   };
-  const key = `${stamp(SNAPSHOTS_PATH)}|${stamp(RESULTS_PATH)}`;
+  const key = `${stamp(SNAPSHOTS_PATH)}|${stamp(RESULTS_PATH)}|${stamp(JUMPS_PATH)}`;
   if (ledgerCache?.key === key) return ledgerCache.view;
   let view: LedgerView;
   try {
     view = { at: nowMs, error: null, report: scoreLedger(readJsonl(SNAPSHOTS_PATH), readJsonl(RESULTS_PATH)) };
   } catch (error) {
     view = { at: nowMs, error: `ledger: ${error instanceof Error ? error.message : String(error)}`, report: null };
+  }
+  try {
+    view.jumps = scoreJumps(readJsonl(JUMPS_PATH));
+  } catch (error) {
+    view.error = `${view.error ? `${view.error}; ` : ''}jumps: ${error instanceof Error ? error.message : String(error)}`;
   }
   ledgerCache = { key, view };
   return view;
@@ -89,6 +121,7 @@ function snapshotModel(store: RadarStore, prev: Model | null, nowMs: number, sta
     edges: prev?.edges ?? null,
     ledger: ledgerView(nowMs),
     newMarkets: prev?.newMarkets ?? null,
+    jumps: prev?.jumps ?? null,
   };
 }
 
@@ -99,7 +132,7 @@ function seriesFor(store: RadarStore, m: Model, v: View, nowSecs: number): numbe
 
 /** The event the user is looking at, for actions like "load holders" or "show link". */
 function selectedSlug(m: Model, v: View): string | undefined {
-  return v.tab === 'anomalies' ? m.anomalies[v.sel]?.slug : v.tab === 'games' ? m.games[v.sel]?.slug : v.tab === 'prints' ? m.prints[v.sel]?.eventSlug : v.tab === 'holders' ? m.holders?.slug : v.tab === 'decision' ? m.decision?.slug : v.tab === 'search' ? m.search?.results[v.sel]?.slug : v.tab === 'news' ? m.news?.slug : v.tab === 'edge' ? m.edges?.result?.candidates[v.sel]?.slug : v.tab === 'new' ? flaggedNew(m)[v.sel]?.eventSlug || undefined : undefined;
+  return v.tab === 'anomalies' ? m.anomalies[v.sel]?.slug : v.tab === 'games' ? m.games[v.sel]?.slug : v.tab === 'prints' ? m.prints[v.sel]?.eventSlug : v.tab === 'holders' ? m.holders?.slug : v.tab === 'decision' ? m.decision?.slug : v.tab === 'search' ? m.search?.results[v.sel]?.slug : v.tab === 'news' ? m.news?.slug : v.tab === 'edge' ? m.edges?.result?.candidates[v.sel]?.slug : v.tab === 'new' ? flaggedNew(m)[v.sel]?.eventSlug || undefined : v.tab === 'jumps' ? jumpFlags(m)[v.sel]?.eventSlug || undefined : undefined;
 }
 
 export async function runTui(store: RadarStore, client: PolymarketClient, opts: TuiOptions = {}): Promise<void> {
@@ -152,6 +185,10 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
       const cfg = readConfig(opts);
       const dv = await loadDecision(client, store, opts.slug, { people: cfg.people, refs: cfg.refs });
       model = { ...model, decision: dv };
+    }
+    if (view.tab === 'jumps') {
+      const scan = await scanJumps(client);
+      model = { ...model, jumps: { stage: 'done', done: true, error: scan.errors.length ? `${scan.errors.length} error(s): ${scan.errors[0]}` : null, at: Date.now(), scan } };
     }
     if (view.tab === 'new') {
       const sum = await scanNewMarkets(client, TUI_SCAN);
@@ -301,6 +338,38 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     if (stale) startNewScan();
   };
 
+  // Jumps: `j` opens the tab and scans when there is no recent scan; `j` on the tab rescans. A newer scan supersedes an older one. Nothing is logged here (the daemon logs).
+  let jumpsToken = 0;
+  const startJumpScan = () => {
+    const token = ++jumpsToken;
+    model = { ...model, jumps: { stage: 'starting', done: false, error: null, at: null, scan: model.jumps?.scan ?? null } };
+    paint();
+    scanJumpsWithProgress(client, (stage) => {
+      if (token !== jumpsToken || !model.jumps) return;
+      model = { ...model, jumps: { ...model.jumps, stage } };
+      paint();
+    }).then(
+      (scan) => {
+        if (token !== jumpsToken) return;
+        model = { ...model, jumps: { stage: 'done', done: true, error: scan.errors.length ? `${scan.errors.length} error(s): ${scan.errors[0]}` : null, at: Date.now(), scan } };
+        view = { ...view, sel: Math.min(view.sel, Math.max(0, listLength(model, 'jumps') - 1)) };
+        paint();
+      },
+      (error) => {
+        if (token !== jumpsToken) return;
+        model = { ...model, jumps: { stage: 'failed', done: true, error: error instanceof Error ? error.message : String(error), at: null, scan: model.jumps?.scan ?? null } };
+        paint();
+      },
+    );
+  };
+  const openJumps = () => {
+    const jv = model.jumps;
+    const wasOn = view.tab === 'jumps';
+    press('j');
+    const stale = !jv || (jv.done && (wasOn || jv.at === null || Date.now() - jv.at > JUMPS_TAB_RESCAN_MS));
+    if (stale) startJumpScan();
+  };
+
   // News: `n` searches headlines for the selected event; a newer request makes older progress irrelevant.
   let newsToken = 0;
   const openNews = (slug: string) => {
@@ -390,12 +459,13 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     process.stdin.on('data', (d: string) => {
       const map: Record<string, Key> = {
         [`${ESC}[A`]: 'up', [`${ESC}[B`]: 'down', [`${ESC}[5~`]: 'pageup', [`${ESC}[6~`]: 'pagedown', [`${ESC}[H`]: 'home', [`${ESC}[1~`]: 'home', [`${ESC}[F`]: 'end', [`${ESC}[4~`]: 'end',
-        '\t': 'tab', k: 'up', j: 'down', g: 'home', G: 'end', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7', '8': '8', '9': '9', '0': '0',
+        '\t': 'tab', k: 'up', g: 'home', G: 'end', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7', '8': '8', '9': '9', '0': '0',
       };
       if (model.search?.typing) return typeSearch(d);
       if (d === '/') return beginSearch();
       if (d === 'e') return startEdgeScan();
       if (d === 'w') return openNew();
+      if (d === 'j') return openJumps();
       if (d === 'n') {
         const slug = selectedSlug(model, view);
         if (!slug) {

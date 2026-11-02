@@ -9,7 +9,7 @@ npm run scan                # one poll, print one frame, exit (good for logs and
 npm run test:tui            # drives the real TUI through a pseudo-terminal against live data (needs network)
 ```
 
-Keys: `↑↓ / j k` move · `PgUp PgDn g G` jump · `1`-`9`, `0` or `Tab` switch tabs · `w` New tab (scans new markets) · `f` cycle category filter · `h` load the selected event's top holders · `b` show/hide bots and market makers · `o` show the selected link · `r` refresh now · `q` quit.
+Keys: `↑↓` (or `k` up) move · `PgUp PgDn g G` jump · `1`-`9`, `0` or `Tab` switch tabs · `w` New tab (scans new markets) · `j` Jumps tab (scans for calm-then-jump moves; `j` no longer moves down) · `f` cycle category filter · `h` load the selected event's top holders · `b` show/hide bots and market makers · `o` show the selected link · `r` refresh now · `q` quit.
 
 Tabs: **1 Anomalies** (non-game events with reasons and an OI sparkline), **2 Games** (live and next-24h games with kickoff countdown, pre-game line moves, OI and fills),
 **3 Big prints** (large fills with the wallet's history: NEW / THIN / WHALE), **4 Holders** (top holders of the selected event, see below),
@@ -165,6 +165,10 @@ The list is saved to `.radar/edges.json` each run. `p` on a row opens the Decisi
 | LADDER | thresholds or dates priced out of order: buy YES on the easier rung and NO on the harder one | at least $1 for less than $1 |
 | SUM>1 | mutually exclusive outcomes (negRisk events) whose YES bids add up to more than $1: buy NO on all | at least n-1 for less |
 | SUM<1 | the same outcomes with YES asks adding up to less than $1: buy YES on all (LOW confidence) | $1 only if a LISTED outcome wins |
+| REF | a token-FDV rung priced outside the model's fair range from an external DEX price (`.radar/refs.json`, see Reference prices): a model call, LOW confidence, shown in yellow with `~` before its edge | the near edge of the fair range: NOT guaranteed |
+
+REF rows only appear for events you mapped in `.radar/refs.json`; nothing is mapped automatically. When the scan sees token FDV / market-cap / price
+ladders with no entry, the Edge tab prints one dim line `N token markets have no reference price (add to .radar/refs.json)` and `edges` lists their titles.
 
 What the columns mean: SCREEN is the edge on gamma's quotes (cheap, can lag). LIVE is the edge on the real order books (STALE = it was gone). `$@DEPTH` is the profit if you buy
 everything available at the best prices: "+90 points on $0 of depth" is not an opportunity, so the list is ranked by this, not by points.
@@ -192,7 +196,8 @@ Every claim of a betting edge has to survive a forward test on data logged befor
 
 ```
 npm run radar -- daemon [--every 30]   # loop: snapshot every N seconds (default 30), settle every 5 min, poll X handles every 15 min,
-                                       #       new-market scan every 10 min, new-market scoring every 30 min
+                                       #       new-market scan every 10 min, new-market scoring every 30 min,
+                                       #       jump scan + log every 5 min, jump entries every cycle, jump settle every 15 min
 npm run radar -- forward-log           # one snapshot pass
 npm run radar -- forward-settle        # one settle pass
 npm run radar -- ledger                # score the logs; says "no data yet" until there are snapshots
@@ -242,3 +247,37 @@ Forward log, in `.radar/forward/` (gitignored, `RADAR_FORWARD` overrides the dir
 **Honesty rule.** A flag describes trading behavior, never who traded or why: it is not evidence of insider trading, and the code never says so.
 No edge is claimed until the forward log shows one: the tallies are read only after enough flagged markets have resolved, and the thresholds are
 not tuned on the log they are scored on (the event study owns any revision). Markets that resolve within the scan window drop out of `closed=false`.
+
+## Calm-then-jump (`jump.ts`) - Jumps tab `j`, `jumps`, `jumps-settle`, `jumps-score`
+
+Finds markets whose price jumped 15+ points in the last 30 minutes. The scan reads the busiest ~400 active binary markets, keeps those whose
+gamma 1h change is 5+ points, confirms each on CLOB price history (outcome 0) and reads both books plus one page of taker fills.
+
+The rule is **frozen** in `jump.ts` (constants and strategies were fixed before any forward data; do not tune them on the log):
+* **calm rule**: the 24h before the reference point moved within 10 points (at least 3 price points), and outcome 0 moved 15+ points between
+  its price 30 min ago (`pRef`, inside 0.10-0.90) and now (`pNow`).
+* **loose rule** (`calm=false`): the same 15-point move from a reference at most 6h older than 30 min ago, no calm requirement.
+* Each flag carries direction, `pRef -> pNow`, taker volume over 30 min, `freshShare` (share of 30-min buy dollars from wallets new to the market;
+  `-` when the market's history is longer than one page of fills) and the books at detection.
+
+```
+npm run radar -- jumps [--top 25]   # one live scan, printed only (not logged): rows with direction, pRef->pNow, volume, freshShare, link
+npm run radar -- jumps-settle       # write result lines for flagged markets that have resolved
+npm run radar -- jumps-score        # score the five frozen strategies on the log; says "no data yet" on an empty log
+```
+
+The **daemon** is the logger: it runs the scan and appends new flags at most every 5 minutes (one flag per market per 24h), captures the entry
+books of each flag 5-15 minutes after it (every cycle), and settles results at most every 15 minutes. A failing step is reported on the status line
+and the loop goes on. The log is `.radar/forward/jumps.jsonl` (flag, entry and result lines; `RADAR_FORWARD` overrides the directory), gitignored with the rest of `.radar/`.
+
+The Jumps tab (`j`) shows the last scan: DIR, PRICE 30M (`pRef->pNow`), RULE (calm/loose), VOL30M, FRESH and the market, biggest move first.
+Before the first scan it says `press j to scan`; the scan runs in the background with its progress on the title line, and a new scan supersedes a
+running one. Opening the tab reuses a scan under 5 minutes old; `j` on the tab rescans. `p` decides, `n` searches news, `o` shows the link of the
+selected row. The TUI never writes the log. The Ledger tab (`0`) adds a second block below the paper ledger with the `jumps-score` report.
+
+Strategies (`JUMP_STRATEGIES`, scored at the entry ask, 99% day-clustered bootstrap CI): `jump-fade`, `jump-follow` (control) and `jump-follow-fresh`
+on calm flags; `jump-fade-any` and `jump-follow-any` (control) on every flag. The loose pair was registered after seeing a backtest, which the score
+output states.
+
+**Leads, not signals; no edge shown.** A jump flag is something to look at, not a trade and not evidence of wrongdoing. **An edge is claimed only by a
+score verdict**: `EDGE` needs n >= 300 settled bets and the lower bound of the 99% CI of ROI above 0; until then every strategy reads `NO EDGE PROVEN`.
