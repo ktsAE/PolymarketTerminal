@@ -290,3 +290,34 @@ describe('sports and side markets are never candidates', () => {
     expect(candidatesOf([ev({ tags: [{ slug: 'politics' }, { slug: 'geopolitics' }] })])).toHaveLength(1);
   });
 });
+
+describe('pre-game match-winner markets are allowed, nothing else in sports', () => {
+  const NOW = Date.UTC(2026, 10, 2, 12) / 1000;
+  const mk = (over: Record<string, unknown> = {}) => ({ conditionId: '0xa', slug: 'm', question: 'Team A vs Team B', outcomes: '["A","B"]', clobTokenIds: '["1","2"]', active: true, closed: false, acceptingOrders: true, sportsMarketType: 'moneyline', gameStartTime: '2026-11-02 18:00:00+00', ...over });
+  const ev = (over: Record<string, unknown> = {}, markets: unknown[] = [mk()]) => ({ slug: 'g', title: 'G', gameId: '1', live: false, ended: false, markets, ...over });
+  it('keeps the moneyline of a game that starts later and marks it pregame', () => {
+    const c = candidatesOf([ev()], NOW);
+    expect(c).toHaveLength(1);
+    expect(c[0].pregame).toBe(true);
+  });
+  it('drops the same moneyline once the game is live, ended, or its start time has passed or is unknown', () => {
+    expect(candidatesOf([ev({ live: true })], NOW)).toHaveLength(0);
+    expect(candidatesOf([ev({ ended: true })], NOW)).toHaveLength(0);
+    expect(candidatesOf([ev({}, [mk({ gameStartTime: '2026-11-02 11:00:00+00' })])], NOW)).toHaveLength(0);
+    expect(candidatesOf([ev({}, [mk({ gameStartTime: undefined })])], NOW)).toHaveLength(0);
+  });
+  it('still drops every side market of a pre-game event, even next to the moneyline', () => {
+    const c = candidatesOf([ev({}, [mk(), mk({ conditionId: '0xb', sportsMarketType: 'spreads' }), mk({ conditionId: '0xc', sportsMarketType: 'totals' }), mk({ conditionId: '0xd', sportsMarketType: 'points' })])], NOW);
+    expect(c.map((x) => x.cid)).toEqual(['0xa']);
+  });
+  it('non-sports markets are never marked pregame', () => {
+    const c = candidatesOf([{ slug: 'e', title: 'T', markets: [{ conditionId: '0xe', slug: 's', question: 'Q', outcomes: '["Yes","No"]', clobTokenIds: '["1","2"]', active: true, closed: false, acceptingOrders: true }] }], NOW);
+    expect(c[0].pregame).toBe(false);
+  });
+  it('scoreJumps keeps the pregame block separate from the default block', () => {
+    const flag = (id: string, pregame?: boolean) => ({ v: 1, kind: 'flag', id, cid: id, slug: 's', eventSlug: 'e', title: 't', outcomes: ['A', 'B'], tokenIds: ['1', '2'], direction: 'up', upIdx: 0, pRef: 0.3, pNow: 0.5, move: 0.2, calmRange: 0.05, calmPoints: 5, calm: true, vol30m: 1, freshShare: null, quotes: [], detectedAt: 1, flaggedAt: 1, ...(pregame ? { pregame } : {}) });
+    const lines = [flag('a|1'), flag('b|1', true), flag('c|1', true)];
+    expect(scoreJumps(lines).flags).toBe(1);
+    expect(scoreJumps(lines, { pregame: true }).flags).toBe(2);
+  });
+});

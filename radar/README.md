@@ -287,3 +287,8 @@ score verdict**: `EDGE` needs n >= 300 settled bets and the lower bound of the 9
 Scans for 15-point price jumps every few minutes (`--every 5`) and prints a line plus a desktop notification (`notify-send`) for each new flag. Writes nothing to disk and needs
 no daemon. Options: `--no-notify`, `--calm-only` (frozen calm rule only). Sports and esports events, with all their side markets (spreads, totals, props), are excluded by the scanner itself (`isSportsEvent` in jump.ts): a goal or a kill moves the price for a reason everyone sees. `--no-sports` is now redundant. Markets already at 0.97+/0.03- are skipped because
 they have decided. A flag is a lead to inspect, never a trade signal; most jumps on live games are the game finishing.
+
+Pre-game exception: the match-winner (moneyline) market of a sports or esports game that has not started (not live, not ended, start time still ahead) is scanned and its flags carry `pregame: true`.
+Spreads, totals, props and anything in play stay excluded. Pre-game flags are scored in their own block (`jumps-score` prints it second) so they never mix with the non-sports results.
+Untested: the backtest sample had no game start times, so there is no pre-game-only backtest; an earlier esports line-move test (fade, last ~8h before kickoff) was positive but not significant.
+`watch --no-sports` hides pre-game flags too.

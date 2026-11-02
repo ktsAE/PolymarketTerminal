@@ -231,6 +231,10 @@ function jumpsScore(): void {
   const lines = readJsonl(JUMPS_PATH);
   if (!lines.some(validFlagLine)) console.log(`no data yet: no jump flags in ${JUMPS_PATH}${lines.length ? ` (${lines.length} line(s), none a valid flag)` : ''}. Start the logger with: npm run radar -- daemon\n`);
   for (const l of formatJumps(scoreJumps(lines))) console.log(l);
+  if (lines.some((l) => validFlagLine(l) && l.pregame === true)) {
+    console.log('\npre-game match-winner markets of sports/esports games (scored separately; spreads, totals, props and in-play are never read):');
+    for (const l of formatJumps(scoreJumps(lines, { pregame: true }))) console.log(l);
+  }
   console.log(`\n${JUMPS_STANDING}. An edge is claimed only by a score verdict above.`);
 }
 

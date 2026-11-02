@@ -181,6 +181,8 @@ export interface JumpFlag {
   calmPoints: number;
   /** True when the frozen calm rule fired; false = loose rule only. Old log lines without this field count as calm. */
   calm: boolean;
+  /** Pre-game match-winner market of a sports/esports game; scored in its own block (absent on old lines = false). */
+  pregame?: boolean;
   /** Taker USD over the last 30 min (from the latest page of up to 1000 taker fills). */
   vol30m: number;
   /** Share of last-30-min buy USD from wallets new to the market; null when the market history was too long to read in one page. */
@@ -219,6 +221,8 @@ interface Candidate {
   tokenIds: string[];
   vol24: number;
   ch1h: number | null;
+  /** A match-winner market of a game that has not started: the only sports market the scanner reads. */
+  pregame: boolean;
 }
 
 const arr = (v: unknown): string[] => {
@@ -248,17 +252,32 @@ export function isSportsEvent(ev: Record<string, any>): boolean {
   return tags.some((t: Record<string, any>) => ['sports', 'esports', 'games'].includes(String(t?.slug ?? '').toLowerCase()));
 }
 
-/** Active, order-accepting binary markets of raw gamma events, sports and esports excluded (see isSportsEvent). */
-export function candidatesOf(events: ReadonlyArray<Record<string, any>>): Candidate[] {
+const startSecs = (v: unknown): number | null => {
+  const t = typeof v === 'string' && v ? Date.parse(v.replace(' ', 'T').replace(/\+00$/, 'Z')) : NaN;
+  return Number.isFinite(t) ? Math.floor(t / 1000) : null;
+};
+
+/**
+ * Active, order-accepting binary markets of raw gamma events. Sports and esports events are skipped (see isSportsEvent), with one exception:
+ * the match-winner (moneyline) market of a game that has NOT started (not live, not ended, start time still ahead of `nowSecs`), marked pregame.
+ * Spreads, totals, props and anything in play stay excluded, because a goal or a kill moves them for a reason everyone sees.
+ */
+export function candidatesOf(events: ReadonlyArray<Record<string, any>>, nowSecs: number = Math.floor(Date.now() / 1000)): Candidate[] {
   const out: Candidate[] = [];
   for (const ev of events) {
-    if (isSportsEvent(ev)) continue;
+    const sports = isSportsEvent(ev);
     for (const m of (ev.markets ?? []) as Array<Record<string, any>>) {
+      let pregame = false;
+      if (sports) {
+        const start = startSecs(m.gameStartTime) ?? startSecs(ev.startTime);
+        pregame = m.sportsMarketType === 'moneyline' && ev.live !== true && ev.ended !== true && start !== null && start > nowSecs;
+        if (!pregame) continue;
+      }
       if (!m.conditionId || m.closed || m.active === false || m.acceptingOrders === false) continue;
       const outcomes = arr(m.outcomes);
       const tokenIds = arr(m.clobTokenIds);
       if (outcomes.length !== 2 || tokenIds.length !== 2) continue;
-      out.push({ cid: String(m.conditionId), slug: String(m.slug ?? ''), eventSlug: String(ev.slug ?? ''), title: String(m.question ?? ev.title ?? ''), outcomes, tokenIds, vol24: optNum(m.volume24hr) ?? 0, ch1h: optNum(m.oneHourPriceChange) });
+      out.push({ cid: String(m.conditionId), slug: String(m.slug ?? ''), eventSlug: String(ev.slug ?? ''), title: String(m.question ?? ev.title ?? ''), outcomes, tokenIds, vol24: optNum(m.volume24hr) ?? 0, ch1h: optNum(m.oneHourPriceChange), pregame });
     }
   }
   return out;
@@ -287,7 +306,7 @@ export async function scanJumps(client: PolymarketClient, opts: ScanOptions = {}
       break;
     }
     sum.events += rows.length;
-    for (const c of candidatesOf(rows)) if (!byCid.has(c.cid)) byCid.set(c.cid, c);
+    for (const c of candidatesOf(rows, nowTs)) if (!byCid.has(c.cid)) byCid.set(c.cid, c);
     if (rows.length < 100) break;
   }
   const busiest = [...byCid.values()].sort((a, b) => b.vol24 - a.vol24).slice(0, want);
@@ -315,7 +334,7 @@ export async function scanJumps(client: PolymarketClient, opts: ScanOptions = {}
         const fills = await client.tradesPage(c.cid, { takerOnly: true, limit });
         flow = flowOf(fills, nowTs, fills.length < limit);
       }
-      sum.flags.push({ cid: c.cid, slug: c.slug, eventSlug: c.eventSlug, title: c.title, outcomes: c.outcomes, tokenIds: c.tokenIds, direction: d.direction, upIdx: d.direction === 'up' ? 0 : 1, pRef: d.pRef, pNow: d.pNow, move: d.move, calmRange: d.calmRange, calmPoints: d.calmPoints, calm: d.calm, ...flow, quotes, detectedAt: nowTs });
+      sum.flags.push({ cid: c.cid, slug: c.slug, eventSlug: c.eventSlug, title: c.title, outcomes: c.outcomes, tokenIds: c.tokenIds, direction: d.direction, upIdx: d.direction === 'up' ? 0 : 1, pRef: d.pRef, pNow: d.pNow, move: d.move, calmRange: d.calmRange, calmPoints: d.calmPoints, calm: d.calm, ...(c.pregame ? { pregame: true } : {}), ...flow, quotes, detectedAt: nowTs });
     } catch (e) {
       sum.errors.push(`${c.cid}: ${msg(e)}`);
     }
@@ -543,7 +562,8 @@ export interface JumpReport {
 }
 
 /** Scores the frozen strategies on the jump log. Only flags with an entry line and a result line produce bets. */
-export function scoreJumps(lines: readonly unknown[], opts: { iterations?: number; seed?: number } = {}): JumpReport {
+/** `pregame: true` scores only pre-game sports/esports match-winner flags; the default scores everything else, so the two never mix. */
+export function scoreJumps(lines: readonly unknown[], opts: { iterations?: number; seed?: number; pregame?: boolean } = {}): JumpReport {
   const iterations = opts.iterations ?? DEFAULT_BOOTSTRAP.iterations;
   const seed = opts.seed ?? DEFAULT_BOOTSTRAP.seed;
   const flags = new Map<string, JumpFlagLine>();
@@ -551,6 +571,7 @@ export function scoreJumps(lines: readonly unknown[], opts: { iterations?: numbe
   const results = new Map<string, JumpResultLine>();
   let skipped = 0;
   for (const l of lines) {
+    if (validFlagLine(l) && (l.pregame === true) !== (opts.pregame === true)) continue; // belongs to the other block
     if (validFlagLine(l) && !flags.has(l.id)) flags.set(l.id, l);
     else if (validEntryLine(l) && !entries.has(l.id)) entries.set(l.id, l);
     else if (validResultLine(l) && !results.has(l.cid)) results.set(l.cid, l);
