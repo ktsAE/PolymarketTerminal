@@ -109,3 +109,19 @@ Reproduce: `python3 scripts/elo-vs-market.py fetch` then `report`.
   The regression coefficient on Elo, controlling for the market price, was +0.74 with CI [-0.48, +2.29] (n=311).
 - Reading: the only estimate that is non-negative in every cut, but no interval clears zero reliably, and it improves as Elo gets more history. It is a lead, not a finding.
   The next step is a better rating source than 1,545 Polymarket results: HLTV / Oracle's Elixir / Liquipedia results back to 2023, then test on the same closing lines.
+
+## Part 4: pre-game price jumps in esports and NBA (Nov 2 2026)
+
+Question: in the hours before a game starts, does following or fading a 15-point price jump make money? Rule frozen before any return was computed
+(`scripts/pregame-jump-study.py`): first jump of >= 0.15 within 30 minutes, reference price 0.10-0.90, trigger at least 20 minutes before start, entry 5-15
+minutes later plus 1 cent, hold to resolution, older 60% / newer 40% split, bootstrap over start days. 2 strategies x 2 samples, nothing tuned.
+
+| sample | strategy | older 60% | newer 40% | all |
+| --- | --- | --- | --- | --- |
+| esports, 21,192 games, 3,193 triggers | follow | -10.1% [-13.9, -6.1] n=2012 | -4.5% [-9.5, +0.7] n=1181 | -8.0% [-10.9, -5.0] |
+| esports | fade | +7.1% [+0.7, +13.3] | -0.9% [-9.5, +7.9] | +4.1% [-1.1, +9.2] |
+| NBA, 1,541 games | both | 7 triggers in total: NBA pre-game lines hardly ever jump 15 points | | |
+
+Verdict: no edge. Following a pre-game jump loses in both halves (the interval excludes zero overall). Fading looked good on the older half but fell to
+-0.9% on the newer half, the same shrink-with-more-data pattern as the other leads. The 1-cent spread is probably optimistic for thin esports markets, so real fade
+returns would be lower. Not tested: NBA/soccer/other sports with enough triggers, and the order book at the time of the jump.
