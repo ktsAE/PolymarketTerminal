@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseJsonl } from '../../radar/forward';
-import { captureEntries, detectJump, detectJumpAny, flowOf, formatJumps, logJumps, scanJumps, scoreJumps, settleJumps, type JumpFlag, type PricePoint } from '../../radar/jump';
+import { candidatesOf, captureEntries, detectJump, detectJumpAny, flowOf, formatJumps, logJumps, scanJumps, scoreJumps, settleJumps, type JumpFlag, type PricePoint } from '../../radar/jump';
 import { NO_EDGE } from '../../radar/ledger';
 import { PolymarketClient, type FetchJson } from '../../radar/polymarket';
 import type { TradeRow } from '../../radar/store';
@@ -267,5 +267,26 @@ describe('scoreJumps', () => {
     expect(text).toMatch(/\+14\.3%.*\[\+0\.4%, \+29\.4%\].*n=606.*-8\.9%.*\+7\.6%.*\[-4\.8%, \+19\.7%\]/);
     expect(text).toMatch(/chosen after seeing these results.*only forward flags count/);
     expect(text).toMatch(/4 flags \(4 calm, 0 loose-only\)/);
+  });
+});
+
+describe('sports and side markets are never candidates', () => {
+  const mk = (over: Record<string, unknown> = {}) => ({ conditionId: '0xa', slug: 'm', question: 'Will X happen?', outcomes: '["Yes","No"]', clobTokenIds: '["1","2"]', active: true, closed: false, acceptingOrders: true, ...over });
+  const ev = (over: Record<string, unknown> = {}, markets: unknown[] = [mk()]) => ({ slug: 'e', title: 'T', markets, ...over });
+  it('keeps an ordinary event market', () => {
+    expect(candidatesOf([ev()])).toHaveLength(1);
+  });
+  it('drops events with a sports market type (moneyline, spreads, totals, props) and every sibling market', () => {
+    for (const t of ['moneyline', 'spreads', 'totals', 'points', 'soccer_exact_score']) expect(candidatesOf([ev({}, [mk({ sportsMarketType: t })])]), t).toHaveLength(0);
+    expect(candidatesOf([ev({}, [mk(), mk({ conditionId: '0xb', sportsMarketType: 'spreads' })])])).toHaveLength(0);
+  });
+  it('drops events with a game id, live/ended game state, or a Sports / Esports / Games tag', () => {
+    expect(candidatesOf([ev({ gameId: '19571' })])).toHaveLength(0);
+    expect(candidatesOf([ev({ live: false })])).toHaveLength(0);
+    expect(candidatesOf([ev({ ended: true })])).toHaveLength(0);
+    for (const slug of ['sports', 'esports', 'games']) expect(candidatesOf([ev({ tags: [{ slug }] })]), slug).toHaveLength(0);
+  });
+  it('keeps politics and geopolitics events', () => {
+    expect(candidatesOf([ev({ tags: [{ slug: 'politics' }, { slug: 'geopolitics' }] })])).toHaveLength(1);
   });
 });

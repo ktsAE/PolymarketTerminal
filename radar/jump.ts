@@ -235,10 +235,24 @@ const optNum = (v: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
-/** Active, order-accepting binary markets of raw gamma events. */
+/**
+ * Sports and esports events, including every side market of a game (spreads, totals, props). A goal, a kill or a point makes the price jump for a
+ * reason everyone sees, so those jumps say nothing unusual and are never flagged. Detected from gamma's own labels: any market with a
+ * sportsMarketType, an event gameId or live/ended game state, or a Sports / Esports / Games tag.
+ */
+export function isSportsEvent(ev: Record<string, any>): boolean {
+  if (ev.gameId !== undefined && ev.gameId !== null && ev.gameId !== '') return true;
+  if (typeof ev.live === 'boolean' || typeof ev.ended === 'boolean') return true;
+  if ((ev.markets ?? []).some((m: Record<string, any>) => m?.sportsMarketType)) return true;
+  const tags = Array.isArray(ev.tags) ? ev.tags : [];
+  return tags.some((t: Record<string, any>) => ['sports', 'esports', 'games'].includes(String(t?.slug ?? '').toLowerCase()));
+}
+
+/** Active, order-accepting binary markets of raw gamma events, sports and esports excluded (see isSportsEvent). */
 export function candidatesOf(events: ReadonlyArray<Record<string, any>>): Candidate[] {
   const out: Candidate[] = [];
-  for (const ev of events)
+  for (const ev of events) {
+    if (isSportsEvent(ev)) continue;
     for (const m of (ev.markets ?? []) as Array<Record<string, any>>) {
       if (!m.conditionId || m.closed || m.active === false || m.acceptingOrders === false) continue;
       const outcomes = arr(m.outcomes);
@@ -246,6 +260,7 @@ export function candidatesOf(events: ReadonlyArray<Record<string, any>>): Candid
       if (outcomes.length !== 2 || tokenIds.length !== 2) continue;
       out.push({ cid: String(m.conditionId), slug: String(m.slug ?? ''), eventSlug: String(ev.slug ?? ''), title: String(m.question ?? ev.title ?? ''), outcomes, tokenIds, vol24: optNum(m.volume24hr) ?? 0, ch1h: optNum(m.oneHourPriceChange) });
     }
+  }
   return out;
 }
 
