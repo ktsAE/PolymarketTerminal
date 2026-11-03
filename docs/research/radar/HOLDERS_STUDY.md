@@ -125,3 +125,26 @@ minutes later plus 1 cent, hold to resolution, older 60% / newer 40% split, boot
 Verdict: no edge. Following a pre-game jump loses in both halves (the interval excludes zero overall). Fading looked good on the older half but fell to
 -0.9% on the newer half, the same shrink-with-more-data pattern as the other leads. The 1-cent spread is probably optimistic for thin esports markets, so real fade
 returns would be lower. Not tested: NBA/soccer/other sports with enough triggers, and the order book at the time of the jump.
+
+## Part 5: is it worth following wallets with a good profit factor and a green last 7 days? (Nov 3 2026)
+
+Point-in-time test (`scripts/follow-winners-study.py`, rule frozen before any forward result): wallets are picked as of 2026-09-20 using only their daily PnL history up to that day
+(Data API v2 `user-pnl`, which includes every losing and unredeemed position), then followed for 14 and 30 days. Population: takers in 120 random resolved markets that ended in the
+4 days before the cutoff; 3,000 wallets sampled; 861 eligible (>= 60 days of history, >= 5 trades in the last 7 days, <= 40 trades/day = human-like, >= $2,000 volume in 30 days).
+Selections: A green over 7 days (39%), B daily profit factor >= 1.5 over 60 days (13%), C both (10%, n=84 followed). Return = PnL per dollar traded. 6 comparisons + 2 rank correlations, all reported.
+Trading-only PnL (`position_pnl`); using `economic_pnl` (adds referral, rewards, rebates) gives the same picture.
+
+| forward | group | pooled return | share of wallets in profit | vs not selected | pooled return WITHOUT its single biggest winner |
+| --- | --- | --- | --- | --- | --- |
+| 14 days | C (PF >= 1.5 and green 7d), n=84 | +4.8% | 42.9% (others 29.7%) | +6.2% [-0.5, +11.3] | -0.2% |
+| 14 days | B (PF >= 1.5), n=105 | +4.6% | 41.9% | +6.0% [-0.3, +11.1] | -0.2% |
+| 30 days | C, n=84 | +6.5% | 39.3% (others 25.8%) | +7.6% [-1.0, +15.2] | 0.0% |
+| 30 days | B, n=105 | +6.3% | 40.0% | +7.4% [-0.8, +14.5] | 0.0% |
+
+Rank correlation of past profit factor with forward return: +0.089 (14d), +0.119 (30d); n ~ 725-765, so about 2.4 and 3.2 standard errors: real but weak persistence.
+
+Reading: wallets with a good record are more likely to be in profit next (about 40-43% vs 26-30%), and lose less when they lose (median per-wallet return -0.6% vs -1.4%), so there is weak persistence in WHO does better.
+But the average dollar return is carried by one giant winner in each group ($0.5M gain on $3.5M traded at 14d, $1.2M on $5.7M at 30d): remove that single wallet and the selected group's pooled return is
+zero, and every confidence interval for the difference includes 0. The typical selected wallet still loses slightly. All numbers are THEIR results at THEIR prices; a copier enters later at worse prices
+and pays the spread, so they are an upper bound for copying. Verdict: not shown to be worth following; weak ranking signal, no demonstrated copyable profit. Not tested: a second cutoff date
+(replication), entry delay, position-level copying, wallets sampled other than from markets that ended near the cutoff.
