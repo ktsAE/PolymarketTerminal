@@ -20,6 +20,10 @@ FROZEN SPEC (written before any forward result was computed; nothing tuned after
                     F  D and A    (good profit per volume and green over 7 days)
   forward outcome   dP = economic_pnl(T+H) - economic_pnl(T); dV = volume(T+H) - volume(T). Only wallets with dV >= $500 count (a copier needs trades).
                     return = sum dP / sum dV over a group (pooled, per dollar traded), also the median per-wallet dP/dV and the share with dP > 0.
+  robust measures   PRIMARY from now on (added after seeing that one wallet carried the pooled number, so they are extra variants): no wallet may carry a group.
+                    ew      equal-weight mean of per-wallet return dP/dV, each wallet's return winsorized at the 5th/95th percentile of all followed wallets
+                    capped  pooled return with every wallet's turnover capped at $100,000 (a copier puts the same limited capital behind each wallet)
+                    The unweighted pooled return and the "without its biggest winner" line stay as secondary numbers.
   comparison        selected vs eligible-and-not-selected, wallet-clustered bootstrap (2,000 resamples, seed 5) of the difference.
   variants          6 selections x 2 horizons = 12 comparisons, plus 3 rank correlations. Reported all.
   caveat            this measures THEIR results at THEIR prices. A copier enters later at worse prices, so every number here is an upper bound for copying.
@@ -186,6 +190,35 @@ def pooled(rows):
     return sum(r["dp"] for r in rows) / v if v > 0 else float("nan")
 
 
+CAP = 100_000
+
+
+def capped(rows):
+    num = den = 0.0
+    for r in rows:
+        k = min(1.0, CAP / r["dv"]) if r["dv"] > 0 else 0.0
+        num += r["dp"] * k
+        den += r["dv"] * k
+    return num / den if den > 0 else float("nan")
+
+
+def winsor_bounds(rows):
+    xs = sorted(r["dp"] / r["dv"] for r in rows)
+    return xs[int(len(xs) * 0.05)], xs[min(len(xs) - 1, int(len(xs) * 0.95))]
+
+
+def ew(rows, lo, hi):
+    return statistics.mean(min(max(r["dp"] / r["dv"], lo), hi) for r in rows)
+
+
+def boot_robust(a, b, fn, n=2000):
+    out = []
+    for _ in range(n):
+        out.append(fn([random.choice(a) for _ in a]) - fn([random.choice(b) for _ in b]))
+    out.sort()
+    return out[int(n * .025)], out[int(n * .975)]
+
+
 def boot_diff(a, b, n=2000):
     out = []
     for _ in range(n):
@@ -245,6 +278,8 @@ def cmd_report():
             rows.append(dict(f=f, dp=dp, dv=dv))
         active = [r for r in rows if r["dv"] >= 500]
         print(f"\n=== forward {h} days: {len(active)} of {len(rows)} eligible wallets traded >= $500 ({len(rows) - len(active)} went quiet) ===")
+        wlo, whi = winsor_bounds(active)
+        print(f"winsorizing per-wallet returns at [{wlo:+.3f}, {whi:+.3f}] (5th/95th percentile of all followed wallets)")
         top = sorted(active, key=lambda r: -r["dp"])
         print(f"largest single forward gain: ${top[0]['dp']:,.0f} (wallet traded ${top[0]['dv']:,.0f}); wallets with a forward gain above $5,000: {sum(r['dp'] > 5000 for r in active)}")
         print(f"all eligible: pooled return {pooled(active):+.4f} per $ traded | median per-wallet {statistics.median(r['dp'] / r['dv'] for r in active):+.4f} | share positive {sum(r['dp'] > 0 for r in active) / len(active):.1%}")
@@ -256,7 +291,12 @@ def cmd_report():
                 continue
             lo, hi = boot_diff(s, c)
             s_trim = [r for r in s if r is not max(s, key=lambda z: z["dp"])]
-            print(f"      (without its single biggest winner: pooled {pooled(s_trim):+.4f})")
+            e_s, e_c = ew(s, wlo, whi), ew(c, wlo, whi)
+            elo_, ehi_ = boot_robust(s, c, lambda z: ew(z, wlo, whi))
+            k_s, k_c = capped(s), capped(c)
+            klo_, khi_ = boot_robust(s, c, capped)
+            print(f"      PRIMARY  equal-weight winsorized mean: selected {e_s:+.4f} vs others {e_c:+.4f} | diff {e_s - e_c:+.4f} [{elo_:+.4f},{ehi_:+.4f}]   ||   turnover capped at $100k: selected {k_s:+.4f} vs others {k_c:+.4f} | diff {k_s - k_c:+.4f} [{klo_:+.4f},{khi_:+.4f}]")
+            print(f"      secondary: pooled without its single biggest winner {pooled(s_trim):+.4f}")
             print(f"  {name:24s} n={len(s):4d} pooled {pooled(s):+.4f} | median {statistics.median(r['dp'] / r['dv'] for r in s):+.4f} | positive {sum(r['dp'] > 0 for r in s) / len(s):5.1%} || others n={len(c):4d} pooled {pooled(c):+.4f} positive {sum(r['dp'] > 0 for r in c) / len(c):5.1%} || diff {pooled(s) - pooled(c):+.4f} [{lo:+.4f},{hi:+.4f}]")
         x1 = [min(r["f"]["pf"], 10) for r in active]
         x2 = [r["f"]["pnl7"] / max(r["f"]["v30"], 1) for r in active]

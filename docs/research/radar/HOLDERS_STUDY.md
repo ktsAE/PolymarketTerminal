@@ -164,3 +164,21 @@ E = top 20% by that ratio (cut-off +1.06%), F = D and green 7 days. Same cutoff,
 Rank correlation of 60-day profit per volume with forward return: +0.065 (14d), +0.096 (30d) (profit factor: +0.089, +0.119). Median per-wallet forward return of group D is -2.1% (14d) and -0.8% (30d), no better than the others.
 Profit per volume is not a better filter than profit factor. The gain comes from one wallet (RichieRicher, 0x361b16e3: profit factor 3.2 and +8.1% profit per volume before the cutoff, then +$496k on $3.5M traded in 14 days and +$1.19M on $5.7M in 30 days),
 which every selection contains; without it each group's pooled return is about zero. One wallet is one observation: it neither shows the criteria work nor that they fail. A second cutoff date is the test that would (set `FOLLOW_T=2026-08-20` and run fetch, refetch, report).
+
+Part 5 addendum 2: no single wallet may carry a group (added after one wallet was seen carrying the pooled number, so these are extra variants; they are now the primary measures).
+ew = equal-weight mean of per-wallet return, each wallet winsorized at the 5th/95th percentile of all followed wallets (14d: [-13.1%, +7.2%], 30d: [-12.3%, +5.3%]);
+capped = pooled return with each wallet's turnover capped at $100k. Same 861 wallets, cutoff 2026-09-20, trading-only PnL. Difference = selected minus not selected, 95% bootstrap CI over wallets.
+
+| forward | group (n) | ew selected | ew others | ew difference | capped selected | capped others | capped difference |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 14d | A green 7d (310) | -1.7% | -2.5% | +0.8 pt [0.0, +1.5] | -1.0% | -1.4% | +0.5 pt [-0.6, +1.6] |
+| 14d | B profit factor >= 1.5 (105) | -1.5% | -2.3% | +0.8 pt [-0.2, +1.7] | -0.4% | -1.4% | +1.0 pt [-0.4, +2.5] |
+| 14d | C both (84) | -1.6% | -2.2% | +0.6 pt [-0.4, +1.7] | -0.5% | -1.4% | +0.8 pt [-0.7, +2.6] |
+| 14d | D profit/volume >= +3% (61) | -2.3% | -2.2% | -0.2 pt [-1.7, +1.5] | -0.6% | -1.3% | +0.7 pt [-2.5, +3.7] |
+| 30d | B profit factor >= 1.5 (105) | -1.5% | -2.3% | +0.8 pt [-0.1, +1.7] | -0.5% | -1.5% | +1.0 pt [-0.9, +3.1] |
+| 30d | C both (84) | -1.6% | -2.2% | +0.7 pt [-0.3, +1.6] | -0.7% | -1.4% | +0.7 pt [-1.6, +2.9] |
+| 30d | D profit/volume >= +3% (62) | -1.7% | -2.2% | +0.5 pt [-0.9, +1.9] | +0.2% | -1.4% | +1.7 pt [-0.9, +4.5] |
+
+Reading: once no wallet can carry a group, EVERY group has a negative average return, selected wallets included (-1.5% to -2.3% per dollar traded equal-weighted; -0.4% to -1.0% with turnover capped, one case at +0.2%).
+Good-record wallets lose a little less than the rest (about 0.5 to 1 point) but that difference is not distinguishable from zero in almost every row, and it is THEIR result at THEIR prices: a copier pays more.
+The positive pooled numbers earlier came from one wallet. Verdict: following wallets because of profit factor, a green week or profit per volume is not supported. What remains is a weak ranking signal (rank correlation +0.07 to +0.12), not profit.
