@@ -148,3 +148,19 @@ But the average dollar return is carried by one giant winner in each group ($0.5
 zero, and every confidence interval for the difference includes 0. The typical selected wallet still loses slightly. All numbers are THEIR results at THEIR prices; a copier enters later at worse prices
 and pays the spread, so they are an upper bound for copying. Verdict: not shown to be worth following; weak ranking signal, no demonstrated copyable profit. Not tested: a second cutoff date
 (replication), entry delay, position-level copying, wallets sampled other than from markets that ended near the cutoff.
+
+Part 5 addendum: profit per volume (added after A-C were seen, so these are extra variants: 12 comparisons in total). D = profit over the 60 days before the cutoff divided by volume traded >= +3% (8% of eligible),
+E = top 20% by that ratio (cut-off +1.06%), F = D and green 7 days. Same cutoff, same 861 wallets, trading-only PnL.
+
+| forward | group | n | pooled return | share in profit (others) | vs not selected | pooled return without its biggest winner |
+| --- | --- | --- | --- | --- | --- | --- |
+| 14 days | D profit/volume >= +3% | 61 | +6.1% | 39.3% (30.5%) | +7.4% [-1.6, +13.2] | -0.04% |
+| 14 days | E top 20% | 157 | +3.5% | 42.7% (28.0%) | +4.9% [-0.7, +9.8] | -0.6% |
+| 14 days | F D and green 7d | 51 | +6.1% | 41.2% (30.5%) | +7.4% [-1.7, +13.0] | -0.1% |
+| 30 days | D | 62 | +8.4% | 41.9% (26.0%) | +9.4% [-1.3, +17.7] | +0.3% |
+| 30 days | E | 161 | +5.0% | 38.5% (24.3%) | +6.0% [-0.8, +12.8] | -0.3% |
+| 30 days | F | 52 | +8.4% | 42.3% (26.2%) | +9.4% [-1.8, +17.9] | +0.2% |
+
+Rank correlation of 60-day profit per volume with forward return: +0.065 (14d), +0.096 (30d) (profit factor: +0.089, +0.119). Median per-wallet forward return of group D is -2.1% (14d) and -0.8% (30d), no better than the others.
+Profit per volume is not a better filter than profit factor. The gain comes from one wallet (RichieRicher, 0x361b16e3: profit factor 3.2 and +8.1% profit per volume before the cutoff, then +$496k on $3.5M traded in 14 days and +$1.19M on $5.7M in 30 days),
+which every selection contains; without it each group's pooled return is about zero. One wallet is one observation: it neither shows the criteria work nor that they fail. A second cutoff date is the test that would (set `FOLLOW_T=2026-08-20` and run fetch, refetch, report).

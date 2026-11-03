@@ -14,10 +14,14 @@ FROZEN SPEC (written before any forward result was computed; nothing tuned after
   selections        A  green 7d:  economic_pnl(T) - economic_pnl(T-7d) > 0
                     B  good PF:   daily profit factor over the 60 days before T >= 1.5 (sum of positive daily changes / |sum of negative|, >= 15 days with a change)
                     C  A and B    (the question asked)
+                    D  profit per volume: PnL over the 60 days before T divided by the volume traded in them >= +3% (fixed before looking at any forward result;
+                       added after A-C had been seen, so it counts as extra variants)
+                    E  top 20% of eligible wallets by that same profit per volume
+                    F  D and A    (good profit per volume and green over 7 days)
   forward outcome   dP = economic_pnl(T+H) - economic_pnl(T); dV = volume(T+H) - volume(T). Only wallets with dV >= $500 count (a copier needs trades).
                     return = sum dP / sum dV over a group (pooled, per dollar traded), also the median per-wallet dP/dV and the share with dP > 0.
   comparison        selected vs eligible-and-not-selected, wallet-clustered bootstrap (2,000 resamples, seed 5) of the difference.
-  variants          3 selections x 2 horizons = 6 comparisons, plus 2 rank correlations. Reported all.
+  variants          6 selections x 2 horizons = 12 comparisons, plus 3 rank correlations. Reported all.
   caveat            this measures THEIR results at THEIR prices. A copier enters later at worse prices, so every number here is an upper bound for copying.
 """
 import bisect
@@ -36,8 +40,9 @@ from datetime import datetime, timezone
 UA = {"User-Agent": "polymarket-radar/0.1"}
 DATA = "https://data-api.polymarket.com/v2"
 GAMMA = "https://gamma-api.polymarket.com"
-DIR = os.path.expanduser("~/.hermes/cache/scratch/follow-winners")
-T = int(datetime(2026, 9, 20, tzinfo=timezone.utc).timestamp())
+DIR = os.path.expanduser("~/.hermes/cache/scratch/follow-winners") + ("" if os.environ.get("FOLLOW_T", "2026-09-20") == "2026-09-20" else "-" + os.environ["FOLLOW_T"])
+CUT = os.environ.get("FOLLOW_T", "2026-09-20")  # replication: FOLLOW_T=2026-08-20 python3 scripts/follow-winners-study.py fetch / refetch / report ...
+T = int(datetime.fromisoformat(CUT).replace(tzinfo=timezone.utc).timestamp())
 DAY = 86400
 random.seed(5)
 KEY = "economic_pnl"  # report arg: economic_pnl (everything incl. referral/rewards/rebates) or position_pnl (trading only; the copyable part)
@@ -154,6 +159,8 @@ def features(pts):
     if tc7 < 5 or tc30 / 30 > 40 or v30 < 2000:
         return None
     pnl7 = g(T, KEY) - (g(T - 7 * DAY, KEY) or 0)
+    v60 = (g(T, "volume") or 0) - (g(T - 60 * DAY, "volume") or 0)
+    ppv60 = (g(T, KEY) - (g(T - 60 * DAY, KEY) or 0)) / v60 if v60 >= 2000 else float("nan")
     ups = downs = days = 0
     prev = g(T - 60 * DAY, KEY) or 0
     for p in pts:
@@ -165,7 +172,7 @@ def features(pts):
                 ups += max(d, 0)
                 downs += max(-d, 0)
     pf = (ups / downs) if downs > 0 else (float("inf") if ups > 0 else 0.0)
-    return dict(green7=pnl7 > 0, pf=pf, pf_ok=days >= 15 and pf >= 1.5, pnl7=pnl7, v30=v30, tl=tl)
+    return dict(green7=pnl7 > 0, pf=pf, pf_ok=days >= 15 and pf >= 1.5, pnl7=pnl7, v30=v30, ppv60=ppv60, tl=tl)
 
 
 def forward(pts, tl, h):
@@ -219,7 +226,17 @@ def cmd_report():
         f["pts"], f["w"] = pts, fn[:-5]
         elig.append(f)
     print(f"population {pool['pool']} wallets from {pool['markets']} markets; fetched {total}; eligible (history, active, human-like, volume) {len(elig)}")
-    sel = {"A green 7d": lambda f: f["green7"], "B profit factor >= 1.5": lambda f: f["pf_ok"], "C both (the question)": lambda f: f["green7"] and f["pf_ok"]}
+    vals = sorted(f["ppv60"] for f in elig if f["ppv60"] == f["ppv60"])
+    q80 = vals[int(len(vals) * 0.8)] if vals else float("inf")
+    print(f"profit per volume over the 60 days before T: top-20% cut-off = {q80:+.4f}; share of eligible with >= +3%: {sum(1 for f in elig if f['ppv60'] >= 0.03) / len(elig):.0%}")
+    sel = {
+        "A green 7d": lambda f: f["green7"],
+        "B profit factor >= 1.5": lambda f: f["pf_ok"],
+        "C both (the question)": lambda f: f["green7"] and f["pf_ok"],
+        "D profit/volume >= +3%": lambda f: f["ppv60"] >= 0.03,
+        "E top 20% profit/volume": lambda f: f["ppv60"] >= q80,
+        "F D and green 7d": lambda f: f["ppv60"] >= 0.03 and f["green7"],
+    }
     print("\nShare of eligible wallets selected:", {k: f"{sum(fn(f) for f in elig)} ({sum(fn(f) for f in elig) / len(elig):.0%})" for k, fn in sel.items()})
     for h in (14, 30):
         rows = []
@@ -244,7 +261,8 @@ def cmd_report():
         x1 = [min(r["f"]["pf"], 10) for r in active]
         x2 = [r["f"]["pnl7"] / max(r["f"]["v30"], 1) for r in active]
         y = [r["dp"] / r["dv"] for r in active]
-        print(f"  rank correlation with forward return: past profit factor {spearman(x1, y):+.3f} | last-7-day PnL per $ traded {spearman(x2, y):+.3f}  (0 = no persistence)")
+        x3 = [r["f"]["ppv60"] if r["f"]["ppv60"] == r["f"]["ppv60"] else 0.0 for r in active]
+        print(f"  rank correlation with forward return: past profit factor {spearman(x1, y):+.3f} | last-7-day PnL per $ traded {spearman(x2, y):+.3f} | profit per volume (60d) {spearman(x3, y):+.3f}  (0 = no persistence)")
 
 
 if __name__ == "__main__":
