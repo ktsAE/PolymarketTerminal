@@ -8,6 +8,7 @@ import { JUMPS_PATH, scanJumps, scoreJumps, type JumpScan } from '../jump.ts';
 import { logFlagged, scanNewMarkets } from '../newmarkets.ts';
 import { loadHolders } from '../holders.ts';
 import { pickMarket } from './pick.ts';
+import { loadXray } from '../xray.ts';
 import { loadNews } from '../newsview.ts';
 import { loadPeople, type Person } from '../people.ts';
 import { httpFetchJson, type PolymarketClient } from '../polymarket.ts';
@@ -123,6 +124,7 @@ function snapshotModel(store: RadarStore, prev: Model | null, nowMs: number, sta
     ledger: ledgerView(nowMs),
     newMarkets: prev?.newMarkets ?? null,
     jumps: prev?.jumps ?? null,
+    xray: prev?.xray ?? null,
   };
 }
 
@@ -401,7 +403,25 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     view = { ...view, tab: 'search', sel: 0 };
     paint();
   };
+  let xrayToken = 0;
+  const openXray = (wallet: string) => {
+    const token = ++xrayToken;
+    model = { ...model, xray: { wallet, stage: 'starting', done: false, error: null, report: null } };
+    view = { ...view, tab: 'xray', sel: 0 };
+    paint();
+    void loadXray(client, wallet, {
+      onProgress: (x) => {
+        if (token !== xrayToken) return;
+        model = { ...model, xray: { wallet, stage: x.stage, done: x.done, error: x.error, report: x.report } };
+        paint();
+      },
+    });
+  };
   const runSearch = (query: string) => {
+    if (/^0x[0-9a-fA-F]{40}$/.test(query)) {
+      putSearch({ typing: false });
+      return openXray(query);
+    }
     const token = ++searchToken;
     putSearch({ typing: false, loading: true, error: null, results: [] });
     paint();
@@ -469,6 +489,16 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
       if (d === 'e') return startEdgeScan();
       if (d === 'w') return openNew();
       if (d === 'j') return openJumps();
+      if (d === 'x') {
+        const holder = view.tab === 'holders' ? visibleHolders(model)[view.sel] : undefined;
+        if (holder) return openXray(holder.wallet);
+        if (model.xray) {
+          view = { ...view, tab: 'xray', sel: 0 };
+          return paint();
+        }
+        setStatus({ message: 'on Holders select a wallet and press x, or / and paste a 0x… address' });
+        return paint();
+      }
       if (d === 'n') {
         const slug = selectedSlug(model, view);
         if (!slug) {

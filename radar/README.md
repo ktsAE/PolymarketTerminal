@@ -306,3 +306,12 @@ Not ported: the Python research scripts (`holders-study.py`, `surge-study.py`, `
 `h` loads the busiest market of the selected event as before, but the Holders tab now lists every open market of the event (spreads, totals, props included).
 `]` / `[` step to the next / previous market, `}` / `{` jump to the next / previous market TYPE (moneyline, spreads, totals...), which is what makes a game with hundreds of markets navigable.
 The header shows `market 3/425 · spreads`. Each market is profiled the same way (HUMAN / NEW? / ALGO / MM / BOT).
+
+## Wallet X-ray (`x`, `npm run radar -- xray <0x address>`)
+
+The real record of one wallet, with every position counted (Data API v2 `user-pnl`, open and closed positions, recent fills). Profile pages and tracker sites compute win rate and profit factor on CLOSED
+positions only, so open losers never enter them: a "profit factor 3 and 65% win rate" can sit next to a negative net PnL. The X-ray prints the closed-only figures next to the all-in ones and says so
+when they disagree. It shows: all-in PnL split into trading and income (referral, rewards, yield, rebates), return on volume, 7/30/90-day windows, deepest fall and green days, closed positions (win rate,
+profit factor, how much one win contributes), open positions (value, unrealized, how many are under water, profit factor with them counted), and the maker share of the latest 1,000 fills (over the hours that
+span; a recent window, not a lifetime figure). Open it from Holders (select a wallet, press `x`), from anywhere by pressing `/` and pasting a `0x…` address, or from the CLI.
+It describes results at that wallet's own prices: a copier would not earn the same, and the notes never say why a wallet traded.

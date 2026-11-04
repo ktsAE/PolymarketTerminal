@@ -16,6 +16,7 @@ import { JUMPS_STANDING, LEDGER_STANDING, NEW_STANDING, unmappedNote } from './t
 import { logFlagged, NEWMARKET_THRESHOLDS, NEWMARKETS_PATH, NEWMARKETS_RESULTS_PATH, scanNewMarkets, scoreNewMarketLog, type NewMarketScore, type ScanSummary } from './newmarkets.ts';
 import { cleanHandle, DEFAULT_HANDLES_PATH, DEFAULT_POSTS_PATH, loadHandles, loadPosts, pollAccounts, type AccountPollResult } from './xaccounts.ts';
 import { loadHolders, peopleOnly } from './holders.ts';
+import { formatXray, loadXray } from './xray.ts';
 import { loadNews } from './newsview.ts';
 import { accountAge, identityFor } from './identity.ts';
 import { addPerson, describePerson, loadPeople, matchPeople, PEOPLE_PATH, removePerson } from './people.ts';
@@ -512,6 +513,16 @@ async function main(): Promise<void> {
         console.log(jumpSettleText(r));
         for (const e of r.errors.slice(0, 5)) console.log(`  error: ${e}`);
         console.log(`log: ${JUMPS_PATH}`);
+        return;
+      }
+      case 'xray': {
+        const wallet = (args[0] ?? '').trim();
+        if (!/^0x[0-9a-fA-F]{40}$/.test(wallet)) throw new Error('usage: xray <0x wallet address>   (the address is in the polymarket.com/profile/<address> link)');
+        const res = await loadXray(client, wallet, { onProgress: (x) => process.stderr.write(`\r${x.stage.padEnd(40)}`) });
+        process.stderr.write('\r' + ' '.repeat(42) + '\r');
+        if (res.error || !res.report) throw new Error(res.error ?? 'no data');
+        console.log(`wallet ${wallet}\n`);
+        for (const l of formatXray(res.report)) console.log(l);
         return;
       }
       case 'jumps-score':

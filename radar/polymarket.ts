@@ -145,6 +145,41 @@ export function mapTrade(raw: Record<string, any>): TradeRow | null {
   };
 }
 
+export interface PnlPoint {
+  ts: number;
+  economicPnl: number;
+  positionPnl: number;
+  realizedPnl: number;
+  referralIncome: number;
+  rewardIncome: number;
+  yieldIncome: number;
+  makerRebate: number;
+  takerRebate: number;
+  volume: number;
+  tradeCount: number;
+}
+export interface PositionLine {
+  cid: string;
+  title: string;
+  slug: string;
+  outcome: string;
+  status: string;
+  cost: number;
+  value: number;
+  totalPnl: number;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  firstEntryAt: number | null;
+}
+export interface FillLine {
+  ts: number;
+  tx: string;
+  token: string;
+  side: string;
+  price: number;
+  size: number;
+}
+
 export class NotFoundError extends Error {
   constructor(url: string) {
     super(`not found: ${url}`);
@@ -405,6 +440,57 @@ export class PolymarketClient {
       skillZ: units.length >= 10 ? clusteredZ(units).z : null,
       fetchedAt: Math.floor(this.now() / 1000),
     };
+  }
+
+  /** Daily cumulative PnL series of a wallet (Data API v2 user-pnl): every position is counted, open and lost ones too. Oldest first. */
+  async userPnlSeries(wallet: string): Promise<PnlPoint[]> {
+    const { data } = await this.dataPage('user-pnl', { user: wallet, interval: 'max', fidelity: '1d' });
+    const pts: Array<Record<string, any>> = Array.isArray(data?.points) ? data.points : [];
+    return pts
+      .map((r) => ({
+        ts: num(r.timestamp), economicPnl: num(r.economicPnl), positionPnl: num(r.positionPnl), realizedPnl: num(r.realizedPnl), referralIncome: num(r.referralIncome), rewardIncome: num(r.rewardIncome),
+        yieldIncome: num(r.yieldIncome), makerRebate: num(r.makerRebate), takerRebate: num(r.takerRebate), volume: num(r.volumeUsdc, num(r.volume)), tradeCount: num(r.tradeCount),
+      }))
+      .filter((r) => r.ts > 0)
+      .sort((x, y) => x.ts - y.ts);
+  }
+
+  /** A wallet's positions of one lifecycle status, newest first, following the cursor up to `max` rows. */
+  async userPositions(wallet: string, status: 'OPEN' | 'CLOSED' | 'REDEEMABLE_LOST', max = 3000): Promise<PositionLine[]> {
+    const out: PositionLine[] = [];
+    let cursor: string | undefined;
+    while (out.length < max) {
+      const { data, next } = await this.dataPage('positions', { user: wallet, status, limit: 1000, cursor });
+      for (const r of Array.isArray(data) ? data : [])
+        out.push({
+          cid: String(r.conditionId ?? ''), title: String(r.title ?? ''), slug: String(r.eventSlug ?? r.slug ?? ''), outcome: String(r.outcome ?? ''), status,
+          cost: num(r.totalCostUsdc), value: num(r.currentValue), totalPnl: num(r.totalPnl), realizedPnl: num(r.realizedPnl), unrealizedPnl: num(r.unrealizedPnl), firstEntryAt: num(r.firstEntryAt) || null,
+        });
+      if (!next) break;
+      cursor = next;
+    }
+    return out.slice(0, max);
+  }
+
+  /** A wallet's fills, newest first. takerOnly=true keeps only the fills where it was the aggressor; false adds the ones where it was resting (maker). */
+  async userFills(wallet: string, opts: { takerOnly: boolean; max?: number; sinceTs?: number }): Promise<FillLine[]> {
+    const out: FillLine[] = [];
+    let cursor: string | undefined;
+    while (out.length < (opts.max ?? 1000)) {
+      const { data, next } = await this.dataPage('trades', { user: wallet, taker_only: opts.takerOnly, limit: 1000, cursor });
+      let reached = false;
+      for (const r of Array.isArray(data) ? data : []) {
+        const ts = num(r.timestamp);
+        if (opts.sinceTs !== undefined && ts < opts.sinceTs) {
+          reached = true;
+          continue;
+        }
+        out.push({ ts, tx: String(r.transactionHash ?? ''), token: String(r.tokenId ?? ''), side: String(r.side ?? ''), price: num(r.price), size: num(r.size) });
+      }
+      if (!next || reached) break;
+      cursor = next;
+    }
+    return out.slice(0, opts.max ?? 1000);
   }
 
   async closedPositions(wallet: string, max = 400): Promise<Array<{ avgPrice: number; cost: number; pnl: number }>> {

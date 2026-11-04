@@ -6,14 +6,15 @@ import { formatJumps, type JumpFlag, type JumpReport, type JumpScan } from '../j
 import { NEWMARKET_THRESHOLDS, type ScanRow, type ScanSummary } from '../newmarkets.ts';
 import { gamePhase, type Anomaly, type WalletTag } from '../detect.ts';
 import type { Action, MarketDecision } from '../decide.ts';
+import { formatXray, type XrayReport } from '../xray.ts';
 import { peopleOnly, type HolderRow, type HoldersView } from '../holders.ts';
 import { accountAge, dateOf } from '../identity.ts';
 import type { NewsRow, PrintRow } from '../store.ts';
 import { c, clip, fit, sparkline, vlen } from './ansi.ts';
 
-export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search' | 'news' | 'edge' | 'ledger' | 'new' | 'jumps';
-export const TABS: readonly Tab[] = ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new', 'jumps'];
-const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Anomalies', games: '2 Games', prints: '3 Big prints', holders: '4 Holders', leads: '5 Leads', decision: '6 Decision', search: '7 Search', news: '8 News', edge: '9 Edge', ledger: '0 Ledger', new: 'W New', jumps: 'j Jumps' };
+export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search' | 'news' | 'edge' | 'ledger' | 'new' | 'jumps' | 'xray';
+export const TABS: readonly Tab[] = ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new', 'jumps', 'xray'];
+const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Anomalies', games: '2 Games', prints: '3 Big prints', holders: '4 Holders', leads: '5 Leads', decision: '6 Decision', search: '7 Search', news: '8 News', edge: '9 Edge', ledger: '0 Ledger', new: 'W New', jumps: 'j Jumps', xray: 'x X-ray' };
 
 export interface TaggedPrint extends PrintRow {
   tag: WalletTag;
@@ -56,6 +57,8 @@ export interface Model {
   newMarkets?: NewMarketsView | null;
   /** Jumps tab: the last calm-then-jump scan (null until `j`). */
   jumps?: JumpsView | null;
+  /** X-ray tab: the record of one wallet (null until `x` on a holder, or a 0x address searched with `/`). */
+  xray?: XrayView | null;
 }
 
 export interface JumpsView {
@@ -118,6 +121,14 @@ export interface SearchHit {
   volume: number;
   closed: boolean;
 }
+export interface XrayView {
+  wallet: string;
+  stage: string;
+  done: boolean;
+  error: string | null;
+  report: XrayReport | null;
+}
+
 export interface SearchState {
   query: string;
   typing: boolean;
@@ -746,6 +757,18 @@ export function jumpRows(m: Model, v: View, height: number): string[] {
   return out;
 }
 
+export function xrayRows(m: Model, v: View, height: number): string[] {
+  const x = m.xray;
+  if (!x) return [c.gray('  on Holders select a wallet and press x, or press / and paste a 0x… wallet address, to see its real record: closed AND open positions, PnL and volume, maker share')];
+  const out = [clip(`${c.bold(' Wallet X-ray')}  ${c.gray(x.wallet)}${x.done ? (x.error ? c.red(`  ${x.error}`) : '') : c.yellow(`  ${x.stage}…`)}`, v.cols)];
+  if (!x.report) return out;
+  for (const l of formatXray(x.report)) {
+    const colored = l.startsWith('NOTE') ? c.yellow(l) : l.startsWith('LIMIT') || l.startsWith('A record') ? c.gray(l) : l.startsWith('ALL-IN') ? c.bold(l) : l;
+    out.push(clip(` ${colored}`, v.cols));
+  }
+  return out.slice(0, Math.max(1, height));
+}
+
 export function printRows(m: Model, v: View, height: number): string[] {
   const cols = layout(
     [
@@ -947,7 +970,7 @@ export function render(m: Model, v: View, nowMs: number): string[] {
   );
   const detailH = rows >= 30 && v.tab !== 'decision' ? 8 : 0;
   const bodyH = Math.max(3, rows - 3 - detailH - (detailH ? 1 : 0));
-  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : v.tab === 'search' ? searchRows(m, v, bodyH) : v.tab === 'news' ? newsRows(m, v, bodyH) : v.tab === 'edge' ? edgeRows(m, v, bodyH) : v.tab === 'ledger' ? ledgerRows(m, v, bodyH) : v.tab === 'new' ? newRows(m, v, bodyH) : v.tab === 'jumps' ? jumpRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
+  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : v.tab === 'search' ? searchRows(m, v, bodyH) : v.tab === 'news' ? newsRows(m, v, bodyH) : v.tab === 'edge' ? edgeRows(m, v, bodyH) : v.tab === 'ledger' ? ledgerRows(m, v, bodyH) : v.tab === 'new' ? newRows(m, v, bodyH) : v.tab === 'jumps' ? jumpRows(m, v, bodyH) : v.tab === 'xray' ? xrayRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
   const lines = [header, tabs, ...body];
   while (lines.length < 2 + bodyH) lines.push('');
   if (detailH) {
@@ -956,15 +979,15 @@ export function render(m: Model, v: View, nowMs: number): string[] {
     for (let i = 0; i < detailH; i++) lines.push(d[i] ?? '');
   }
   while (lines.length < rows - 1) lines.push('');
-  const hint = c.gray(' ↑↓ move · 1-9,0 tabs · w new · j jumps · / search · n news · e edges · r refresh · f category · h holders · p decide · b people/bots · o link · q quit');
+  const hint = c.gray(' ↑↓ move · 1-9,0 tabs · w new · j jumps · x x-ray · / search · n news · e edges · r refresh · f category · h holders · p decide · b people/bots · o link · q quit');
   // the status message goes first: the key hint is long and would push a trailing message off a narrow screen
   lines.push(clip(s.message ? `${c.yellow(` ${s.message}`)}  ${hint}` : hint, cols));
   return lines.slice(0, rows).map((l) => (vlen(l) > cols ? clip(l, cols) : l));
 }
 
-export type Key = 'up' | 'down' | 'pageup' | 'pagedown' | 'home' | 'end' | 'tab' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '0' | 'w' | 'j';
+export type Key = 'up' | 'down' | 'pageup' | 'pagedown' | 'home' | 'end' | 'tab' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '0' | 'w' | 'j' | 'x';
 export function listLength(m: Model, tab: Tab): number {
-  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : tab === 'search' ? (m.search?.results.length ?? 0) : tab === 'news' ? (m.news?.hits.length ?? 0) : tab === 'edge' ? (m.edges?.result?.candidates.length ?? 0) : tab === 'ledger' ? (m.ledger?.report?.strategies.length ?? 0) : tab === 'new' ? flaggedNew(m).length : tab === 'jumps' ? jumpFlags(m).length : m.leads.length;
+  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : tab === 'search' ? (m.search?.results.length ?? 0) : tab === 'news' ? (m.news?.hits.length ?? 0) : tab === 'edge' ? (m.edges?.result?.candidates.length ?? 0) : tab === 'ledger' ? (m.ledger?.report?.strategies.length ?? 0) : tab === 'new' ? flaggedNew(m).length : tab === 'jumps' ? jumpFlags(m).length : tab === 'xray' ? 0 : m.leads.length;
 }
 
 /** Pure keyboard reducer; the shell only translates raw input into these keys. */
@@ -991,5 +1014,6 @@ export function moveSelection(v: View, key: Key, m: Model): View {
     case '0': return { ...v, tab: 'ledger', sel: 0 };
     case 'w': return { ...v, tab: 'new', sel: 0 };
     case 'j': return { ...v, tab: 'jumps', sel: 0 };
+    case 'x': return { ...v, tab: 'xray', sel: 0 };
   }
 }

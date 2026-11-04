@@ -1,4 +1,5 @@
 import { pickMarket } from '../../radar/tui/pick';
+import { buildXray } from '../../radar/xray';
 import { describe, expect, it } from 'vitest';
 import { charWidth, clip, fit, sparkline, strip, truncate, vlen } from '../../radar/tui/ansi';
 import { JUMPS_STANDING, LEDGER_STANDING, moveSelection, NEW_STANDING, render, type Model, type View } from '../../radar/tui/render';
@@ -112,7 +113,9 @@ describe('keyboard reducer', () => {
     expect(moveSelection({ ...v, tab: 'edge' }, 'tab', m).tab).toBe('ledger');
     expect(moveSelection({ ...v, tab: 'ledger' }, 'tab', m).tab).toBe('new');
     expect(moveSelection({ ...v, tab: 'new' }, 'tab', m).tab).toBe('jumps');
-    expect(moveSelection({ ...v, tab: 'jumps' }, 'tab', m).tab).toBe('anomalies');
+    expect(moveSelection({ ...v, tab: 'jumps' }, 'tab', m).tab).toBe('xray');
+    expect(moveSelection({ ...v, tab: 'xray' }, 'tab', m).tab).toBe('anomalies');
+    expect(moveSelection({ ...v, tab: 'anomalies' }, 'x', m).tab).toBe('xray');
     expect(moveSelection({ ...v, tab: 'anomalies' }, 'tab', m).tab).toBe('games');
   });
   it('handles an empty list', () => {
@@ -466,5 +469,34 @@ describe('holders market picker', () => {
   });
   it('does nothing with a single market', () => {
     expect(pickMarket([ms[0]], 'a', ']')).toBeUndefined();
+  });
+});
+
+describe('x-ray tab', () => {
+  const base = (m: Partial<Model> = {}): Model => ({
+    anomalies: [], games: [], prints: [], leads: [], holders: null, showBots: false, oiSeries: [], filter: null,
+    status: { lastPollAt: 1, nextPollAt: null, busy: false, error: null, events: 0, historySecs: 0, printsWindowMin: null, message: null }, ...m,
+  });
+  const view = (cols = 120, rows = 30): View => ({ tab: 'xray', sel: 0, cols, rows });
+  const report = buildXray('0xabc', [{ ts: 1, economicPnl: 0, positionPnl: 0, realizedPnl: 0, referralIncome: 0, rewardIncome: 0, yieldIncome: 0, makerRebate: 0, takerRebate: 0, volume: 0, tradeCount: 0 }, { ts: 2_000_000, economicPnl: -500, positionPnl: -500, realizedPnl: -500, referralIncome: 0, rewardIncome: 0, yieldIncome: 0, makerRebate: 0, takerRebate: 0, volume: 10_000, tradeCount: 50 }], [], Array.from({ length: 13 }, () => ({ cid: 'c', title: 't', slug: 's', outcome: 'Yes', status: 'CLOSED', cost: 100, value: 0, totalPnl: 100, realizedPnl: 100, unrealizedPnl: 0, firstEntryAt: null })), { all: [], takerOnly: [] }, 2_000_000);
+  it('explains how to open it before any wallet is chosen', () => {
+    expect(strip(render(base(), view(), Date.now()).join('\n'))).toMatch(/select a wallet and press x/);
+  });
+  it('shows progress, then the record with the closed-versus-all-in contrast', () => {
+    const loading = strip(render(base({ xray: { wallet: '0xabc', stage: 'reading closed positions', done: false, error: null, report: null } }), view(), Date.now()).join('\n'));
+    expect(loading).toMatch(/Wallet X-ray\s+0xabc\s+reading closed positions/);
+    const done = strip(render(base({ xray: { wallet: '0xabc', stage: 'done', done: true, error: null, report }, }), view(), Date.now()).join('\n'));
+    expect(done).toMatch(/ALL-IN PnL -\$500/);
+    expect(done).toMatch(/CLOSED\s+13 positions/);
+    expect(done).toMatch(/does not say a copier would earn the same/);
+    expect(strip(render(base({ xray: { wallet: '0xabc', stage: 'done', done: true, error: 'down', report: null } }), view(), Date.now()).join('\n'))).toMatch(/down/);
+  });
+  it('never overflows its box', () => {
+    const m = base({ xray: { wallet: '0xabc', stage: 'done', done: true, error: null, report } });
+    for (const [cols, rows] of [[40, 10], [60, 14], [80, 24], [140, 40], [220, 60]]) {
+      const lines = render(m, view(cols, rows), Date.now());
+      expect(lines, `${cols}x${rows}`).toHaveLength(rows);
+      for (const l of lines) expect(vlen(l), `${cols}x${rows}`).toBeLessThanOrEqual(cols);
+    }
   });
 });

@@ -176,6 +176,19 @@ check("jump scan finished with its counts", "screened" in plain(screen()[2]) and
 check("jumps tab lists flags or says none jumped", ("PRICE 30M" in jtext and "VOL30M" in jtext) or "no market jumped" in jtext)
 os.write(fd, b"o"); pump(0.8)
 check("o on the jumps tab shows a link or says nothing is selected", "polymarket.com/event/" in plain(screen()[ROWS - 1]) or "nothing selected" in plain(screen()[ROWS - 1]))
+# x-ray: x with no holder selected opens the tab with its instructions; a wallet address typed after / runs it end to end
+os.write(fd, b"x"); pump(1.0)
+check("x opens the x-ray tab and says how to pick a wallet", "x X-ray" in plain(screen()[1]) and ("select a wallet and press x" in plain("\n".join(screen()[:ROWS])) or "Wallet X-ray" in plain("\n".join(screen()[:ROWS]))))
+os.write(fd, b"/"); pump(0.3)
+os.write(fd, b"0x7a0da16a1205ee51a56fa862e8baa61e350eff14"); pump(0.3)
+os.write(fd, b"\r")
+t8 = time.time()
+while time.time() - t8 < 90:
+    pump(1)
+    if "ALL-IN PnL" in plain("\n".join(screen()[:ROWS])) or "error" in plain(screen()[2]).lower(): break
+xtext = plain("\n".join(screen()[:ROWS]))
+print(f"  x-ray took {time.time() - t8:.0f}s")
+check("pasting a wallet address after / opens its x-ray with all-in PnL and the closed-versus-open contrast", "ALL-IN PnL" in xtext and "CLOSED" in xtext and "OPEN" in xtext)
 pump(6)
 check("still alive after background activity", alive())
 os.write(fd, b"q")
