@@ -300,3 +300,9 @@ responses are `{ data, pagination }` in snake_case (converted back to the camelC
 opaque `next_cursor`: v2 rejects `offset` and ignores time-window parameters, but has no 10,000-row cap. Replaced routes: `/traded` -> `/v2/user-stats` (`data.trades`),
 `/closed-positions` -> `/v2/positions?status=CLOSED`, `/v1/leaderboard` -> `/v2/leaderboard`. A 410 now fails at once as "endpoint retired".
 Not ported: the Python research scripts (`holders-study.py`, `surge-study.py`, `newmarket-study.py`, `wallet-form-study.py`) still call v1 in their `fetch` step, so they cannot re-download until ported; their cached data and `report` steps are unaffected.
+
+## Holders for any market of an event
+
+`h` loads the busiest market of the selected event as before, but the Holders tab now lists every open market of the event (spreads, totals, props included).
+`]` / `[` step to the next / previous market, `}` / `{` jump to the next / previous market TYPE (moneyline, spreads, totals...), which is what makes a game with hundreds of markets navigable.
+The header shows `market 3/425 · spreads`. Each market is profiled the same way (HUMAN / NEW? / ALGO / MM / BOT).

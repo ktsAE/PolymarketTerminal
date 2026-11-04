@@ -316,7 +316,9 @@ export function holderRows(m: Model, v: View, height: number): string[] {
   const rows = visibleHolders(m);
   const hidden = h.rows.length - peopleOnly(h.rows).length;
   const status = h.done ? (h.error ? c.red(`  error: ${h.error}`) : '') : c.yellow(`  profiling ${h.loaded}/${h.total}…`);
-  const out = [clip(`${c.bold(h.question || h.eventTitle)}${status}${hidden > 0 ? c.gray(m.showBots ? `  (showing ${hidden} bots/market makers too, b hides)` : `  ${hidden} bots/market makers hidden (b shows)`) : ''}`, v.cols)];
+  const mi = h.markets.findIndex((x) => x.cid === h.cid);
+  const picker = h.markets.length > 1 ? c.gray(`  market ${mi + 1}/${h.markets.length}${h.markets[mi]?.marketType ? ` · ${h.markets[mi].marketType}` : ''} ([ ] step · { } type)`) : '';
+  const out = [clip(`${c.bold(h.question || h.eventTitle)}${picker}${status}${hidden > 0 ? c.gray(m.showBots ? `  (showing ${hidden} bots/market makers too, b hides)` : `  ${hidden} bots/market makers hidden (b shows)`) : ''}`, v.cols)];
   const cols = layout(
     [
       { key: 'cls', head: 'WHO', w: 5, keep: 10 },

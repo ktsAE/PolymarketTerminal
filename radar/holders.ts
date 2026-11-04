@@ -44,6 +44,8 @@ export interface HoldersView {
   question: string;
   cid: string;
   rows: HolderRow[];
+  /** Every open market of the event, busiest first, so spreads, totals and props can be picked too. */
+  markets: Array<{ cid: string; question: string; marketType: string | null; volume: number }>;
   /** Wallets to profile in total, and how many are done. */
   total: number;
   loaded: number;
@@ -53,6 +55,8 @@ export interface HoldersView {
 
 export interface LoadOptions {
   perSide?: number;
+  /** Load this market of the event instead of the busiest one. */
+  cid?: string;
   concurrency?: number;
   maxAgeSecs?: number;
   now?: () => number;
@@ -94,13 +98,15 @@ async function pool<T>(items: readonly T[], size: number, fn: (item: T) => Promi
 
 export async function loadHolders(client: PolymarketClient, store: RadarStore, slug: string, opts: LoadOptions = {}): Promise<HoldersView> {
   const now = opts.now ?? Date.now;
-  const view: HoldersView = { slug, eventTitle: slug, question: '', cid: '', rows: [], total: 0, loaded: 0, done: false, error: null };
+  const view: HoldersView = { slug, eventTitle: slug, question: '', cid: '', rows: [], markets: [], total: 0, loaded: 0, done: false, error: null };
   const emit = () => opts.onProgress?.({ ...view, rows: [...view.rows] });
   try {
     const event = await client.eventBySlug(slug);
     if (!event) throw new Error(`event not found: ${slug}`);
     view.eventTitle = event.title;
-    const market = [...event.markets].filter((m) => !m.closed).sort((a, b) => b.volume - a.volume)[0] ?? event.markets[0];
+    const open = [...event.markets].filter((m) => !m.closed).sort((a, b) => b.volume - a.volume);
+    view.markets = (open.length ? open : event.markets).map((m) => ({ cid: m.cid, question: m.question, marketType: m.marketType, volume: m.volume }));
+    const market = (opts.cid ? event.markets.find((m) => m.cid === opts.cid) : undefined) ?? open[0] ?? event.markets[0];
     if (!market) throw new Error('event has no markets');
     view.question = market.question;
     view.cid = market.cid;

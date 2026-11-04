@@ -1,3 +1,4 @@
+import { pickMarket } from '../../radar/tui/pick';
 import { describe, expect, it } from 'vitest';
 import { charWidth, clip, fit, sparkline, strip, truncate, vlen } from '../../radar/tui/ansi';
 import { JUMPS_STANDING, LEDGER_STANDING, moveSelection, NEW_STANDING, render, type Model, type View } from '../../radar/tui/render';
@@ -139,7 +140,7 @@ describe('games and holders tabs', () => {
     ...model(),
     showBots,
     holders: {
-      slug: 'mi', eventTitle: 'Michigan Senate', question: 'Will the Democrats win Michigan?', cid: '0xc', total: 4, loaded: 4, done: true, error: null,
+      slug: 'mi', eventTitle: 'Michigan Senate', question: 'Will the Democrats win Michigan?', cid: '0xc', markets: [], total: 4, loaded: 4, done: true, error: null,
       rows: [holder(), holder({ name: 'cigarettes', cls: 'BOT', confidence: 'high', traded: 157_118, posUsd: 11_659, reasons: ['157,118 markets traded lifetime'] }), holder({ name: 'toosensitive', cls: 'MM', posUsd: 5_000 }), holder({ name: 'newcomer', cls: 'LOW_DATA', posUsd: 30_000, avgPrice: 0, flags: ['holds shares it never bought'] })],
     },
   });
@@ -445,5 +446,25 @@ describe('edge tab REF rows', () => {
         for (const l of lines) expect(vlen(l), `${cols}x${rows}`).toBeLessThanOrEqual(cols);
       }
     }
+  });
+});
+
+describe('holders market picker', () => {
+  const ms = [
+    { cid: 'a', marketType: 'moneyline' }, { cid: 'b', marketType: 'spreads' }, { cid: 'c', marketType: 'spreads' }, { cid: 'd', marketType: 'totals' }, { cid: 'e', marketType: 'totals' },
+  ];
+  it('steps one market and wraps', () => {
+    expect(pickMarket(ms, 'a', ']')?.cid).toBe('b');
+    expect(pickMarket(ms, 'e', ']')?.cid).toBe('a');
+    expect(pickMarket(ms, 'a', '[')?.cid).toBe('e');
+  });
+  it('jumps to the next and previous market type', () => {
+    expect(pickMarket(ms, 'a', '}')?.cid).toBe('b');
+    expect(pickMarket(ms, 'b', '}')?.cid).toBe('d'); // skips the rest of spreads
+    expect(pickMarket(ms, 'd', '{')?.cid).toBe('b'); // first market of the previous type
+    expect(pickMarket(ms, 'e', '}')?.cid).toBe('a');
+  });
+  it('does nothing with a single market', () => {
+    expect(pickMarket([ms[0]], 'a', ']')).toBeUndefined();
   });
 });

@@ -437,7 +437,7 @@ describe('decision tab', () => {
     const now = Date.now() / 1000;
     const row = (name: string, createdAt: number | null, matches: NonNullable<Model['holders']>['rows'][number]['matches'] = []) => ({ wallet: `0x${name.padEnd(40, '0')}`, name, outcomeIndex: 0, outcome: 'Yes', shares: 1000, avgPrice: 0.5, curPrice: 0.6, posUsd: 600, uPnl: 100, pnlAll: 1000, pnlWeek: 10, vol: 5000, traded: 4, ageDays: 5, perDay: 2, cls: 'HUMAN' as const, confidence: 'medium' as const, reasons: [], flags: [], createdAt, xUsername: null, matches });
     const hit = matchPeople({ ...noId, name: 'Jonathan Smithers' }, [JON]);
-    const m: Model = { ...empty, holders: { slug: 's', eventTitle: 't', question: 'Q?', cid: 'c', total: 3, loaded: 3, done: true, error: null, rows: [row('fresh', now - 2 * 86_400), row('veteran', now - 900 * 86_400), row('Jonathan Smithers', null, hit)] } };
+    const m: Model = { ...empty, holders: { slug: 's', eventTitle: 't', question: 'Q?', cid: 'c', markets: [], total: 3, loaded: 3, done: true, error: null, rows: [row('fresh', now - 2 * 86_400), row('veteran', now - 900 * 86_400), row('Jonathan Smithers', null, hit)] } };
     const text = strip(render(m, view({ tab: 'holders' }), Date.now()).join('\n'));
     expect(text).toMatch(/CREATED/);
     expect(text).toContain(new Date((now - 2 * 86_400) * 1000).toISOString().slice(0, 10));

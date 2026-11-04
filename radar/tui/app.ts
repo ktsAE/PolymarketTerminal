@@ -7,6 +7,7 @@ import { scoreLedger } from '../ledger.ts';
 import { JUMPS_PATH, scanJumps, scoreJumps, type JumpScan } from '../jump.ts';
 import { logFlagged, scanNewMarkets } from '../newmarkets.ts';
 import { loadHolders } from '../holders.ts';
+import { pickMarket } from './pick.ts';
 import { loadNews } from '../newsview.ts';
 import { loadPeople, type Person } from '../people.ts';
 import { httpFetchJson, type PolymarketClient } from '../polymarket.ts';
@@ -230,14 +231,16 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
 
   // Holders load in the background; a newer request makes older progress callbacks irrelevant.
   let holdersToken = 0;
-  const openHolders = (slug: string) => {
+  const openHolders = (slug: string, cid?: string) => {
     const token = ++holdersToken;
-    model = { ...model, holders: { slug, eventTitle: slug, question: 'loading…', cid: '', rows: [], total: 0, loaded: 0, done: false, error: null } };
+    const keep = model.holders?.slug === slug ? model.holders.markets : [];
+    model = { ...model, holders: { slug, eventTitle: slug, question: 'loading…', cid: cid ?? '', rows: [], markets: keep, total: 0, loaded: 0, done: false, error: null } };
     view = { ...view, tab: 'holders', sel: 0 };
     const cfg = readConfig(opts);
     if (cfg.problem) setStatus({ message: cfg.problem });
     paint();
     void loadHolders(client, store, slug, {
+      cid,
       people: cfg.people,
       onProgress: (hv) => {
         if (token !== holdersToken) return;
@@ -479,6 +482,10 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
         void poll().then(() => paint());
         paint();
         return;
+      }
+      if ((d === '[' || d === ']' || d === '{' || d === '}') && view.tab === 'holders' && model.holders && model.holders.markets.length > 1) {
+        const next = pickMarket(model.holders.markets, model.holders.cid, d);
+        return next ? openHolders(model.holders.slug, next.cid) : paint();
       }
       if (d === 'h') {
         const slug = selectedSlug(model, view);

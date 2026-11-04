@@ -17,7 +17,7 @@ function fakeApi(calls: string[] = []): FetchJson {
       { conditionId: `0x${'d'.repeat(64)}`, question: 'tiny', outcomes: '["Yes","No"]', outcomePrices: '["0.5","0.5"]', clobTokenIds: '[]', volume: 10, closed: false },
       { conditionId: CID, question: 'Will X win?', outcomes: '["Yes","No"]', outcomePrices: '["0.8","0.2"]', clobTokenIds: '[]', volume: 5_000_000, closed: false } ] }];
     if (url.includes('/v2/holders?')) {
-      expect(url).toContain(`condition=${CID}`);
+      expect(url).toMatch(/condition=0x[cd]{64}/);
       return v2([{ tokenId: '1', holders: [{ proxyWallet: HUMAN, amount: 400_000, outcomeIndex: 0, name: 'person' }] }, { tokenId: '2', holders: [{ proxyWallet: BOT, amount: 90_000, outcomeIndex: 1, name: 'machine' }] }]);
     }
     if (url.includes('/v2/activity?') && url.includes('sort_direction=ASC')) return v2([{ timestamp: NOW - 100 * 86_400 }]);
@@ -58,6 +58,28 @@ describe('loading top holders', () => {
     const after = calls.filter((c) => c.includes('/v2/activity?') || c.includes('/v2/leaderboard?') || c.includes('/v2/user-stats?')).length;
     expect(after).toBe(before); // positions are re-read (they change), profiles are not
     expect(calls.filter((c) => c.includes('/positions?'))).toHaveLength(4);
+    store.close();
+  });
+
+  it('lists every open market of the event and loads the one asked for (spreads and totals included)', async () => {
+    const store = openStore();
+    const asked: string[] = [];
+    const api = fakeApi();
+    const spy: FetchJson = async (u) => {
+      if (u.includes('/v2/holders?')) { asked.push(/condition=(\w+)/.exec(u)![1]); }
+      return api(u);
+    };
+    const side = `0x${'d'.repeat(64)}`;
+    const client = new PolymarketClient(spy, fast);
+    const main = await loadHolders(client, store, 'ev', { now: () => NOW * 1000 });
+    expect(main.markets.map((m) => m.cid)).toEqual([CID, side]); // busiest first
+    expect(main.cid).toBe(CID);
+    const other = await loadHolders(client, store, 'ev', { now: () => NOW * 1000, cid: side });
+    expect(other.cid).toBe(side);
+    expect(other.question).toBe('tiny');
+    expect(asked).toEqual([CID, side]);
+    // an unknown cid falls back to the busiest market rather than failing
+    expect((await loadHolders(client, store, 'ev', { now: () => NOW * 1000, cid: '0xnope' })).cid).toBe(CID);
     store.close();
   });
 
