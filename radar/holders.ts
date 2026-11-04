@@ -1,3 +1,4 @@
+import { classFlow, type ClassFlow } from './classflow.ts';
 import { identityFor } from './identity.ts';
 import { matchPeople, type NameMatch, type Person } from './people.ts';
 import { classifyWallet, isPerson, summarizeActivity, type WalletClass } from './profile.ts';
@@ -46,6 +47,8 @@ export interface HoldersView {
   rows: HolderRow[];
   /** Every open market of the event, busiest first, so spreads, totals and props can be picked too. */
   markets: Array<{ cid: string; question: string; marketType: string | null; volume: number }>;
+  /** Dollars bet on each side by wallet class over the last hour/6h/day; filled after the holders are profiled (undefined until then). */
+  flow?: { data: ClassFlow; yesLabel: string; noLabel: string } | null;
   /** Wallets to profile in total, and how many are done. */
   total: number;
   loaded: number;
@@ -58,6 +61,8 @@ export interface LoadOptions {
   /** Load this market of the event instead of the busiest one. */
   cid?: string;
   concurrency?: number;
+  /** How many extra busy non-holder traders to profile for the flow-by-class view. */
+  flowWallets?: number;
   maxAgeSecs?: number;
   now?: () => number;
   onProgress?: (view: HoldersView) => void;
@@ -143,6 +148,25 @@ export async function loadHolders(client: PolymarketClient, store: RadarStore, s
       view.rows.sort((a, b) => (b.posUsd ?? b.shares * (b.curPrice ?? 0)) - (a.posUsd ?? a.shares * (a.curPrice ?? 0)));
       emit();
     });
+    // who is pushing the market: classify the busiest recent traders too, so the flow covers more than the holders
+    try {
+      const trades = await client.marketTrades(market.cid, { maxFills: 2500 });
+      const nowSecs = Math.floor(now() / 1000);
+      const classOf = new Map<string, WalletClass>(view.rows.map((r) => [r.wallet, r.cls]));
+      const usdBy = new Map<string, number>();
+      for (const t of trades) if (t.ts >= nowSecs - 24 * 3_600 && !classOf.has(t.wallet)) usdBy.set(t.wallet, (usdBy.get(t.wallet) ?? 0) + t.size * t.price);
+      const busiest = [...usdBy.entries()].sort((a, b) => b[1] - a[1]).slice(0, opts.flowWallets ?? 15);
+      await pool(busiest, opts.concurrency ?? 3, async ([wallet]) => {
+        try {
+          classOf.set(wallet, (await profileWallet(client, store, wallet, now, opts.maxAgeSecs ?? 12 * 3_600, null)).cls);
+        } catch {
+          /* an unprofiled wallet stays UNKNOWN */
+        }
+      });
+      view.flow = { data: classFlow(trades, classOf, nowSecs), yesLabel: market.outcomes[0] ?? 'YES', noLabel: market.outcomes[1] ?? 'NO' };
+    } catch {
+      view.flow = null;
+    }
   } catch (error) {
     view.error = error instanceof Error ? error.message : String(error);
   }

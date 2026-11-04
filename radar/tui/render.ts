@@ -6,6 +6,7 @@ import { formatJumps, type JumpFlag, type JumpReport, type JumpScan } from '../j
 import { NEWMARKET_THRESHOLDS, type ScanRow, type ScanSummary } from '../newmarkets.ts';
 import { gamePhase, type Anomaly, type WalletTag } from '../detect.ts';
 import type { Action, MarketDecision } from '../decide.ts';
+import { formatClassFlow } from '../classflow.ts';
 import { costLines, formatCost } from '../cost.ts';
 import { formatXray, type XrayReport } from '../xray.ts';
 import { peopleOnly, type HolderRow, type HoldersView } from '../holders.ts';
@@ -349,7 +350,8 @@ export function holderRows(m: Model, v: View, height: number): string[] {
   );
   out.push(headOf(cols));
   const nowSecs = Date.now() / 1000;
-  const room = Math.max(1, height - 2);
+  const flowLines = h.flow && height >= 18 ? formatClassFlow(h.flow.data, h.flow.yesLabel, h.flow.noLabel).slice(0, 8) : [];
+  const room = Math.max(1, height - 2 - (flowLines.length ? flowLines.length + 1 : 0));
   const start = Math.max(0, Math.min(v.sel - Math.floor(room / 2), Math.max(0, rows.length - room)));
   for (const [i, r] of rows.slice(start, start + room).entries()) {
     const w = (k: string) => cols.find((x) => x.key === k)?.w ?? 0;
@@ -374,6 +376,10 @@ export function holderRows(m: Model, v: View, height: number): string[] {
     );
   }
   if (rows.length === 0 && h.done) out.push(c.gray(hidden > 0 ? '  only bots/market makers hold this market; press b to see them' : '  no holders found'));
+  if (flowLines.length) {
+    while (out.length < height - flowLines.length) out.push('');
+    flowLines.forEach((l, i) => out.push(clip(` ${i === 0 ? c.bold(l) : i === flowLines.length - 1 ? c.gray(l) : l}`, v.cols)));
+  }
   return out;
 }
 

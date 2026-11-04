@@ -329,3 +329,9 @@ Press `a` on a holder (or in an X-ray) to add that wallet to `.radar/wallets.jso
 `npm run radar -- wallet-watch [--every 120] [--no-notify]` checks the list every N seconds (minimum 30), prints each new trade with the market link and sends a desktop notification (`notify-send`).
 The first pass only records what is already there, so old trades never alert. The list is re-read each pass, so adding a wallet from the TUI takes effect without a restart. Backtests found that following
 wallets does not pay (HOLDERS_STUDY.md), so a notice is a prompt to look at the market, not a signal. Searching (`/`) with a `0x…` address anywhere in the box opens that wallet's X-ray.
+
+## Flow by wallet class (bottom of the Holders tab, `radar/classflow.ts`)
+
+Under the holders list: dollars bet on each side over the last 24h (and the 1h net) split by who made them: HUMAN, ALGO, BOT, MM, and UNKNOWN. Holders are classified from their profile; so are the 15 busiest
+other traders of the market, and everyone else is UNKNOWN. The line below says what share of the money came from classified wallets, so a mostly-UNKNOWN picture is visible as such. Market makers trade
+both sides, so their net says little. This describes who is trading, not who is right.
