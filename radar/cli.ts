@@ -17,6 +17,7 @@ import { logFlagged, NEWMARKET_THRESHOLDS, NEWMARKETS_PATH, NEWMARKETS_RESULTS_P
 import { cleanHandle, DEFAULT_HANDLES_PATH, DEFAULT_POSTS_PATH, loadHandles, loadPosts, pollAccounts, type AccountPollResult } from './xaccounts.ts';
 import { loadHolders, peopleOnly } from './holders.ts';
 import { formatXray, loadXray } from './xray.ts';
+import { addWatched, describeTrade, loadWatched, notify, pollWatched, removeWatched, WALLETS_PATH } from './walletwatch.ts';
 import { loadNews } from './newsview.ts';
 import { accountAge, identityFor } from './identity.ts';
 import { addPerson, describePerson, loadPeople, matchPeople, PEOPLE_PATH, removePerson } from './people.ts';
@@ -513,6 +514,54 @@ async function main(): Promise<void> {
         console.log(jumpSettleText(r));
         for (const e of r.errors.slice(0, 5)) console.log(`  error: ${e}`);
         console.log(`log: ${JUMPS_PATH}`);
+        return;
+      }
+      case 'wallet-add': {
+        const note = args.slice(1).join(' ').trim() || undefined;
+        const r = addWatched(args[0] ?? '', note, WALLETS_PATH);
+        console.log(`${r.added ? 'added' : 'already watching'} ${args[0]}; ${r.list.length} wallet(s) in ${WALLETS_PATH}`);
+        return;
+      }
+      case 'wallet-remove':
+        console.log(removeWatched(args[0] ?? '') ? 'removed' : 'not on the list');
+        return;
+      case 'wallet-list': {
+        const list = loadWatched();
+        if (list.length === 0) console.log(`no wallets watched yet. Add one with: wallet-add <0x address> [note]  (or press a on a holder or in the x-ray)  [${WALLETS_PATH}]`);
+        for (const w of list) console.log(`${w.wallet}  ${w.note ?? ''}`);
+        return;
+      }
+      case 'wallet-watch': {
+        const every = Math.max(30, flag(args, 'every', 120));
+        const quiet = args.includes('--no-notify');
+        let stop = false;
+        const onSig = () => { stop = true; };
+        process.on('SIGINT', onSig);
+        process.on('SIGTERM', onSig);
+        const seen = new Map<string, Set<string>>();
+        const primed = new Set<string>();
+        console.log(`watching ${loadWatched().length} wallet(s) every ${every}s${quiet ? '' : ' with desktop notifications'}; the list is re-read each pass; Ctrl-C stops. A notice is a prompt to look, not a trade signal.`);
+        while (!stop) {
+          const list = loadWatched();
+          const stamp = new Date().toISOString().slice(11, 16) + 'Z';
+          const res = await pollWatched(client, list, seen, primed);
+          let n = 0;
+          for (const r of res) {
+            const w = list.find((x) => x.wallet === r.wallet)!;
+            for (const t of r.trades) {
+              n++;
+              const line = describeTrade(w, t);
+              console.log(`${stamp} ${line}\n       https://polymarket.com/event/${t.slug}`);
+              if (!quiet) notify('Watched wallet traded', `${line}\nhttps://polymarket.com/event/${t.slug}`);
+            }
+            if (r.error) console.log(`${stamp} ${r.wallet.slice(0, 10)}…: ${r.error.slice(0, 90)}`);
+          }
+          console.log(`${stamp} checked ${list.length} wallet(s): ${n} new trade(s)`);
+          for (let i = 0; i < every && !stop; i++) await new Promise((r) => setTimeout(r, 1000));
+        }
+        process.off('SIGINT', onSig);
+        process.off('SIGTERM', onSig);
+        console.log('wallet-watch stopped');
         return;
       }
       case 'xray': {

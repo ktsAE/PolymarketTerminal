@@ -9,6 +9,7 @@ import { logFlagged, scanNewMarkets } from '../newmarkets.ts';
 import { loadHolders } from '../holders.ts';
 import { pickMarket } from './pick.ts';
 import { loadXray } from '../xray.ts';
+import { addWatched, isAddress } from '../walletwatch.ts';
 import { loadNews } from '../newsview.ts';
 import { loadPeople, type Person } from '../people.ts';
 import { httpFetchJson, type PolymarketClient } from '../polymarket.ts';
@@ -418,9 +419,10 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     });
   };
   const runSearch = (query: string) => {
-    if (/^0x[0-9a-fA-F]{40}$/.test(query)) {
+    const address = query.match(/0x[0-9a-fA-F]{40}/)?.[0]; // a pasted wallet address anywhere in the box (the box keeps the previous query)
+    if (address) {
       putSearch({ typing: false });
-      return openXray(query);
+      return openXray(address);
     }
     const token = ++searchToken;
     putSearch({ typing: false, loading: true, error: null, results: [] });
@@ -489,6 +491,21 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
       if (d === 'e') return startEdgeScan();
       if (d === 'w') return openNew();
       if (d === 'j') return openJumps();
+      if (d === 'a') {
+        const holder = view.tab === 'holders' ? visibleHolders(model)[view.sel] : undefined;
+        const wallet = holder?.wallet ?? (view.tab === 'xray' ? model.xray?.wallet : undefined);
+        if (!wallet || !isAddress(wallet)) {
+          setStatus({ message: 'select a holder (or open an x-ray) and press a to watch that wallet' });
+          return paint();
+        }
+        try {
+          const r = addWatched(wallet, holder?.name ?? undefined);
+          setStatus({ message: `${r.added ? 'watching' : 'already watching'} ${wallet.slice(0, 10)}…: run  npm run radar -- wallet-watch  to get a notice when it trades (${r.list.length} on the list)` });
+        } catch (error) {
+          setStatus({ message: `could not save the watchlist: ${error instanceof Error ? error.message : String(error)}` });
+        }
+        return paint();
+      }
       if (d === 'x') {
         const holder = view.tab === 'holders' ? visibleHolders(model)[view.sel] : undefined;
         if (holder) return openXray(holder.wallet);

@@ -322,3 +322,10 @@ For the selected market the Decision tab now prints what $50 and $500 would real
 (fee = shares x rate x p x (1-p); rate by category: crypto 7%, sports/economics/culture/weather/other 5%, finance/politics/mentions/tech 4%, geopolitics 0%; resting orders pay none), the probability you need
 to break even, and how much selling straight back would lose. The fee category is ESTIMATED from the event's tags: check the market page before trading size. Example, a 2-cent-wide sports book at 50 cents:
 buying and immediately selling $100 loses about 8.8% (4% spread plus two taker fees). For a small account that is the number that decides whether anything can pay.
+
+## Wallet watchlist (`a`, `wallet-add`, `wallet-watch`)
+
+Press `a` on a holder (or in an X-ray) to add that wallet to `.radar/wallets.json`; or `npm run radar -- wallet-add <0x…> [note]`, `wallet-list`, `wallet-remove <0x…>`.
+`npm run radar -- wallet-watch [--every 120] [--no-notify]` checks the list every N seconds (minimum 30), prints each new trade with the market link and sends a desktop notification (`notify-send`).
+The first pass only records what is already there, so old trades never alert. The list is re-read each pass, so adding a wallet from the TUI takes effect without a restart. Backtests found that following
+wallets does not pay (HOLDERS_STUDY.md), so a notice is a prompt to look at the market, not a signal. Searching (`/`) with a `0x…` address anywhere in the box opens that wallet's X-ray.

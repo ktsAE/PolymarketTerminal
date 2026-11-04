@@ -174,6 +174,18 @@ export interface PositionLine {
   unrealizedPnl: number;
   firstEntryAt: number | null;
 }
+export interface TradeLine {
+  ts: number;
+  tx: string;
+  token: string;
+  side: string;
+  price: number;
+  size: number;
+  outcome: string;
+  title: string;
+  slug: string;
+  cid: string;
+}
 export interface FillLine {
   ts: number;
   tx: string;
@@ -456,6 +468,17 @@ export class PolymarketClient {
       }))
       .filter((r) => r.ts > 0)
       .sort((x, y) => x.ts - y.ts);
+  }
+
+  /** A wallet's latest trades (newest first), with the market they were in. */
+  async recentTrades(wallet: string, limit = 50): Promise<TradeLine[]> {
+    const { data } = await this.dataPage('activity', { user: wallet, limit: Math.min(limit, 500) });
+    return (Array.isArray(data) ? data : [])
+      .filter((r: Record<string, any>) => String(r.type ?? 'TRADE') === 'TRADE' && (r.side === 'BUY' || r.side === 'SELL'))
+      .map((r: Record<string, any>) => ({
+        ts: num(r.timestamp), tx: String(r.transactionHash ?? ''), token: String(r.tokenId ?? ''), side: String(r.side), price: num(r.price), size: num(r.size), outcome: String(r.outcome ?? ''),
+        title: String(r.title ?? ''), slug: String(r.eventSlug ?? r.slug ?? ''), cid: String(r.conditionId ?? ''),
+      }));
   }
 
   /** A wallet's positions of one lifecycle status, newest first, following the cursor up to `max` rows. */
