@@ -315,3 +315,10 @@ when they disagree. It shows: all-in PnL split into trading and income (referral
 profit factor, how much one win contributes), open positions (value, unrealized, how many are under water, profit factor with them counted), and the maker share of the latest 1,000 fills (over the hours that
 span; a recent window, not a lifetime figure). Open it from Holders (select a wallet, press `x`), from anywhere by pressing `/` and pasting a `0x…` address, or from the CLI.
 It describes results at that wallet's own prices: a copier would not earn the same, and the notes never say why a wallet traded.
+
+## Cost of a trade (COST block in the Decision tab, `radar/cost.ts`)
+
+For the selected market the Decision tab now prints what $50 and $500 would really cost, buying YES and buying NO: shares, average price after walking the book (slippage vs the best price), the taker fee
+(fee = shares x rate x p x (1-p); rate by category: crypto 7%, sports/economics/culture/weather/other 5%, finance/politics/mentions/tech 4%, geopolitics 0%; resting orders pay none), the probability you need
+to break even, and how much selling straight back would lose. The fee category is ESTIMATED from the event's tags: check the market page before trading size. Example, a 2-cent-wide sports book at 50 cents:
+buying and immediately selling $100 loses about 8.8% (4% spread plus two taker fees). For a small account that is the number that decides whether anything can pay.

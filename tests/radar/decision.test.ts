@@ -409,6 +409,11 @@ describe('decision tab', () => {
     expect(text).toMatch(/CREATED/);
     expect(text).toMatch(/2025-01-01/); // the watchlisted wallet's creation date
     expect(text).toMatch(/≈/); // name-match marker
+    expect(text).toMatch(/COST\s+taker fee rate \d+% \(\w+, estimated from the event's tags/);
+    expect(text).toMatch(/YES \$50: .* shares at avg .*c \(best .*c, slippage .*c\), fee .*c a share, needs a .*% chance to break even/);
+    expect(text).toMatch(/NO \$500: /);
+    expect(dv.books && Object.keys(dv.books).length).toBeGreaterThan(0);
+    expect(dv.fee?.rate).toBeGreaterThanOrEqual(0);
     expect(text).toMatch(/1-9,0 tabs/);
     for (const l of lines) expect(l.length).toBeLessThanOrEqual(140 + 20); // no line overflows the terminal (width counts glyphs, not bytes)
   });

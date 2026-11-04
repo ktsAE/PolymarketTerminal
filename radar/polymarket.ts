@@ -33,6 +33,8 @@ export interface GammaEvent {
   volume: number;
   closed: boolean;
   markets: MarketRow[];
+  /** Tag slugs of the event (lowercase), used to estimate the fee category. */
+  tags?: string[];
 }
 
 const num = (v: unknown, d = 0): number => {
@@ -77,7 +79,8 @@ export function mapEvent(raw: Record<string, any>): GammaEvent {
       closed: Boolean(m.closed),
     };
   });
-  return { slug: String(raw.slug), title, volume: num(raw.volume), closed: Boolean(raw.closed), markets };
+  const tags = (Array.isArray(raw.tags) ? raw.tags : []).map((t: Record<string, any>) => String(t?.slug ?? '').toLowerCase()).filter(Boolean);
+  return { slug: String(raw.slug), title, volume: num(raw.volume), closed: Boolean(raw.closed), markets, tags };
 }
 
 const toSecs = (v: unknown): number | null => {

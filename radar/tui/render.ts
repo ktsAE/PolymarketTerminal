@@ -6,6 +6,7 @@ import { formatJumps, type JumpFlag, type JumpReport, type JumpScan } from '../j
 import { NEWMARKET_THRESHOLDS, type ScanRow, type ScanSummary } from '../newmarkets.ts';
 import { gamePhase, type Anomaly, type WalletTag } from '../detect.ts';
 import type { Action, MarketDecision } from '../decide.ts';
+import { costLines, formatCost } from '../cost.ts';
 import { formatXray, type XrayReport } from '../xray.ts';
 import { peopleOnly, type HolderRow, type HoldersView } from '../holders.ts';
 import { accountAge, dateOf } from '../identity.ts';
@@ -459,6 +460,11 @@ export function decisionRows(m: Model, v: View, height: number): string[] {
     block('FLOW', sel.context, c.gray);
     block('RISK', sel.risks, c.gray);
     block('CHECK', sel.invalidates, c.gray);
+    const book = dv.books?.[sel.cid];
+    if (book && dv.fee && room() > 3) {
+      block('COST', [`taker fee rate ${(dv.fee.rate * 100).toFixed(0)}% (${dv.fee.category}, estimated from the event's tags; resting orders pay none): fee = shares x rate x p x (1-p)`], c.gray);
+      for (const usdSize of [50, 500]) block('', costLines(book, usdSize, dv.fee.rate).map(formatCost));
+    }
     const ws = dv.wallets[sel.cid] ?? [];
     if (ws.length && room() > 3) {
       out.push(clip(c.dim(`  ${'WHO'.padEnd(5)} ${'SIDE'.padEnd(8)} ${'POSITION'.padStart(8)} ${'CREATED'.padEnd(10)} ${'MKTS'.padStart(5)} ${'X HANDLE'.padEnd(16)} NAME`), v.cols));

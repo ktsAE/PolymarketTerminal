@@ -1,9 +1,10 @@
+import { feeCategory, FEE_RATES, type FeeCategory } from './cost.ts';
 import { decide, type Decision, type DMarket, type DWallet, type Reference } from './decide.ts';
 import { marketFlow, type MarketFlow } from './flow.ts';
 import { profileWallet } from './holders.ts';
 import { identityFor } from './identity.ts';
 import { matchPeople, type Person } from './people.ts';
-import { httpFetchJson, type Book, type FetchJson, type PolymarketClient } from './polymarket.ts';
+import { httpFetchJson, type Book, type BookLevel, type FetchJson, type PolymarketClient } from './polymarket.ts';
 import { fetchDexReference, refFor, type RefConfig } from './refs.ts';
 import type { RadarStore } from './store.ts';
 
@@ -22,6 +23,10 @@ export interface DecisionView {
   decision: Decision | null;
   /** Every wallet profiled, by market id. */
   wallets: Record<string, DWallet[]>;
+  /** The YES order book of each market (by market id), so the cost of a trade can be walked in the UI. */
+  books?: Record<string, { bids: BookLevel[]; asks: BookLevel[] }>;
+  /** Taker-fee category estimated from the event's tags. */
+  fee?: { category: FeeCategory; rate: number };
 }
 
 export interface DecisionLoadOptions {
@@ -78,11 +83,15 @@ export async function loadDecision(client: PolymarketClient, store: RadarStore, 
   const secs = () => Math.floor(now() / 1000);
   const people = opts.people ?? [];
   const view: DecisionView = { slug, title: slug, stage: 'reading the event', progress: { loaded: 0, total: 0 }, done: false, error: null, decision: null, wallets: {} };
-  const emit = () => opts.onProgress?.({ ...view, wallets: { ...view.wallets } });
+  const emit = () => opts.onProgress?.({ ...view, wallets: { ...view.wallets }, books: view.books ? { ...view.books } : undefined });
   try {
     const raw = await client.eventRaw(slug);
     if (!raw) throw new Error(`event not found: ${slug}`);
     view.title = String(raw.title ?? slug);
+    {
+      const category = feeCategory((Array.isArray(raw.tags) ? raw.tags : []).map((t: Record<string, any>) => String(t?.slug ?? '')));
+      view.fee = { category, rate: FEE_RATES[category] };
+    }
     const event = { slug, title: view.title, description: String(raw.description ?? '') };
     const rows = ((raw.markets ?? []) as Array<Record<string, any>>).filter((m) => m.conditionId);
     const live = rows.filter((m) => !m.closed).sort((a, b) => (num(b.volume24hr) ?? 0) - (num(a.volume24hr) ?? 0));
@@ -102,7 +111,9 @@ export async function loadDecision(client: PolymarketClient, store: RadarStore, 
       const token = tokens.get(m.cid);
       try {
         if (token) {
-          const q = bookQuote(await client.book(token));
+          const book = await client.book(token);
+          (view.books ??= {})[m.cid] = book;
+          const q = bookQuote(book);
           m.yesBid = q.bid;
           m.yesAsk = q.ask;
           m.bidDepthSh = q.bidDepthSh;
