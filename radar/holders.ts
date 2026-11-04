@@ -1,3 +1,4 @@
+import { parseInfo, type MarketInfo } from './marketinfo.ts';
 import { classFlow, type ClassFlow } from './classflow.ts';
 import { identityFor } from './identity.ts';
 import { matchPeople, type NameMatch, type Person } from './people.ts';
@@ -49,6 +50,8 @@ export interface HoldersView {
   markets: Array<{ cid: string; question: string; marketType: string | null; volume: number }>;
   /** Dollars bet on each side by wallet class over the last hour/6h/day; filled after the holders are profiled (undefined until then). */
   flow?: { data: ClassFlow; yesLabel: string; noLabel: string } | null;
+  /** Book, end date, oracle status and rules of the market shown; filled early (undefined until then). */
+  info?: MarketInfo | null;
   /** Wallets to profile in total, and how many are done. */
   total: number;
   loaded: number;
@@ -115,6 +118,16 @@ export async function loadHolders(client: PolymarketClient, store: RadarStore, s
     if (!market) throw new Error('event has no markets');
     view.question = market.question;
     view.cid = market.cid;
+    // the market's own state first (book, end, oracle, rules): a failure here must not hide the holders
+    try {
+      const rawEvent = await client.eventRaw(slug);
+      const rawMarket = ((rawEvent?.markets ?? []) as Array<Record<string, any>>).find((m) => m.conditionId === market.cid);
+      const book = market.tokenIds[0] ? await client.book(market.tokenIds[0]).catch(() => null) : null;
+      view.info = parseInfo(rawMarket, book);
+    } catch {
+      view.info = null;
+    }
+    emit();
     const holders = await client.holders(market.cid, 20);
     const perSide = opts.perSide ?? 12;
     const taken = new Map<number, number>();

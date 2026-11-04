@@ -335,3 +335,14 @@ wallets does not pay (HOLDERS_STUDY.md), so a notice is a prompt to look at the 
 Under the holders list: dollars bet on each side over the last 24h (and the 1h net) split by who made them: HUMAN, ALGO, BOT, MM, and UNKNOWN. Holders are classified from their profile; so are the 15 busiest
 other traders of the market, and everyone else is UNKNOWN. The line below says what share of the money came from classified wallets, so a mostly-UNKNOWN picture is visible as such. Market makers trade
 both sides, so their net says little. This describes who is trading, not who is right.
+
+## Market page strip (top of the Holders tab, `radar/marketinfo.ts`)
+
+Under the title of the market you are looking at: best bid/ask and spread, dollars resting within 5 cents of the best price on each side, time to the end date, the UMA oracle status (a proposed or
+disputed resolution shows up here before the price fully reacts), whether orders are still accepted, and the first line of the rules. Together with the holders (by class), the flow by class and `[ ]` / `{ }`
+market switching, the Holders tab is the one page for a market. The Decision tab (`p`) adds the cost of a trade and the fair-value references.
+
+## Labs
+
+News, Edge, Jumps and New markets are experiments that found no edge. They are out of the tab bar and the Tab cycle; keys `n`, `e`, `j`, `w` (and `8`, `9`) still open them, and the CLI commands
+(`edges`, `watch`, `forward-log`, `daemon`) and the forward ledger are unchanged.
