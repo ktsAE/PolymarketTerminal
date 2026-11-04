@@ -15,7 +15,10 @@ import type { NewsRow, PrintRow } from '../store.ts';
 import { c, clip, fit, sparkline, vlen } from './ansi.ts';
 
 export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search' | 'news' | 'edge' | 'ledger' | 'new' | 'jumps' | 'xray';
+/** Experiments that found no edge: out of the tab bar and the Tab cycle, still opened by their keys (n news, e edges, j jumps, w new markets). */
+export const LABS: readonly Tab[] = ['news', 'edge', 'jumps', 'new'];
 export const TABS: readonly Tab[] = ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new', 'jumps', 'xray'];
+export const MAIN_TABS: readonly Tab[] = TABS.filter((t) => !LABS.includes(t));
 const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Anomalies', games: '2 Games', prints: '3 Big prints', holders: '4 Holders', leads: '5 Leads', decision: '6 Decision', search: '7 Search', news: '8 News', edge: '9 Edge', ledger: '0 Ledger', new: 'W New', jumps: 'j Jumps', xray: 'x X-ray' };
 
 export interface TaggedPrint extends PrintRow {
@@ -977,7 +980,7 @@ export function render(m: Model, v: View, nowMs: number): string[] {
     cols,
   );
   const tabs = clip(
-    ' ' + TABS.map((t) => (t === v.tab ? c.inverse(` ${TAB_LABEL[t]} `) : c.gray(` ${TAB_LABEL[t]} `))).join(' ') + c.gray(`   ${[...m.anomalies, ...m.games].filter((a) => a.level === 'HOT').length} hot · ${[...m.anomalies, ...m.games].filter((a) => a.level === 'WATCH').length} watch`) + (m.filter ? c.yellow(`   filter: ${m.filter}`) : ''),
+    ' ' + [...MAIN_TABS, ...(LABS.includes(v.tab) ? [v.tab] : [])].map((t) => (t === v.tab ? c.inverse(` ${TAB_LABEL[t]} `) : c.gray(` ${TAB_LABEL[t]} `))).join(' ') + c.gray(`${LABS.includes(v.tab) ? '' : '  labs: n e j w'}   ${[...m.anomalies, ...m.games].filter((a) => a.level === 'HOT').length} hot · ${[...m.anomalies, ...m.games].filter((a) => a.level === 'WATCH').length} watch`) + (m.filter ? c.yellow(`   filter: ${m.filter}`) : ''),
     cols,
   );
   const detailH = rows >= 30 && v.tab !== 'decision' ? 8 : 0;
@@ -991,7 +994,7 @@ export function render(m: Model, v: View, nowMs: number): string[] {
     for (let i = 0; i < detailH; i++) lines.push(d[i] ?? '');
   }
   while (lines.length < rows - 1) lines.push('');
-  const hint = c.gray(' ↑↓ move · 1-9,0 tabs · w new · j jumps · x x-ray · a watch wallet · / search · n news · e edges · r refresh · f category · h holders · p decide · b people/bots · o link · q quit');
+  const hint = c.gray(' ↑↓ move · 1-9,0 tabs · x x-ray · a watch wallet · / search · labs: n news e edges j jumps w new · r refresh · f category · h holders · p decide · b people/bots · o link · q quit');
   // the status message goes first: the key hint is long and would push a trailing message off a narrow screen
   lines.push(clip(s.message ? `${c.yellow(` ${s.message}`)}  ${hint}` : hint, cols));
   return lines.slice(0, rows).map((l) => (vlen(l) > cols ? clip(l, cols) : l));
@@ -1013,7 +1016,7 @@ export function moveSelection(v: View, key: Key, m: Model): View {
     case 'pagedown': return { ...v, sel: Math.min(Math.max(0, n - 1), v.sel + page) };
     case 'home': return { ...v, sel: 0 };
     case 'end': return { ...v, sel: Math.max(0, n - 1) };
-    case 'tab': return { ...v, tab: TABS[(TABS.indexOf(v.tab) + 1) % TABS.length], sel: 0 };
+    case 'tab': return { ...v, tab: MAIN_TABS[(MAIN_TABS.indexOf(v.tab) + 1) % MAIN_TABS.length], sel: 0 }; // from a lab tab this goes back to the first main tab
     case '1': return { ...v, tab: 'anomalies', sel: 0 };
     case '2': return { ...v, tab: 'games', sel: 0 };
     case '3': return { ...v, tab: 'prints', sel: 0 };

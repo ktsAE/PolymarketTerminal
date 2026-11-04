@@ -108,13 +108,15 @@ describe('keyboard reducer', () => {
     expect(moveSelection({ ...v, sel: 4 }, '3', m)).toMatchObject({ tab: 'prints', sel: 0 });
     expect(moveSelection({ ...v, tab: 'leads' }, 'tab', m).tab).toBe('decision');
     expect(moveSelection({ ...v, tab: 'decision' }, 'tab', m).tab).toBe('search');
-    expect(moveSelection({ ...v, tab: 'search' }, 'tab', m).tab).toBe('news');
-    expect(moveSelection({ ...v, tab: 'news' }, 'tab', m).tab).toBe('edge');
-    expect(moveSelection({ ...v, tab: 'edge' }, 'tab', m).tab).toBe('ledger');
-    expect(moveSelection({ ...v, tab: 'ledger' }, 'tab', m).tab).toBe('new');
-    expect(moveSelection({ ...v, tab: 'new' }, 'tab', m).tab).toBe('jumps');
-    expect(moveSelection({ ...v, tab: 'jumps' }, 'tab', m).tab).toBe('xray');
+    expect(moveSelection({ ...v, tab: 'search' }, 'tab', m).tab).toBe('ledger'); // the lab tabs (news, edge, jumps, new) are not in the cycle
+    expect(moveSelection({ ...v, tab: 'ledger' }, 'tab', m).tab).toBe('xray');
     expect(moveSelection({ ...v, tab: 'xray' }, 'tab', m).tab).toBe('anomalies');
+    for (const lab of ['news', 'edge', 'jumps', 'new'] as const) expect(moveSelection({ ...v, tab: lab }, 'tab', m).tab).toBe('anomalies');
+    expect(moveSelection(v, '8', m).tab).toBe('news'); // lab keys still open them
+    expect(moveSelection(v, '9', m).tab).toBe('edge');
+    expect(moveSelection(v, 'j', m).tab).toBe('jumps');
+    expect(strip(render(m, v, Date.now())[1])).not.toMatch(/News|Edge|Jumps/);
+    expect(strip(render(m, { ...v, tab: 'jumps' }, Date.now())[1])).toMatch(/j Jumps/);
     expect(moveSelection({ ...v, tab: 'anomalies' }, 'x', m).tab).toBe('xray');
     expect(moveSelection({ ...v, tab: 'anomalies' }, 'tab', m).tab).toBe('games');
   });
