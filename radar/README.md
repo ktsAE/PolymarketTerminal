@@ -346,3 +346,9 @@ market switching, the Holders tab is the one page for a market. The Decision tab
 
 News, Edge, Jumps and New markets are experiments that found no edge. They are out of the tab bar and the Tab cycle; keys `n`, `e`, `j`, `w` (and `8`, `9`) still open them, and the CLI commands
 (`edges`, `watch`, `forward-log`, `daemon`) and the forward ledger are unchanged.
+
+## New-account clusters (CLUSTER line in the Holders tab, `radar/clusters.ts`)
+
+Three or more holders on the same side whose profiles were created within 24 hours of each other and are under 14 days old are shown as one line: how many, how tightly they were created, the side, the combined
+position, and how many of them have traded only 1-2 markets. One person splitting a bet across fresh accounts looks like this, but so does a referral wave or friends signing up together, and a profile
+creation date is not an on-chain funding trace. Treat it as a pointer: open each wallet's X-ray (`x`) and look at who else holds the market. It only looks at the holders already loaded.

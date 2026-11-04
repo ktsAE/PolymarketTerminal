@@ -502,3 +502,34 @@ describe('x-ray tab', () => {
     }
   });
 });
+
+describe('holders tab: cluster, market strip and flow blocks', () => {
+  const row = (NOWS: number, wallet: string, createdAgoH: number) => ({
+    wallet, name: null, outcomeIndex: 0, outcome: 'Yes', shares: 1000, avgPrice: 0.5, curPrice: 0.5, posUsd: 500, uPnl: 0, pnlAll: 0, pnlWeek: 0, vol: 1, traded: 1, ageDays: 1, perDay: 1,
+    cls: 'LOW_DATA' as const, confidence: 'low' as const, reasons: [], flags: [], createdAt: NOWS - createdAgoH * 3_600,
+  });
+  const build = (): Model => {
+  const NOWS = Math.floor(Date.now() / 1000);
+  const holders = {
+    slug: 's', eventTitle: 'E', question: 'Will X happen?', cid: 'c', rows: [row(NOWS, '0xa', 30), row(NOWS, '0xb', 28), row(NOWS, '0xc', 26)], markets: [], total: 3, loaded: 3, done: true, error: null,
+    info: { book: { bid: 0.48, ask: 0.5, spreadCents: 2, bidDepthUsd: 900, askDepthUsd: 400 }, endsAt: NOWS + 86_400, acceptingOrders: true, uma: ['proposed'], rules: 'Resolves Yes if X.' },
+    flow: { yesLabel: 'Yes', noLabel: 'No', data: { fills: 1, profiled: 1, windows: [0, 1, 2].map((i) => ({ secs: [3600, 21600, 86400][i], totalUsd: 100, coverage: 1, buckets: [{ cls: 'HUMAN' as const, yesUsd: 100, noUsd: 0, fills: 1, wallets: 1 }] })) } },
+  };
+  return { anomalies: [], games: [], prints: [], leads: [], holders, showBots: false, oiSeries: [], filter: null, status: { lastPollAt: 1, nextPollAt: null, busy: false, error: null, events: 0, historySecs: 0, printsWindowMin: null, message: null } } as unknown as Model;
+  };
+  it('shows the new-account cluster, the market strip and the flow by class, within the box', () => {
+    const m = build();
+    for (const [cols, rows] of [[100, 30], [140, 40], [60, 14], [220, 60]]) {
+      const lines = render(m, { tab: 'holders', sel: 0, cols, rows }, Date.now());
+      expect(lines, `${cols}x${rows}`).toHaveLength(rows);
+      for (const l of lines) expect(vlen(l)).toBeLessThanOrEqual(cols);
+    }
+    const text = render(m, { tab: 'holders', sel: 0, cols: 140, rows: 40 }, Date.now()).map(strip).join('\n');
+    expect(text).toMatch(/CLUSTER 3 new accounts created within 4\.0 h of each other/);
+    expect(text).toMatch(/not proof of common control/);
+    expect(text).toMatch(/Yes 48\.0\/50\.0c, spread 2\.0c/);
+    expect(text).toMatch(/UMA oracle: proposed/);
+    expect(text).toMatch(/FLOW BY WHO, last 24h/);
+    expect(text).toMatch(/HUMAN\s+Yes\s+\$100/);
+  });
+});
