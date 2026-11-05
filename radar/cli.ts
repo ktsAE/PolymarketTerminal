@@ -16,6 +16,8 @@ import { JUMPS_STANDING, LEDGER_STANDING, NEW_STANDING, unmappedNote } from './t
 import { logFlagged, NEWMARKET_THRESHOLDS, NEWMARKETS_PATH, NEWMARKETS_RESULTS_PATH, scanNewMarkets, scoreNewMarketLog, type NewMarketScore, type ScanSummary } from './newmarkets.ts';
 import { cleanHandle, DEFAULT_HANDLES_PATH, DEFAULT_POSTS_PATH, loadHandles, loadPosts, pollAccounts, type AccountPollResult } from './xaccounts.ts';
 import { loadHolders, peopleOnly } from './holders.ts';
+import { loadMap } from './loadmap.ts';
+import { formatFundMap } from './fundmap.ts';
 import { coreHealthy, formatHealth, runHealth } from './health.ts';
 import { formatXray, loadXray } from './xray.ts';
 import { addWatched, describeTrade, loadWatched, notify, pollWatched, removeWatched, WALLETS_PATH } from './walletwatch.ts';
@@ -470,6 +472,19 @@ async function main(): Promise<void> {
         console.log(`${people.length} people on ${PEOPLE_PATH}${people.length ? '' : '  (empty: add with  people add "Full Name" --org 1win --role "Head of X" --handle theirhandle)'}`);
         for (const p of people) console.log(`  ${describePerson(p)}${p.handles?.length ? `  ${p.handles.map((h) => `@${h.replace(/^@/, '')}`).join(' ')}` : ''}${p.aliases?.length ? `  aka ${p.aliases.join(', ')}` : ''}`);
         console.log(`reference config: ${REFS_PATH} (${loadRefs().length} entries). Matching uses display name, pseudonym, linked X handle and bio only: Polymarket exposes no e-mail.`);
+        return;
+      }
+      case 'map': {
+        const slug = args[0];
+        if (!slug) throw new Error('usage: map <event-slug> [--days N]   (bubble map of who funded the holders of the busiest market)');
+        const hv = await loadHolders(client, store, slug, {});
+        if (hv.error && hv.rows.length < 2) throw new Error(hv.error);
+        console.log(`${hv.question}: ${hv.rows.length} holders; scanning the chain...`);
+        const mv = await loadMap(client, hv.cid, hv.question, hv.rows, { days: flag(args, 'days', 14), onProgress: (x) => { if (x.scan) process.stderr.write(`\r${x.scan.done}/${x.scan.total} windows, ${x.scan.found} transfers   `); } });
+        process.stderr.write('\n');
+        if (mv.error || !mv.map) throw new Error(mv.error ?? 'no map');
+        for (const l of formatFundMap(mv.map, mv.holders)) console.log(l);
+        if (mv.failed) console.log(`${mv.failed} window(s) failed: the map may be missing transfers`);
         return;
       }
       case 'doctor': {

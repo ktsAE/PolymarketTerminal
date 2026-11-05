@@ -10,18 +10,20 @@ import { formatClassFlow } from '../classflow.ts';
 import { CLUSTER_CAVEAT, findClusters, formatCluster } from '../clusters.ts';
 import { formatInfo } from '../marketinfo.ts';
 import { costLines, formatCost } from '../cost.ts';
+import { formatFundMap } from '../fundmap.ts';
+import type { MapView } from '../loadmap.ts';
 import { formatXray, type XrayReport } from '../xray.ts';
 import { peopleOnly, type HolderRow, type HoldersView } from '../holders.ts';
 import { accountAge, dateOf } from '../identity.ts';
 import type { NewsRow, PrintRow } from '../store.ts';
 import { c, clip, fit, sparkline, vlen } from './ansi.ts';
 
-export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search' | 'news' | 'edge' | 'ledger' | 'new' | 'jumps' | 'xray';
+export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search' | 'news' | 'edge' | 'ledger' | 'new' | 'jumps' | 'xray' | 'map';
 /** Experiments that found no edge: out of the tab bar and the Tab cycle, still opened by their keys (n news, e edges, j jumps, w new markets). */
 export const LABS: readonly Tab[] = ['news', 'edge', 'jumps', 'new'];
-export const TABS: readonly Tab[] = ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new', 'jumps', 'xray'];
+export const TABS: readonly Tab[] = ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new', 'jumps', 'xray', 'map'];
 export const MAIN_TABS: readonly Tab[] = TABS.filter((t) => !LABS.includes(t));
-const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Anomalies', games: '2 Games', prints: '3 Big prints', holders: '4 Holders', leads: '5 Leads', decision: '6 Decision', search: '7 Search', news: '8 News', edge: '9 Edge', ledger: '0 Ledger', new: 'W New', jumps: 'j Jumps', xray: 'x X-ray' };
+const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Anomalies', games: '2 Games', prints: '3 Big prints', holders: '4 Holders', leads: '5 Leads', decision: '6 Decision', search: '7 Search', news: '8 News', edge: '9 Edge', ledger: '0 Ledger', new: 'W New', jumps: 'j Jumps', xray: 'x X-ray', map: 'm Map' };
 
 export interface TaggedPrint extends PrintRow {
   tag: WalletTag;
@@ -66,6 +68,8 @@ export interface Model {
   jumps?: JumpsView | null;
   /** X-ray tab: the record of one wallet (null until `x` on a holder, or a 0x address searched with `/`). */
   xray?: XrayView | null;
+  /** Map tab: bubble map of the loaded holders' funding links (null until `m`). */
+  map?: MapView | null;
 }
 
 export interface JumpsView {
@@ -791,6 +795,21 @@ export function xrayRows(m: Model, v: View, height: number): string[] {
   return out.slice(0, Math.max(1, height));
 }
 
+export function mapRows(m: Model, v: View, height: number): string[] {
+  const x = m.map;
+  if (!x) return [c.gray('  on Holders (h) press m: scans the chain for who funded the holders and draws which of them are connected (bubble map)')];
+  const prog = x.scan ? ` ${x.scan.done}/${x.scan.total} windows, ${x.scan.found} transfers` : '';
+  const out = [clip(`${c.bold(' Bubble map')}  ${x.question}${x.done ? (x.error ? c.red(`  ${x.error}`) : c.gray(`  last ${x.days} days of USDC${x.failed ? `, ${x.failed} window(s) failed` : ''}`)) : c.yellow(`  ${x.stage}…${prog}`)}`, v.cols)];
+  if (!x.map) return out;
+  const lines = formatFundMap(x.map, x.holders);
+  const top = Math.max(0, Math.min(v.sel, Math.max(0, lines.length - (height - 1))));
+  for (const l of lines.slice(top, top + height - 1)) {
+    const colored = l.startsWith('GROUP') ? c.magenta(c.bold(l)) : l.startsWith('UNLINKED') || l.startsWith('ignored') || l.startsWith('A link') ? c.gray(l) : l.includes('holds BOTH') ? c.yellow(l) : l;
+    out.push(clip(` ${colored}`, v.cols));
+  }
+  return out;
+}
+
 export function printRows(m: Model, v: View, height: number): string[] {
   const cols = layout(
     [
@@ -986,13 +1005,13 @@ export function render(m: Model, v: View, nowMs: number): string[] {
     `${c.bold(c.cyan(' POLYRADAR '))} ${live}  polled ${clock(s.lastPollAt)}  next ${next}  events ${s.events}  history ${hist}  fills ${m.prints.length}${s.printsWindowMin ? ` (${s.printsWindowMin}m)` : ''}${s.error ? `  ${c.red(s.error.slice(0, 60))}` : ''}`,
     cols,
   );
-  const tabs = clip(
-    ' ' + [...MAIN_TABS, ...(LABS.includes(v.tab) ? [v.tab] : [])].map((t) => (t === v.tab ? c.inverse(` ${TAB_LABEL[t]} `) : c.gray(` ${TAB_LABEL[t]} `))).join(' ') + c.gray(`${LABS.includes(v.tab) ? '' : '  labs: n e j w'}   ${[...m.anomalies, ...m.games].filter((a) => a.level === 'HOT').length} hot · ${[...m.anomalies, ...m.games].filter((a) => a.level === 'WATCH').length} watch`) + (m.filter ? c.yellow(`   filter: ${m.filter}`) : ''),
-    cols,
-  );
+  const tabBar = ' ' + [...MAIN_TABS, ...(LABS.includes(v.tab) ? [v.tab] : [])].map((t) => (t === v.tab ? c.inverse(` ${TAB_LABEL[t]} `) : c.gray(` ${TAB_LABEL[t]} `))).join('');
+  // the counters and the labs hint only fit when there is room: the tabs themselves always win
+  const extras = c.gray(`${LABS.includes(v.tab) ? '' : '  labs: n e j w'}   ${[...m.anomalies, ...m.games].filter((a) => a.level === 'HOT').length} hot · ${[...m.anomalies, ...m.games].filter((a) => a.level === 'WATCH').length} watch`) + (m.filter ? c.yellow(`   filter: ${m.filter}`) : '');
+  const tabs = clip(vlen(tabBar) + vlen(extras) <= cols ? tabBar + extras : tabBar, cols);
   const detailH = rows >= 30 && v.tab !== 'decision' ? 8 : 0;
   const bodyH = Math.max(3, rows - 3 - detailH - (detailH ? 1 : 0));
-  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : v.tab === 'search' ? searchRows(m, v, bodyH) : v.tab === 'news' ? newsRows(m, v, bodyH) : v.tab === 'edge' ? edgeRows(m, v, bodyH) : v.tab === 'ledger' ? ledgerRows(m, v, bodyH) : v.tab === 'new' ? newRows(m, v, bodyH) : v.tab === 'jumps' ? jumpRows(m, v, bodyH) : v.tab === 'xray' ? xrayRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
+  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : v.tab === 'search' ? searchRows(m, v, bodyH) : v.tab === 'news' ? newsRows(m, v, bodyH) : v.tab === 'edge' ? edgeRows(m, v, bodyH) : v.tab === 'ledger' ? ledgerRows(m, v, bodyH) : v.tab === 'new' ? newRows(m, v, bodyH) : v.tab === 'jumps' ? jumpRows(m, v, bodyH) : v.tab === 'xray' ? xrayRows(m, v, bodyH) : v.tab === 'map' ? mapRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
   const lines = [header, tabs, ...body];
   while (lines.length < 2 + bodyH) lines.push('');
   if (detailH) {
@@ -1001,15 +1020,15 @@ export function render(m: Model, v: View, nowMs: number): string[] {
     for (let i = 0; i < detailH; i++) lines.push(d[i] ?? '');
   }
   while (lines.length < rows - 1) lines.push('');
-  const hint = c.gray(' ↑↓ move · 1-9,0 tabs · x x-ray · a watch wallet · / search · labs: n news e edges j jumps w new · r refresh · f category · h holders (on P: the selected row) · p decide · b people/bots · o link · q quit');
+  const hint = c.gray(' ↑↓ move · 1-9,0 tabs · x x-ray · m map · a watch wallet · / search · labs: n news e edges j jumps w new · r refresh · f category · h holders (on P: the selected row) · p decide · b people/bots · o link · q quit');
   // the status message goes first: the key hint is long and would push a trailing message off a narrow screen
   lines.push(clip(s.message ? `${c.yellow(` ${s.message}`)}  ${hint}` : hint, cols));
   return lines.slice(0, rows).map((l) => (vlen(l) > cols ? clip(l, cols) : l));
 }
 
-export type Key = 'up' | 'down' | 'pageup' | 'pagedown' | 'home' | 'end' | 'tab' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '0' | 'w' | 'j' | 'x';
+export type Key = 'up' | 'down' | 'pageup' | 'pagedown' | 'home' | 'end' | 'tab' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '0' | 'w' | 'j' | 'x' | 'm';
 export function listLength(m: Model, tab: Tab): number {
-  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : tab === 'search' ? (m.search?.results.length ?? 0) : tab === 'news' ? (m.news?.hits.length ?? 0) : tab === 'edge' ? (m.edges?.result?.candidates.length ?? 0) : tab === 'ledger' ? (m.ledger?.report?.strategies.length ?? 0) : tab === 'new' ? flaggedNew(m).length : tab === 'jumps' ? jumpFlags(m).length : tab === 'xray' ? 0 : m.leads.length;
+  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : tab === 'search' ? (m.search?.results.length ?? 0) : tab === 'news' ? (m.news?.hits.length ?? 0) : tab === 'edge' ? (m.edges?.result?.candidates.length ?? 0) : tab === 'ledger' ? (m.ledger?.report?.strategies.length ?? 0) : tab === 'new' ? flaggedNew(m).length : tab === 'jumps' ? jumpFlags(m).length : tab === 'xray' ? 0 : tab === 'map' ? 220 : m.leads.length;
 }
 
 /** Pure keyboard reducer; the shell only translates raw input into these keys. */
@@ -1037,5 +1056,6 @@ export function moveSelection(v: View, key: Key, m: Model): View {
     case 'w': return { ...v, tab: 'new', sel: 0 };
     case 'j': return { ...v, tab: 'jumps', sel: 0 };
     case 'x': return { ...v, tab: 'xray', sel: 0 };
+    case 'm': return { ...v, tab: 'map', sel: 0 };
   }
 }

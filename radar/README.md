@@ -361,3 +361,12 @@ says what stops working. `tui` runs it before launching: if a core service (Gamm
 warns. `--no-check` skips it. Exit code of `doctor` is 1 when a core service is down, so it can be used in scripts.
 
 On the Decision tab (`p`), `h` opens the Holders of the market row currently selected with the arrows (a spread, a total, game 1...), instead of the event's busiest market.
+
+## Bubble map (`m` after loading Holders, `npm run radar -- map <event-slug> [--days N]`)
+
+A bubble map for Polymarket: the holders of the loaded market as bubbles (⬤ ● ◉ ○ by position size), grouped when the chain shows they are connected. Press `h` on a market (or pick a row on `p` and press `h`), then `m`.
+It reads USDC Transfer logs from a public Polygon RPC (`RADAR_POLYGON_RPC` to use your own; public nodes cap each call at 10,000 blocks, so 14 days is ~42 calls, about 30 seconds, with progress shown).
+Two holders are in one group when the same wallet funded both, or one sent USDC to the other. Wallets that pay many strangers (bridges, relayers, exchanges) are detected two ways (they also pay a sample of unrelated
+traders of the same market, or they paid 12+ different wallets in the latest window) and are not treated as links; the screen says how many were ignored. A group that holds BOTH sides of the market is highlighted.
+What it proves: money came through the same wallet. What it does not: one owner. Friends, a shared service or one employer link too, and only the scanned window is seen, so "no links" means none found.
+Wallets that are protocol contracts (exchange/adapter holding shares) are skipped from Holders instead of showing an error.

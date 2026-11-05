@@ -195,6 +195,13 @@ export interface FillLine {
   size: number;
 }
 
+export class ProtocolContractError extends Error {
+  constructor(url: string) {
+    super(`protocol contract address: ${url}`);
+    this.name = 'ProtocolContractError';
+  }
+}
+
 export class NotFoundError extends Error {
   constructor(url: string) {
     super(`not found: ${url}`);
@@ -255,6 +262,8 @@ export class PolymarketClient {
       } catch (error) {
         // A 404 is an answer ("no such profile"), not a glitch: retrying it only burns seconds.
         if (error instanceof Error && /^HTTP 404/.test(error.message)) throw new NotFoundError(url);
+        // A protocol contract (exchange, adapter) has no trader profile; the API says so and will say so again.
+        if (error instanceof Error && /^HTTP 400.*protocol contract/i.test(error.message)) throw new ProtocolContractError(url);
         // 410 Gone: the endpoint was retired. Retrying cannot help, so fail at once with a message that names the cause.
         if (error instanceof Error && /^HTTP 410/.test(error.message)) throw new Error(`endpoint retired (HTTP 410): ${url}`);
         lastError = error;
@@ -534,6 +543,10 @@ export class PolymarketClient {
 
 export const httpFetchJson: FetchJson = async (url) => {
   const res = await fetch(url, { headers: { 'user-agent': 'polymarket-radar/0.1' } });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) {
+    // a 400 carries the reason in its body ("user is a protocol contract address"); keep it so callers can tell it from a glitch
+    const reason = res.status === 400 ? await res.text().then((t) => t.slice(0, 200)).catch(() => '') : '';
+    throw new Error(`HTTP ${res.status}${reason ? `: ${reason}` : ''}`);
+  }
   return res.json();
 };

@@ -105,3 +105,17 @@ describe('loading top holders', () => {
     store.close();
   });
 });
+
+describe('protocol contract holders', () => {
+  it('are skipped without an error, and not retried', async () => {
+    const { PolymarketClient, ProtocolContractError } = await import('../../radar/polymarket');
+    let calls = 0;
+    const f = async () => {
+      calls++;
+      throw new Error('HTTP 400: {"error":"user is a protocol contract address: 0xabc","code":"invalid_request"}');
+    };
+    const c = new PolymarketClient(f, { minIntervalMs: 0, sleep: async () => undefined, now: () => 0 });
+    await expect(c.positions(`0x${'a'.repeat(40)}`)).rejects.toBeInstanceOf(ProtocolContractError);
+    expect(calls).toBe(1);
+  });
+});

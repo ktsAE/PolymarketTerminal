@@ -110,7 +110,8 @@ describe('keyboard reducer', () => {
     expect(moveSelection({ ...v, tab: 'decision' }, 'tab', m).tab).toBe('search');
     expect(moveSelection({ ...v, tab: 'search' }, 'tab', m).tab).toBe('ledger'); // the lab tabs (news, edge, jumps, new) are not in the cycle
     expect(moveSelection({ ...v, tab: 'ledger' }, 'tab', m).tab).toBe('xray');
-    expect(moveSelection({ ...v, tab: 'xray' }, 'tab', m).tab).toBe('anomalies');
+    expect(moveSelection({ ...v, tab: 'xray' }, 'tab', m).tab).toBe('map');
+    expect(moveSelection({ ...v, tab: 'map' }, 'tab', m).tab).toBe('anomalies');
     for (const lab of ['news', 'edge', 'jumps', 'new'] as const) expect(moveSelection({ ...v, tab: lab }, 'tab', m).tab).toBe('anomalies');
     expect(moveSelection(v, '8', m).tab).toBe('news'); // lab keys still open them
     expect(moveSelection(v, '9', m).tab).toBe('edge');

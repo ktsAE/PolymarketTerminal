@@ -3,7 +3,7 @@ import { classFlow, type ClassFlow } from './classflow.ts';
 import { identityFor } from './identity.ts';
 import { matchPeople, type NameMatch, type Person } from './people.ts';
 import { classifyWallet, isPerson, summarizeActivity, type WalletClass } from './profile.ts';
-import type { PolymarketClient } from './polymarket.ts';
+import { ProtocolContractError, type PolymarketClient } from './polymarket.ts';
 import type { HolderProfile, RadarStore } from './store.ts';
 
 /**
@@ -155,7 +155,8 @@ export async function loadHolders(client: PolymarketClient, store: RadarStore, s
           matches: opts.people?.length ? matchPeople({ name: identity?.name ?? profile.name ?? h.name, pseudonym: identity?.pseudonym ?? null, xUsername: identity?.xUsername ?? null, bio: identity?.bio ?? null }, opts.people) : [],
         });
       } catch (error) {
-        view.error = error instanceof Error ? error.message : String(error);
+        // an exchange or adapter contract holding shares has no trader profile: leave it out instead of reporting an error
+        if (!(error instanceof ProtocolContractError)) view.error = error instanceof Error ? error.message : String(error);
       }
       view.loaded++;
       view.rows.sort((a, b) => (b.posUsd ?? b.shares * (b.curPrice ?? 0)) - (a.posUsd ?? a.shares * (a.curPrice ?? 0)));

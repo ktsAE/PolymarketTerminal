@@ -9,6 +9,7 @@ import { logFlagged, scanNewMarkets } from '../newmarkets.ts';
 import { loadHolders } from '../holders.ts';
 import { pickMarket } from './pick.ts';
 import { loadXray } from '../xray.ts';
+import { loadMap } from '../loadmap.ts';
 import { addWatched, isAddress } from '../walletwatch.ts';
 import { loadNews } from '../newsview.ts';
 import { loadPeople, type Person } from '../people.ts';
@@ -126,6 +127,7 @@ function snapshotModel(store: RadarStore, prev: Model | null, nowMs: number, sta
     newMarkets: prev?.newMarkets ?? null,
     jumps: prev?.jumps ?? null,
     xray: prev?.xray ?? null,
+    map: prev?.map ?? null,
   };
 }
 
@@ -405,6 +407,7 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     paint();
   };
   let xrayToken = 0;
+  let mapToken = 0;
   const openXray = (wallet: string) => {
     const token = ++xrayToken;
     model = { ...model, xray: { wallet, stage: 'starting', done: false, error: null, report: null } };
@@ -505,6 +508,26 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
           setStatus({ message: `could not save the watchlist: ${error instanceof Error ? error.message : String(error)}` });
         }
         return paint();
+      }
+      if (d === 'm') {
+        const h = model.holders;
+        if (!h || h.rows.length < 2) {
+          setStatus({ message: 'open Holders (h) on a market first, then press m for its bubble map' });
+          return paint();
+        }
+        const token = ++mapToken;
+        model = { ...model, map: { cid: h.cid, question: h.question || h.eventTitle, stage: 'starting', done: false, error: null, scan: null, failed: 0, days: 14, map: null, holders: [] } };
+        view = { ...view, tab: 'map', sel: 0 };
+        paint();
+        void loadMap(client, h.cid, h.question || h.eventTitle, h.rows, {
+          cancelled: () => token !== mapToken,
+          onProgress: (mv) => {
+            if (token !== mapToken) return;
+            model = { ...model, map: mv };
+            paint();
+          },
+        });
+        return;
       }
       if (d === 'x') {
         const holder = view.tab === 'holders' ? visibleHolders(model)[view.sel] : undefined;
