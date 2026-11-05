@@ -16,6 +16,7 @@ import { JUMPS_STANDING, LEDGER_STANDING, NEW_STANDING, unmappedNote } from './t
 import { logFlagged, NEWMARKET_THRESHOLDS, NEWMARKETS_PATH, NEWMARKETS_RESULTS_PATH, scanNewMarkets, scoreNewMarketLog, type NewMarketScore, type ScanSummary } from './newmarkets.ts';
 import { cleanHandle, DEFAULT_HANDLES_PATH, DEFAULT_POSTS_PATH, loadHandles, loadPosts, pollAccounts, type AccountPollResult } from './xaccounts.ts';
 import { loadHolders, peopleOnly } from './holders.ts';
+import { coreHealthy, formatHealth, runHealth } from './health.ts';
 import { formatXray, loadXray } from './xray.ts';
 import { addWatched, describeTrade, loadWatched, notify, pollWatched, removeWatched, WALLETS_PATH } from './walletwatch.ts';
 import { loadNews } from './newsview.ts';
@@ -471,8 +472,27 @@ async function main(): Promise<void> {
         console.log(`reference config: ${REFS_PATH} (${loadRefs().length} entries). Matching uses display name, pseudonym, linked X handle and bio only: Polymarket exposes no e-mail.`);
         return;
       }
+      case 'doctor': {
+        const res = await runHealth();
+        for (const l of formatHealth(res)) console.log(l);
+        process.exitCode = coreHealthy(res) ? 0 : 1;
+        return;
+      }
       case 'tui':
       case 'scan': {
+        if (cmd === 'tui' && !args.includes('--no-check') && !args.includes('--once')) {
+          const res = await runHealth(undefined, 8_000);
+          if (res.some((r) => !r.ok)) {
+            console.error(formatHealth(res).join('\n'));
+            if (!coreHealthy(res) && !args.includes('--force')) {
+              console.error('\nnot launching: a core service is down. Try again later, or launch anyway with --force (screens will be empty or show errors).');
+              process.exitCode = 1;
+              return;
+            }
+            console.error('\nlaunching anyway: the parts listed as DOWN will show errors');
+            await new Promise((r) => setTimeout(r, 1500));
+          }
+        }
         const cols = flag(args, 'cols', 0);
         const rows = flag(args, 'rows', 0);
         const val = (n: string) => { const i = args.indexOf(`--${n}`); return i >= 0 ? args[i + 1] : undefined; };
@@ -655,7 +675,7 @@ async function main(): Promise<void> {
         return;
       }
       default:
-        console.log('commands: tui [--interval S --no-news] | daemon [--every SECS] | forward-log | forward-settle | ledger | new-scan [--hours N --top K] | new-score | jumps [--top N] | jumps-settle | jumps-score | x-add <handle> [note] | x-list | x-poll | decide <slug> [--wallets] | research <slug> | edges [--top N --events N --min-edge D --min-liq USD --verify K --no-verify] | people list|add|remove|check <wallet> | holders <slug> [--all] | scan [--cols N --rows N --tab games|prints|leads|decision|edge|ledger|new|jumps --slug S] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
+        console.log('commands: doctor | tui [--interval S --no-news --force --no-check] | daemon [--every SECS] | forward-log | forward-settle | ledger | new-scan [--hours N --top K] | new-score | jumps [--top N] | jumps-settle | jumps-score | x-add <handle> [note] | x-list | x-poll | decide <slug> [--wallets] | research <slug> | edges [--top N --events N --min-edge D --min-liq USD --verify K --no-verify] | people list|add|remove|check <wallet> | holders <slug> [--all] | scan [--cols N --rows N --tab games|prints|leads|decision|edge|ledger|new|jumps --slug S] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
     }
   } finally {
     store.close();

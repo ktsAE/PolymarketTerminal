@@ -28,6 +28,7 @@
     "start:debug": "npm run build && electron . --remote-debugging-port=9222",
     "radar": "node --no-warnings radar/cli.ts",
     "tui": "node --no-warnings radar/cli.ts tui",
+    "doctor": "node --no-warnings radar/cli.ts doctor",
     "scan": "node --no-warnings radar/cli.ts scan",
     "test:tui": "python3 scripts/tui-smoke.py"
   },

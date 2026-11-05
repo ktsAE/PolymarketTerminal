@@ -352,3 +352,10 @@ News, Edge, Jumps and New markets are experiments that found no edge. They are o
 Three or more holders on the same side whose profiles were created within 24 hours of each other and are under 14 days old are shown as one line: how many, how tightly they were created, the side, the combined
 position, and how many of them have traded only 1-2 markets. One person splitting a bet across fresh accounts looks like this, but so does a referral wave or friends signing up together, and a profile
 creation date is not an on-chain funding trace. Treat it as a pointer: open each wallet's X-ray (`x`) and look at who else holds the market. It only looks at the holders already loaded.
+
+## Preflight (`npm run doctor`, also run by `tui`)
+
+Probes the 7 endpoints the radar depends on (Gamma events, CLOB time, Data API v2 trades/holders/activity/positions/user-pnl) and checks the JSON shape the code reads, so it can tell
+"their server is down or blocked from this network" (connection reset, timeout, HTTP 5xx) from "an endpoint changed" (HTTP 410/404 or a different shape, like the v1 retirement). Each failure
+says what stops working. `tui` runs it before launching: if a core service (Gamma events, Data trades) is down it does not start, unless you pass `--force`; if only a side service is down it starts and
+warns. `--no-check` skips it. Exit code of `doctor` is 1 when a core service is down, so it can be used in scripts.
