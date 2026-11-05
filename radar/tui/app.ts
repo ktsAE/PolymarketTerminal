@@ -534,6 +534,12 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
         const next = pickMarket(model.holders.markets, model.holders.cid, d);
         return next ? openHolders(model.holders.slug, next.cid) : paint();
       }
+      if (d === 'h' && view.tab === 'decision' && model.decision?.decision) {
+        // on the Decision tab, h opens the holders of the exact market row selected with the arrows (spread, total, game 1...)
+        const ms = model.decision.decision.markets;
+        const cid = ms[Math.min(view.sel, ms.length - 1)]?.cid;
+        return openHolders(model.decision.slug, cid);
+      }
       if (d === 'h') {
         const slug = selectedSlug(model, view);
         if (!slug) {

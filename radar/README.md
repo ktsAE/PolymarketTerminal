@@ -359,3 +359,5 @@ Probes the 7 endpoints the radar depends on (Gamma events, CLOB time, Data API v
 "their server is down or blocked from this network" (connection reset, timeout, HTTP 5xx) from "an endpoint changed" (HTTP 410/404 or a different shape, like the v1 retirement). Each failure
 says what stops working. `tui` runs it before launching: if a core service (Gamma events, Data trades) is down it does not start, unless you pass `--force`; if only a side service is down it starts and
 warns. `--no-check` skips it. Exit code of `doctor` is 1 when a core service is down, so it can be used in scripts.
+
+On the Decision tab (`p`), `h` opens the Holders of the market row currently selected with the arrows (a spread, a total, game 1...), instead of the event's busiest market.
