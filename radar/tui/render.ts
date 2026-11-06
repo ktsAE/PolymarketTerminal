@@ -10,20 +10,19 @@ import { formatClassFlow } from '../classflow.ts';
 import { CLUSTER_CAVEAT, findClusters, formatCluster } from '../clusters.ts';
 import { formatInfo } from '../marketinfo.ts';
 import { costLines, formatCost } from '../cost.ts';
-import { formatFundMap } from '../fundmap.ts';
-import type { MapView } from '../loadmap.ts';
+import { summarizeScan, usdShort, type NewWalletsResult } from '../newwallets.ts';
 import { formatXray, type XrayReport } from '../xray.ts';
 import { peopleOnly, type HolderRow, type HoldersView } from '../holders.ts';
 import { accountAge, dateOf } from '../identity.ts';
 import type { NewsRow, PrintRow } from '../store.ts';
 import { c, clip, fit, sparkline, vlen } from './ansi.ts';
 
-export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search' | 'news' | 'edge' | 'ledger' | 'new' | 'jumps' | 'xray' | 'map';
+export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search' | 'news' | 'edge' | 'ledger' | 'new' | 'jumps' | 'xray' | 'wallets';
 /** Experiments that found no edge: out of the tab bar and the Tab cycle, still opened by their keys (n news, e edges, j jumps, w new markets). */
 export const LABS: readonly Tab[] = ['news', 'edge', 'jumps', 'new'];
-export const TABS: readonly Tab[] = ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new', 'jumps', 'xray', 'map'];
+export const TABS: readonly Tab[] = ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new', 'jumps', 'xray', 'wallets'];
 export const MAIN_TABS: readonly Tab[] = TABS.filter((t) => !LABS.includes(t));
-const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Anomalies', games: '2 Games', prints: '3 Big prints', holders: '4 Holders', leads: '5 Leads', decision: '6 Decision', search: '7 Search', news: '8 News', edge: '9 Edge', ledger: '0 Ledger', new: 'W New', jumps: 'j Jumps', xray: 'x X-ray', map: 'm Map' };
+const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Anomalies', games: '2 Games', prints: '3 Big prints', holders: '4 Holders', leads: '5 Leads', decision: '6 Decision', search: '7 Search', news: '8 News', edge: '9 Edge', ledger: '0 Ledger', new: 'W New', jumps: 'j Jumps', xray: 'x X-ray', wallets: 'w Newbies' };
 
 export interface TaggedPrint extends PrintRow {
   tag: WalletTag;
@@ -68,8 +67,8 @@ export interface Model {
   jumps?: JumpsView | null;
   /** X-ray tab: the record of one wallet (null until `x` on a holder, or a 0x address searched with `/`). */
   xray?: XrayView | null;
-  /** Map tab: bubble map of the loaded holders' funding links (null until `m`). */
-  map?: MapView | null;
+  /** New wallets tab: markets ranked by the money new accounts put in (null until `w`). */
+  newWallets?: NewWalletsView | null;
 }
 
 export interface JumpsView {
@@ -795,19 +794,68 @@ export function xrayRows(m: Model, v: View, height: number): string[] {
   return out.slice(0, Math.max(1, height));
 }
 
-export function mapRows(m: Model, v: View, height: number): string[] {
-  const x = m.map;
-  if (!x) return [c.gray('  on Holders (h) press m: scans the chain for who funded the holders and draws which of them are connected (bubble map)')];
-  const prog = x.scan ? ` ${x.scan.done}/${x.scan.total} windows, ${x.scan.found} transfers` : '';
-  const out = [clip(`${c.bold(' Bubble map')}  ${x.question}${x.done ? (x.error ? c.red(`  ${x.error}`) : c.gray(`  last ${x.days} days of USDC${x.failed ? `, ${x.failed} window(s) failed` : ''}`)) : c.yellow(`  ${x.stage}…${prog}`)}`, v.cols)];
-  if (!x.map) return out;
-  const lines = formatFundMap(x.map, x.holders);
-  const top = Math.max(0, Math.min(v.sel, Math.max(0, lines.length - (height - 1))));
-  for (const l of lines.slice(top, top + height - 1)) {
-    const colored = l.startsWith('GROUP') ? c.magenta(c.bold(l)) : l.startsWith('UNLINKED') || l.startsWith('ignored') || l.startsWith('A link') ? c.gray(l) : l.includes('holds BOTH') ? c.yellow(l) : l;
-    out.push(clip(` ${colored}`, v.cols));
+export interface NewWalletsView {
+  stage: string;
+  done: boolean;
+  error: string | null;
+  result: NewWalletsResult | null;
+  at: number | null;
+}
+
+export const newWalletRows = (m: Model): NewWalletsResult['rows'] => m.newWallets?.result?.rows ?? [];
+
+export function walletsRows(m: Model, v: View, height: number): string[] {
+  const x = m.newWallets;
+  if (!x) return [c.gray('  press w: lists the markets that new accounts are putting money into right now; Enter opens a market\'s holders')];
+  const r = x.result;
+  const out = [clip(`${c.bold(' New wallets')}  ${x.done ? (x.error ? c.red(x.error) : '') : c.yellow(`${x.stage}…`)}${r && r.toAge ? c.yellow(`  ${r.toAge} wallets not aged yet`) : ''}`, v.cols)];
+  if (!r) return out;
+  if (height >= 12) out.push(clip(` ${c.gray(summarizeScan(r))}`, v.cols));
+  const rows = r.rows;
+  const cols = layout(
+    [
+      { key: 'usd', head: 'NEW$', w: 7, align: 'right', keep: 10 },
+      { key: 'n', head: 'NEW', w: 4, align: 'right', keep: 9 },
+      { key: 'all', head: '/ALL', w: 5, align: 'right', keep: 4 },
+      { key: 'sh', head: 'SHARE', w: 5, align: 'right', keep: 6 },
+      { key: 'lift', head: 'LIFT', w: 5, align: 'right', keep: 8 },
+      { key: 'lean', head: 'LEANS TO', w: 18, keep: 5 },
+      { key: 'q', head: 'MARKET', w: 40, keep: 11, flex: true },
+    ],
+    v.cols,
+  );
+  out.push(headOf(cols));
+  const detail = rows[v.sel];
+  const detailH = detail && height >= 20 ? Math.min(detail.top.length, 6) + 3 : 0;
+  const room = Math.max(1, height - out.length - detailH);
+  const start = Math.max(0, Math.min(v.sel - Math.floor(room / 2), Math.max(0, rows.length - room)));
+  const w = (k: string) => cols.find((c2) => c2.key === k)?.w ?? 0;
+  for (const [i, row] of rows.slice(start, start + room).entries()) {
+    const liftTxt = `x${row.lift.toFixed(1)}`;
+    out.push(
+      rowOf(
+        cols,
+        {
+          usd: c.bold(fit(usdShort(row.newUsd), w('usd'), 'right')),
+          n: fit(String(row.newWallets), w('n'), 'right'),
+          all: fit(String(row.wallets), w('all'), 'right'),
+          sh: fit(`${Math.round(row.newShare * 100)}%`, w('sh'), 'right'),
+          lift: (row.lift >= 3 ? c.green : row.lift >= 1.5 ? c.yellow : (s: string) => s)(fit(liftTxt, w('lift'), 'right')),
+          lean: fit(row.lean ? `${row.lean.outcome} ${Math.round(row.lean.share * 100)}%` : '-', w('lean')),
+          q: fit(row.question, w('q')),
+        },
+        start + i === v.sel,
+      ),
+    );
   }
-  return out;
+  if (rows.length === 0 && x.done) out.push(c.gray(`  no market had ${3}+ new wallets with $100+ in this window`));
+  if (detail && detailH) {
+    while (out.length < height - detailH) out.push('');
+    out.push(clip(` ${c.bold(detail.question)}  ${c.gray(`polymarket.com/event/${detail.eventSlug}`)}`, v.cols));
+    for (const e of detail.top.slice(0, 6)) out.push(clip(`   ${fit(e.wallet.slice(0, 6) + '…' + e.wallet.slice(-4), 12)} ${fit(e.name ?? '', 16)} ${fit(`${e.ageDays}d old`, 8)} ${fit(usdShort(e.usd), 7, 'right')}  leans ${e.leanOutcome}  ${c.gray(`${e.trades} fill(s)`)}`, v.cols));
+    out.push(clip(` ${c.gray(`${Math.round(detail.topShare * 100)}% of the new money is the biggest wallet. LIFT = this market's new-money share vs the platform's ${(r.platformNewShare * 100).toFixed(1)}%. Enter: holders. New accounts are mostly ordinary people.`)}`, v.cols));
+  }
+  return out.slice(0, height);
 }
 
 export function printRows(m: Model, v: View, height: number): string[] {
@@ -1007,11 +1055,11 @@ export function render(m: Model, v: View, nowMs: number): string[] {
   );
   const tabBar = ' ' + [...MAIN_TABS, ...(LABS.includes(v.tab) ? [v.tab] : [])].map((t) => (t === v.tab ? c.inverse(` ${TAB_LABEL[t]} `) : c.gray(` ${TAB_LABEL[t]} `))).join('');
   // the counters and the labs hint only fit when there is room: the tabs themselves always win
-  const extras = c.gray(`${LABS.includes(v.tab) ? '' : '  labs: n e j w'}   ${[...m.anomalies, ...m.games].filter((a) => a.level === 'HOT').length} hot · ${[...m.anomalies, ...m.games].filter((a) => a.level === 'WATCH').length} watch`) + (m.filter ? c.yellow(`   filter: ${m.filter}`) : '');
+  const extras = c.gray(`${LABS.includes(v.tab) ? '' : '  labs: n e j u'}   ${[...m.anomalies, ...m.games].filter((a) => a.level === 'HOT').length} hot · ${[...m.anomalies, ...m.games].filter((a) => a.level === 'WATCH').length} watch`) + (m.filter ? c.yellow(`   filter: ${m.filter}`) : '');
   const tabs = clip(vlen(tabBar) + vlen(extras) <= cols ? tabBar + extras : tabBar, cols);
   const detailH = rows >= 30 && v.tab !== 'decision' ? 8 : 0;
   const bodyH = Math.max(3, rows - 3 - detailH - (detailH ? 1 : 0));
-  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : v.tab === 'search' ? searchRows(m, v, bodyH) : v.tab === 'news' ? newsRows(m, v, bodyH) : v.tab === 'edge' ? edgeRows(m, v, bodyH) : v.tab === 'ledger' ? ledgerRows(m, v, bodyH) : v.tab === 'new' ? newRows(m, v, bodyH) : v.tab === 'jumps' ? jumpRows(m, v, bodyH) : v.tab === 'xray' ? xrayRows(m, v, bodyH) : v.tab === 'map' ? mapRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
+  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : v.tab === 'search' ? searchRows(m, v, bodyH) : v.tab === 'news' ? newsRows(m, v, bodyH) : v.tab === 'edge' ? edgeRows(m, v, bodyH) : v.tab === 'ledger' ? ledgerRows(m, v, bodyH) : v.tab === 'new' ? newRows(m, v, bodyH) : v.tab === 'jumps' ? jumpRows(m, v, bodyH) : v.tab === 'xray' ? xrayRows(m, v, bodyH) : v.tab === 'wallets' ? walletsRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
   const lines = [header, tabs, ...body];
   while (lines.length < 2 + bodyH) lines.push('');
   if (detailH) {
@@ -1020,15 +1068,15 @@ export function render(m: Model, v: View, nowMs: number): string[] {
     for (let i = 0; i < detailH; i++) lines.push(d[i] ?? '');
   }
   while (lines.length < rows - 1) lines.push('');
-  const hint = c.gray(' ↑↓ move · 1-9,0 tabs · x x-ray · m map · a watch wallet · / search · labs: n news e edges j jumps w new · r refresh · f category · h holders (on P: the selected row) · p decide · b people/bots · o link · q quit');
+  const hint = c.gray(' ↑↓ move · 1-9,0 tabs · x x-ray · w new wallets · a watch wallet · / search · labs: n news e edges j jumps u new markets · r refresh · f category · h holders (on P: the selected row) · p decide · b people/bots · o link · q quit');
   // the status message goes first: the key hint is long and would push a trailing message off a narrow screen
   lines.push(clip(s.message ? `${c.yellow(` ${s.message}`)}  ${hint}` : hint, cols));
   return lines.slice(0, rows).map((l) => (vlen(l) > cols ? clip(l, cols) : l));
 }
 
-export type Key = 'up' | 'down' | 'pageup' | 'pagedown' | 'home' | 'end' | 'tab' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '0' | 'w' | 'j' | 'x' | 'm';
+export type Key = 'up' | 'down' | 'pageup' | 'pagedown' | 'home' | 'end' | 'tab' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '0' | 'w' | 'j' | 'x' | 'u';
 export function listLength(m: Model, tab: Tab): number {
-  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : tab === 'search' ? (m.search?.results.length ?? 0) : tab === 'news' ? (m.news?.hits.length ?? 0) : tab === 'edge' ? (m.edges?.result?.candidates.length ?? 0) : tab === 'ledger' ? (m.ledger?.report?.strategies.length ?? 0) : tab === 'new' ? flaggedNew(m).length : tab === 'jumps' ? jumpFlags(m).length : tab === 'xray' ? 0 : tab === 'map' ? 220 : m.leads.length;
+  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : tab === 'search' ? (m.search?.results.length ?? 0) : tab === 'news' ? (m.news?.hits.length ?? 0) : tab === 'edge' ? (m.edges?.result?.candidates.length ?? 0) : tab === 'ledger' ? (m.ledger?.report?.strategies.length ?? 0) : tab === 'new' ? flaggedNew(m).length : tab === 'jumps' ? jumpFlags(m).length : tab === 'xray' ? 0 : tab === 'wallets' ? newWalletRows(m).length : m.leads.length;
 }
 
 /** Pure keyboard reducer; the shell only translates raw input into these keys. */
@@ -1053,9 +1101,9 @@ export function moveSelection(v: View, key: Key, m: Model): View {
     case '8': return { ...v, tab: 'news', sel: 0 };
     case '9': return { ...v, tab: 'edge', sel: 0 };
     case '0': return { ...v, tab: 'ledger', sel: 0 };
-    case 'w': return { ...v, tab: 'new', sel: 0 };
+    case 'w': return { ...v, tab: 'wallets', sel: 0 };
     case 'j': return { ...v, tab: 'jumps', sel: 0 };
     case 'x': return { ...v, tab: 'xray', sel: 0 };
-    case 'm': return { ...v, tab: 'map', sel: 0 };
+    case 'u': return { ...v, tab: 'new', sel: 0 };
   }
 }

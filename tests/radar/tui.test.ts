@@ -110,8 +110,8 @@ describe('keyboard reducer', () => {
     expect(moveSelection({ ...v, tab: 'decision' }, 'tab', m).tab).toBe('search');
     expect(moveSelection({ ...v, tab: 'search' }, 'tab', m).tab).toBe('ledger'); // the lab tabs (news, edge, jumps, new) are not in the cycle
     expect(moveSelection({ ...v, tab: 'ledger' }, 'tab', m).tab).toBe('xray');
-    expect(moveSelection({ ...v, tab: 'xray' }, 'tab', m).tab).toBe('map');
-    expect(moveSelection({ ...v, tab: 'map' }, 'tab', m).tab).toBe('anomalies');
+    expect(moveSelection({ ...v, tab: 'xray' }, 'tab', m).tab).toBe('wallets');
+    expect(moveSelection({ ...v, tab: 'wallets' }, 'tab', m).tab).toBe('anomalies');
     for (const lab of ['news', 'edge', 'jumps', 'new'] as const) expect(moveSelection({ ...v, tab: lab }, 'tab', m).tab).toBe('anomalies');
     expect(moveSelection(v, '8', m).tab).toBe('news'); // lab keys still open them
     expect(moveSelection(v, '9', m).tab).toBe('edge');
@@ -344,10 +344,10 @@ describe('new-markets tab', () => {
     }
   });
 
-  it('opens with key w and moves within the flagged markets only', () => {
+  it('opens with key u and moves within the flagged markets only', () => {
     const m = withNew([...many(), row(99, { flagged: false })]);
     const v: View = { tab: 'anomalies', sel: 3, cols: 120, rows: 40 };
-    expect(moveSelection(v, 'w', m)).toMatchObject({ tab: 'new', sel: 0 });
+    expect(moveSelection(v, 'u', m)).toMatchObject({ tab: 'new', sel: 0 });
     expect(moveSelection({ ...v, tab: 'new', sel: 0 }, 'end', m).sel).toBe(39);
     expect(moveSelection({ ...v, tab: 'new', sel: 0 }, 'end', { ...m, newMarkets: null }).sel).toBe(0);
   });
@@ -532,5 +532,42 @@ describe('holders tab: cluster, market strip and flow blocks', () => {
     expect(text).toMatch(/UMA oracle: proposed/);
     expect(text).toMatch(/FLOW BY WHO, last 24h/);
     expect(text).toMatch(/HUMAN\s+Yes\s+\$100/);
+  });
+});
+
+describe('new wallets tab', () => {
+  const top = [
+    { wallet: `0x${'a'.repeat(40)}`, name: 'fresh1', ageDays: 2, usd: 4200, leanOutcome: 'Yes', trades: 3 },
+    { wallet: `0x${'b'.repeat(40)}`, name: null, ageDays: 5, usd: 800, leanOutcome: 'Yes', trades: 1 },
+  ];
+  const rows = [
+    { cid: 'c1', eventSlug: 'some-event', question: 'Will the thing happen by Friday?', wallets: 40, newWallets: 9, knownUsd: 30_000, newUsd: 12_500, newShare: 0.42, lift: 4.6, lean: { outcome: 'Yes', share: 0.88 }, topShare: 0.34, top },
+    { cid: 'c2', eventSlug: 'other', question: 'Second market', wallets: 90, newWallets: 4, knownUsd: 50_000, newUsd: 900, newShare: 0.02, lift: 0.7, lean: null, topShare: 0.5, top: [] },
+  ];
+  const result = { rows, windowMins: 30, maxAgeDays: 14, trades: 22_000, markets: 900, wallets: 3_100, aged: 3_000, toAge: 100, coverage: 0.93, platformNewShare: 0.09, newWalletsTotal: 210 };
+  const m = { anomalies: [], games: [], prints: [], leads: [], holders: null, showBots: false, oiSeries: [], filter: null, status: { lastPollAt: 1, nextPollAt: null, busy: false, error: null, events: 0, historySecs: 0, printsWindowMin: null, message: null }, newWallets: { stage: 'done', done: true, error: null, result, at: 1 } } as unknown as Model;
+  it('lists markets by new money with share, lift and lean, and details the selected one', () => {
+    const text = render(m, { tab: 'wallets', sel: 0, cols: 140, rows: 40 }, Date.now()).map(strip).join('\n');
+    expect(text).toMatch(/New wallets/);
+    expect(text).toMatch(/last 30 min: 22,000 fills/);
+    expect(text).toMatch(/100 wallets not aged yet/);
+    expect(text).toMatch(/\$12\.5k\s+9\s+40\s+42%\s+x4\.6\s+Yes 88%\s+Will the thing happen by Friday\?/);
+    expect(text).toMatch(/0xaaaa…aaaa\s+fresh1\s+2d old\s+\$4\.2k\s+leans Yes/);
+    expect(text).toMatch(/34% of the new money is the biggest wallet.*platform's 9\.0%.*Enter: holders/);
+  });
+  it('explains itself before the first scan, shows progress, and stays inside its box', () => {
+    const none = { ...m, newWallets: null } as Model;
+    expect(strip(render(none, { tab: 'wallets', sel: 0, cols: 120, rows: 30 }, Date.now()).join('\n'))).toMatch(/press w: lists the markets that new accounts/);
+    const busy = { ...m, newWallets: { stage: 'looking up wallet ages: 50/900', done: false, error: null, result: null, at: null } } as unknown as Model;
+    expect(strip(render(busy, { tab: 'wallets', sel: 0, cols: 120, rows: 30 }, Date.now()).join('\n'))).toMatch(/looking up wallet ages: 50\/900…/);
+    for (const [cols, rowsN] of [[40, 10], [60, 14], [80, 24], [140, 40], [220, 60]]) {
+      for (const sel of [0, 1]) {
+        const lines = render(m, { tab: 'wallets', sel, cols, rows: rowsN }, Date.now());
+        expect(lines, `${cols}x${rowsN}`).toHaveLength(rowsN);
+        for (const l of lines) expect(vlen(l)).toBeLessThanOrEqual(cols);
+      }
+    }
+    expect(moveSelection({ tab: 'anomalies', sel: 0, cols: 120, rows: 40 }, 'w', m).tab).toBe('wallets');
+    expect(moveSelection({ tab: 'wallets', sel: 0, cols: 120, rows: 40 }, 'end', m).sel).toBe(1);
   });
 });

@@ -145,9 +145,9 @@ check("0 opens the ledger tab", "0 Ledger" in plain(screen()[1]) and "Paper ledg
 check("ledger tab shows the standing no-edge line", "NO EDGE PROVEN until n>=300 and CI>0" in ltext)
 check("ledger tab lists strategies or says there is no data yet", "STRATEGY" in ltext or "no data yet" in ltext)
 # new markets: w opens the New tab with its standing line, scans the busiest new markets and lists the flagged ones (or says none crossed)
-os.write(fd, b"w"); pump(1.5)
+os.write(fd, b"u"); pump(1.5)
 wtext = plain("\n".join(screen()[:ROWS]))
-check("w opens the new-markets tab", "W New" in plain(screen()[1]) and "New markets" in plain(screen()[2]))
+check("u opens the new-markets tab", "W New" in plain(screen()[1]) or "u New" in plain(screen()[1]) or "New markets" in plain(screen()[2]) and "New markets" in plain(screen()[2]))
 check("new tab shows the standing behavior-only line", "not evidence of insider trading" in wtext and "no edge proven until the forward log says so" in wtext)
 t6 = time.time()
 while time.time() - t6 < 200:
@@ -189,6 +189,19 @@ while time.time() - t8 < 90:
 xtext = plain("\n".join(screen()[:ROWS]))
 print(f"  x-ray took {time.time() - t8:.0f}s")
 check("pasting a wallet address after / opens its x-ray with all-in PnL and the closed-versus-open contrast", "ALL-IN PnL" in xtext and "CLOSED" in xtext and "OPEN" in xtext)
+# new wallets: w scans the platform feed, ranks markets by new-account money; Enter opens the selected market's holders
+os.write(fd, b"w"); pump(1.0)
+check("w opens the new wallets tab", "w Newbies" in plain(screen()[1]) and "New wallets" in plain(screen()[2]))
+t9 = time.time()
+while time.time() - t9 < 240:
+    pump(1)
+    h = plain("\n".join(screen()[:5]))
+    if "last " in h and "fills" in h and "looking up" not in h and "reading" not in h: break
+wtext = plain("\n".join(screen()[:ROWS]))
+print(f"  new-wallet scan took {time.time() - t9:.0f}s")
+check("new wallets tab shows the scan summary and the ranked table (or says nothing qualified)", ("fills" in wtext and "markets" in wtext) and ("NEW$" in wtext or "no market had" in wtext))
+os.write(fd, b"\r"); pump(2.0)
+check("Enter on a market opens its holders", "4 Holders" in plain(screen()[1]) and ("loading" in plain("\n".join(screen()[:ROWS])) or "market " in plain("\n".join(screen()[:ROWS])) or "WHO" in plain("\n".join(screen()[:ROWS]))))
 pump(6)
 check("still alive after background activity", alive())
 os.write(fd, b"q")

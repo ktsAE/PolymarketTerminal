@@ -17,6 +17,7 @@ import { logFlagged, NEWMARKET_THRESHOLDS, NEWMARKETS_PATH, NEWMARKETS_RESULTS_P
 import { cleanHandle, DEFAULT_HANDLES_PATH, DEFAULT_POSTS_PATH, loadHandles, loadPosts, pollAccounts, type AccountPollResult } from './xaccounts.ts';
 import { loadHolders, peopleOnly } from './holders.ts';
 import { loadMap } from './loadmap.ts';
+import { scanNewWallets, summarizeScan, usdShort } from './newwallets.ts';
 import { formatFundMap } from './fundmap.ts';
 import { coreHealthy, formatHealth, runHealth } from './health.ts';
 import { formatXray, loadXray } from './xray.ts';
@@ -472,6 +473,18 @@ async function main(): Promise<void> {
         console.log(`${people.length} people on ${PEOPLE_PATH}${people.length ? '' : '  (empty: add with  people add "Full Name" --org 1win --role "Head of X" --handle theirhandle)'}`);
         for (const p of people) console.log(`  ${describePerson(p)}${p.handles?.length ? `  ${p.handles.map((h) => `@${h.replace(/^@/, '')}`).join(' ')}` : ''}${p.aliases?.length ? `  aka ${p.aliases.join(', ')}` : ''}`);
         console.log(`reference config: ${REFS_PATH} (${loadRefs().length} entries). Matching uses display name, pseudonym, linked X handle and bio only: Polymarket exposes no e-mail.`);
+        return;
+      }
+      case 'newbies': {
+        const mins = flag(args, 'mins', 30);
+        const days = flag(args, 'days', 14);
+        const { result, error } = await scanNewWallets(client, store, { windowMins: mins, maxAgeDays: days, minNewWallets: flag(args, 'min-new', 3), onProgress: (st) => process.stderr.write(`\r${st.slice(0, 70).padEnd(72)}`) });
+        process.stderr.write('\r' + ' '.repeat(74) + '\r');
+        if (error || !result) throw new Error(error ?? 'no result');
+        console.log(summarizeScan(result));
+        console.log(`${'NEW$'.padStart(8)} ${'NEW'.padStart(4)} ${'/ALL'.padStart(5)} ${'SHARE'.padStart(6)} ${'LIFT'.padStart(5)}  LEANS TO              MARKET`);
+        for (const r of result.rows.slice(0, flag(args, 'top', 25)))
+          console.log(`${usdShort(r.newUsd).padStart(8)} ${String(r.newWallets).padStart(4)} ${String(r.wallets).padStart(5)} ${(r.newShare * 100).toFixed(0).padStart(5)}% ${('x' + r.lift.toFixed(1)).padStart(5)}  ${(r.lean ? `${r.lean.outcome.slice(0, 14)} ${Math.round(r.lean.share * 100)}%` : '-').padEnd(20)}  ${r.question.slice(0, 60)}  [${r.eventSlug}]`);
         return;
       }
       case 'map': {

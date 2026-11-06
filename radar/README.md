@@ -362,11 +362,20 @@ warns. `--no-check` skips it. Exit code of `doctor` is 1 when a core service is 
 
 On the Decision tab (`p`), `h` opens the Holders of the market row currently selected with the arrows (a spread, a total, game 1...), instead of the event's busiest market.
 
-## Bubble map (`m` after loading Holders, `npm run radar -- map <event-slug> [--days N]`)
+## New wallets page (`w`, `npm run radar -- newbies [--mins 30 --days 14 --min-new 3 --top 25]`)
 
-A bubble map for Polymarket: the holders of the loaded market as bubbles (⬤ ● ◉ ○ by position size), grouped when the chain shows they are connected. Press `h` on a market (or pick a row on `p` and press `h`), then `m`.
-It reads USDC Transfer logs from a public Polygon RPC (`RADAR_POLYGON_RPC` to use your own; public nodes cap each call at 10,000 blocks, so 14 days is ~42 calls, about 30 seconds, with progress shown).
-Two holders are in one group when the same wallet funded both, or one sent USDC to the other. Wallets that pay many strangers (bridges, relayers, exchanges) are detected two ways (they also pay a sample of unrelated
-traders of the same market, or they paid 12+ different wallets in the latest window) and are not treated as links; the screen says how many were ignored. A group that holds BOTH sides of the market is highlighted.
-What it proves: money came through the same wallet. What it does not: one owner. Friends, a shared service or one employer link too, and only the scanned window is seen, so "no links" means none found.
-Wallets that are protocol contracts (exchange/adapter holding shares) are skipped from Holders instead of showing an error.
+A screener for markets where new accounts are putting money in. It reads every fill on the platform for the last 30 minutes (~25 pages of the Data API trades feed), looks up the profile age of each wallet that
+traded $25+ (12 lookups/second; the age of a profile never changes, so it is cached and repeat scans are fast: the first cold scan takes 1-2 minutes), and ranks MARKETS by the dollars that accounts under 14 days
+old put in. Columns: NEW$ (their money), NEW (how many such wallets) over ALL (wallets seen), SHARE (their part of the market's money), LIFT (that share divided by the platform's average share, so ordinary
+newcomer traffic reads as x1 and a market getting far more reads x3+), and the outcome the new money leaned to. The bottom shows the selected market's biggest new wallets (age, size, side) and how much of the
+new money is one wallet. `Enter` (or `h`) opens that market's Holders, where new wallets are highlighted in the CREATED column and the CLUSTER line looks for same-day signups; go back with `w` and pick the next.
+`w` again rescans. It describes who is trading: most new accounts are ordinary people, promotions and referral waves. A market with a high LIFT is where to look, not a signal that anything is wrong.
+Wallets with no public profile have an unknown age and are not counted as new (the header says how many were not aged and how much of the money has a known age).
+The old New-markets lab moved to key `u`.
+
+## On-chain funding map (CLI only: `npm run radar -- map <event-slug> [--days N]`)
+
+Experimental, no longer in the TUI. Scans 14 days of USDC transfers on a public Polygon RPC (10,000 blocks per call, ~30 seconds) and groups the market's holders that share a funder or paid each other, dropping funders
+that pay many strangers (bridges, relayers, exchanges). It works on real cases (it found 4 bot wallets with one source holding dust positions in one market) but the evidence for it is thin: it sees one hop and only a
+recent window, so exchange-funded or multi-hop setups, the ones public investigations (e.g. Bubblemaps) caught, are invisible to it. Most Polymarket wallets are relayer-funded proxy wallets, so most scans show nothing.
+Protocol-contract holders (exchange/adapter) are skipped from the Holders list instead of erroring.

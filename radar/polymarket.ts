@@ -174,6 +174,13 @@ export interface PositionLine {
   unrealizedPnl: number;
   firstEntryAt: number | null;
 }
+export interface GlobalTrade extends TradeRow {
+  eventSlug: string;
+  /** Question of the market the fill was in. */
+  title: string;
+  outcome: string;
+  name: string | null;
+}
 export interface TradeLine {
   ts: number;
   tx: string;
@@ -477,6 +484,29 @@ export class PolymarketClient {
       }))
       .filter((r) => r.ts > 0)
       .sort((x, y) => x.ts - y.ts);
+  }
+
+  /** Every fill on the platform since `sinceTs`, newest first (Data API v2 trades with no market filter, cursor-paged). Stops at `maxPages` pages of 1,000. */
+  async globalTrades(opts: { sinceTs: number; maxPages?: number; onPage?: (page: number, fills: number) => void }): Promise<GlobalTrade[]> {
+    const out: GlobalTrade[] = [];
+    let cursor: string | undefined;
+    for (let page = 1; page <= (opts.maxPages ?? 60); page++) {
+      const { data, next } = await this.dataPage('trades', { limit: PAGE, cursor });
+      let reached = false;
+      for (const raw of Array.isArray(data) ? data : []) {
+        const t = mapTrade(raw);
+        if (!t) continue;
+        if (t.ts < opts.sinceTs) {
+          reached = true;
+          continue;
+        }
+        out.push({ ...t, eventSlug: String(raw.eventSlug ?? raw.slug ?? ''), title: String(raw.title ?? ''), outcome: String(raw.outcome ?? ''), name: raw.name ? String(raw.name) : raw.pseudonym ? String(raw.pseudonym) : null });
+      }
+      opts.onPage?.(page, out.length);
+      if (!next || reached) break;
+      cursor = next;
+    }
+    return out;
   }
 
   /** A wallet's latest trades (newest first), with the market they were in. */

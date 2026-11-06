@@ -9,7 +9,7 @@ import { logFlagged, scanNewMarkets } from '../newmarkets.ts';
 import { loadHolders } from '../holders.ts';
 import { pickMarket } from './pick.ts';
 import { loadXray } from '../xray.ts';
-import { loadMap } from '../loadmap.ts';
+import { scanNewWallets } from '../newwallets.ts';
 import { addWatched, isAddress } from '../walletwatch.ts';
 import { loadNews } from '../newsview.ts';
 import { loadPeople, type Person } from '../people.ts';
@@ -127,7 +127,7 @@ function snapshotModel(store: RadarStore, prev: Model | null, nowMs: number, sta
     newMarkets: prev?.newMarkets ?? null,
     jumps: prev?.jumps ?? null,
     xray: prev?.xray ?? null,
-    map: prev?.map ?? null,
+    newWallets: prev?.newWallets ?? null,
   };
 }
 
@@ -341,7 +341,7 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
   const openNew = () => {
     const nv = model.newMarkets;
     const wasOn = view.tab === 'new';
-    press('w');
+    press('u');
     const stale = !nv || (nv.done && (wasOn || nv.at === null || Date.now() - nv.at > NEW_TAB_RESCAN_MS));
     if (stale) startNewScan();
   };
@@ -407,7 +407,32 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     paint();
   };
   let xrayToken = 0;
-  let mapToken = 0;
+  let walletsToken = 0;
+  const startWalletScan = () => {
+    const token = ++walletsToken;
+    const prevResult = model.newWallets?.result ?? null;
+    model = { ...model, newWallets: { stage: 'starting', done: false, error: null, result: prevResult, at: null } };
+    paint();
+    void scanNewWallets(client, store, {
+      cancelled: () => token !== walletsToken,
+      onProgress: (stage, partial) => {
+        if (token !== walletsToken) return;
+        model = { ...model, newWallets: { stage, done: false, error: null, result: partial ?? prevResult, at: null } };
+        paint();
+      },
+    }).then(({ result, error }) => {
+      if (token !== walletsToken) return;
+      model = { ...model, newWallets: { stage: 'done', done: true, error, result: result ?? prevResult, at: Date.now() } };
+      view = { ...view, sel: Math.min(view.sel, Math.max(0, listLength(model, 'wallets') - 1)) };
+      paint();
+    });
+  };
+  const openWallets = () => {
+    const nw = model.newWallets;
+    const wasOn = view.tab === 'wallets';
+    press('w');
+    if (!nw || (nw.done && (wasOn || nw.at === null || Date.now() - nw.at > 5 * 60_000))) startWalletScan();
+  };
   const openXray = (wallet: string) => {
     const token = ++xrayToken;
     model = { ...model, xray: { wallet, stage: 'starting', done: false, error: null, report: null } };
@@ -492,7 +517,13 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
       if (model.search?.typing) return typeSearch(d);
       if (d === '/') return beginSearch();
       if (d === 'e') return startEdgeScan();
-      if (d === 'w') return openNew();
+      if (d === 'w') return openWallets();
+      if (d === 'u') return openNew();
+      if ((d === '\r' || d === '\n') && view.tab === 'wallets') {
+        const row = model.newWallets?.result?.rows[view.sel];
+        if (!row) return;
+        return openHolders(row.eventSlug, row.cid);
+      }
       if (d === 'j') return openJumps();
       if (d === 'a') {
         const holder = view.tab === 'holders' ? visibleHolders(model)[view.sel] : undefined;
@@ -508,26 +539,6 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
           setStatus({ message: `could not save the watchlist: ${error instanceof Error ? error.message : String(error)}` });
         }
         return paint();
-      }
-      if (d === 'm') {
-        const h = model.holders;
-        if (!h || h.rows.length < 2) {
-          setStatus({ message: 'open Holders (h) on a market first, then press m for its bubble map' });
-          return paint();
-        }
-        const token = ++mapToken;
-        model = { ...model, map: { cid: h.cid, question: h.question || h.eventTitle, stage: 'starting', done: false, error: null, scan: null, failed: 0, days: 14, map: null, holders: [] } };
-        view = { ...view, tab: 'map', sel: 0 };
-        paint();
-        void loadMap(client, h.cid, h.question || h.eventTitle, h.rows, {
-          cancelled: () => token !== mapToken,
-          onProgress: (mv) => {
-            if (token !== mapToken) return;
-            model = { ...model, map: mv };
-            paint();
-          },
-        });
-        return;
       }
       if (d === 'x') {
         const holder = view.tab === 'holders' ? visibleHolders(model)[view.sel] : undefined;
@@ -556,6 +567,11 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
       if ((d === '[' || d === ']' || d === '{' || d === '}') && view.tab === 'holders' && model.holders && model.holders.markets.length > 1) {
         const next = pickMarket(model.holders.markets, model.holders.cid, d);
         return next ? openHolders(model.holders.slug, next.cid) : paint();
+      }
+      if (d === 'h' && view.tab === 'wallets') {
+        const row = model.newWallets?.result?.rows[view.sel];
+        if (!row) return;
+        return openHolders(row.eventSlug, row.cid);
       }
       if (d === 'h' && view.tab === 'decision' && model.decision?.decision) {
         // on the Decision tab, h opens the holders of the exact market row selected with the arrows (spread, total, game 1...)
