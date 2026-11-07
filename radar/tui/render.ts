@@ -18,11 +18,11 @@ import type { NewsRow, PrintRow } from '../store.ts';
 import { c, clip, fit, sparkline, vlen } from './ansi.ts';
 
 export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search' | 'news' | 'edge' | 'ledger' | 'new' | 'jumps' | 'xray' | 'wallets';
-/** Experiments that found no edge: out of the tab bar and the Tab cycle, still opened by their keys (n news, e edges, j jumps, w new markets). */
-export const LABS: readonly Tab[] = ['news', 'edge', 'jumps', 'new'];
-export const TABS: readonly Tab[] = ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new', 'jumps', 'xray', 'wallets'];
-export const MAIN_TABS: readonly Tab[] = TABS.filter((t) => !LABS.includes(t));
-const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Anomalies', games: '2 Games', prints: '3 Big prints', holders: '4 Holders', leads: '5 Leads', decision: '6 Decision', search: '7 Search', news: '8 News', edge: '9 Edge', ledger: '0 Ledger', new: 'W New', jumps: 'j Jumps', xray: 'x X-ray', wallets: 'w Newbies' };
+/** The tools that stay: the home list, games, the new-wallets screener, holders, the decision page, wallet X-ray and search. The removed experiments (news, edges, jumps, new markets, leads, ledger, big prints) live on as CLI commands. */
+export const TABS: readonly Tab[] = ['anomalies', 'games', 'wallets', 'holders', 'decision', 'xray', 'search'];
+export const LABS: readonly Tab[] = [];
+export const MAIN_TABS: readonly Tab[] = TABS;
+const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Markets', games: '2 Games', wallets: '3 Newbies', holders: '4 Holders', decision: '5 Decision', xray: '6 X-ray', search: '7 Search', prints: 'Big prints', leads: 'Leads', news: 'News', edge: 'Edge', ledger: 'Ledger', new: 'New markets', jumps: 'Jumps' };
 
 export interface TaggedPrint extends PrintRow {
   tag: WalletTag;
@@ -1055,7 +1055,7 @@ export function render(m: Model, v: View, nowMs: number): string[] {
   );
   const tabBar = ' ' + [...MAIN_TABS, ...(LABS.includes(v.tab) ? [v.tab] : [])].map((t) => (t === v.tab ? c.inverse(` ${TAB_LABEL[t]} `) : c.gray(` ${TAB_LABEL[t]} `))).join('');
   // the counters and the labs hint only fit when there is room: the tabs themselves always win
-  const extras = c.gray(`${LABS.includes(v.tab) ? '' : '  labs: n e j u'}   ${[...m.anomalies, ...m.games].filter((a) => a.level === 'HOT').length} hot · ${[...m.anomalies, ...m.games].filter((a) => a.level === 'WATCH').length} watch`) + (m.filter ? c.yellow(`   filter: ${m.filter}`) : '');
+  const extras = c.gray(`${LABS.includes(v.tab) ? '' : ''}   ${[...m.anomalies, ...m.games].filter((a) => a.level === 'HOT').length} hot · ${[...m.anomalies, ...m.games].filter((a) => a.level === 'WATCH').length} watch`) + (m.filter ? c.yellow(`   filter: ${m.filter}`) : '');
   const tabs = clip(vlen(tabBar) + vlen(extras) <= cols ? tabBar + extras : tabBar, cols);
   const detailH = rows >= 30 && v.tab !== 'decision' ? 8 : 0;
   const bodyH = Math.max(3, rows - 3 - detailH - (detailH ? 1 : 0));
@@ -1068,7 +1068,7 @@ export function render(m: Model, v: View, nowMs: number): string[] {
     for (let i = 0; i < detailH; i++) lines.push(d[i] ?? '');
   }
   while (lines.length < rows - 1) lines.push('');
-  const hint = c.gray(' ↑↓ move · 1-9,0 tabs · x x-ray · w new wallets · a watch wallet · / search · labs: n news e edges j jumps u new markets · r refresh · f category · h holders (on P: the selected row) · p decide · b people/bots · o link · q quit');
+  const hint = c.gray(' ↑↓ move · 1-7 tabs · h holders (on 5: the selected row) · p decision · w newbies · x x-ray · a watch wallet · / search (or paste a 0x wallet) · enter open · f category · b bots · o link · r refresh · q quit');
   // the status message goes first: the key hint is long and would push a trailing message off a narrow screen
   lines.push(clip(s.message ? `${c.yellow(` ${s.message}`)}  ${hint}` : hint, cols));
   return lines.slice(0, rows).map((l) => (vlen(l) > cols ? clip(l, cols) : l));
@@ -1093,17 +1093,11 @@ export function moveSelection(v: View, key: Key, m: Model): View {
     case 'tab': return { ...v, tab: MAIN_TABS[(MAIN_TABS.indexOf(v.tab) + 1) % MAIN_TABS.length], sel: 0 }; // from a lab tab this goes back to the first main tab
     case '1': return { ...v, tab: 'anomalies', sel: 0 };
     case '2': return { ...v, tab: 'games', sel: 0 };
-    case '3': return { ...v, tab: 'prints', sel: 0 };
+    case '3': case 'w': return { ...v, tab: 'wallets', sel: 0 };
     case '4': return { ...v, tab: 'holders', sel: 0 };
-    case '5': return { ...v, tab: 'leads', sel: 0 };
-    case '6': return { ...v, tab: 'decision', sel: 0 };
+    case '5': return { ...v, tab: 'decision', sel: 0 };
+    case '6': case 'x': return { ...v, tab: 'xray', sel: 0 };
     case '7': return { ...v, tab: 'search', sel: 0 };
-    case '8': return { ...v, tab: 'news', sel: 0 };
-    case '9': return { ...v, tab: 'edge', sel: 0 };
-    case '0': return { ...v, tab: 'ledger', sel: 0 };
-    case 'w': return { ...v, tab: 'wallets', sel: 0 };
-    case 'j': return { ...v, tab: 'jumps', sel: 0 };
-    case 'x': return { ...v, tab: 'xray', sel: 0 };
-    case 'u': return { ...v, tab: 'new', sel: 0 };
+    default: return v;
   }
 }

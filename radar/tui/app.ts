@@ -516,15 +516,12 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
       };
       if (model.search?.typing) return typeSearch(d);
       if (d === '/') return beginSearch();
-      if (d === 'e') return startEdgeScan();
       if (d === 'w') return openWallets();
-      if (d === 'u') return openNew();
       if ((d === '\r' || d === '\n') && view.tab === 'wallets') {
         const row = model.newWallets?.result?.rows[view.sel];
         if (!row) return;
         return openHolders(row.eventSlug, row.cid);
       }
-      if (d === 'j') return openJumps();
       if (d === 'a') {
         const holder = view.tab === 'holders' ? visibleHolders(model)[view.sel] : undefined;
         const wallet = holder?.wallet ?? (view.tab === 'xray' ? model.xray?.wallet : undefined);
@@ -549,14 +546,6 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
         }
         setStatus({ message: 'on Holders select a wallet and press x, or / and paste a 0x… address' });
         return paint();
-      }
-      if (d === 'n') {
-        const slug = selectedSlug(model, view);
-        if (!slug) {
-          setStatus({ message: 'select an event first' });
-          return paint();
-        }
-        return openNews(slug);
       }
       if (d === 'q' || d === '\x03') return quit();
       if (d === 'r') {

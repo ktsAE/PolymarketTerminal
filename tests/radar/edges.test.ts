@@ -167,47 +167,6 @@ describe('scanning everything', () => {
   });
 });
 
-describe('edge tab', () => {
-  const empty: Model = {
-    anomalies: [], games: [], prints: [], leads: [], holders: null, showBots: false, oiSeries: [], filter: null,
-    status: { lastPollAt: 1, nextPollAt: null, busy: false, error: null, events: 0, historySecs: 0, printsWindowMin: null, message: null },
-  };
-  const v = (over: Partial<View> = {}): View => ({ tab: 'edge', sel: 0, cols: 130, rows: 36, ...over });
-  const withResult = (cands: EdgeCandidate[], over: Record<string, unknown> = {}): Model => ({ ...empty, edges: { stage: 'done', done: true, error: null, result: { at: Date.UTC(2026, 10, 1, 12), eventsScanned: 400, marketsScanned: 3000, candidates: cands, errors: [], unmapped: [] }, ...over } });
-  it('explains how to start a scan', () => {
-    expect(strip(render(empty, v(), Date.now()).join('\n'))).toMatch(/press e to scan every active market/);
-  });
-  it('lists candidates with live status, profit at depth and the standing caveat, and details the selected one', async () => {
-    const live = screenEvent(ladderEvent)[0];
-    await verifyCandidate(client([], { y1: { bids: [], asks: [['0.50', '400']] }, n2: { bids: [], asks: [['0.40', '1000']] } }).c, live);
-    const stale = { ...screenEvent(ladderEvent)[0], title: 'Stale thing', verified: false as const, liveEdgePts: null, note: 'live books price the set at 1.020 against a payoff of 1.00: the screen quote was stale' };
-    const out = strip(render(withResult([live, stale]), v(), Date.now()).join('\n'));
-    expect(out).toMatch(/Edge scan\s+400 events, 3000 markets, 2 candidate/);
-    expect(out).toMatch(/TYPE\s+LIVE\s+SCREEN/);
-    expect(out).toMatch(/LADDER\s+\+10\.0pt/);
-    expect(out).toMatch(/STALE/);
-    expect(out).toMatch(/\$20/); // profit at depth
-    expect(out).toMatch(/no forecasting edge is claimed/);
-    expect(out).toMatch(/BUY YES "\$30M" @0\.500/); // detail panel for the selected row
-    expect(out).toMatch(/1-9,0 tabs/);
-  });
-  it('says an empty result is normal', () => {
-    expect(strip(render(withResult([]), v(), Date.now()).join('\n'))).toMatch(/nothing structural right now/);
-  });
-  it('switches with key 9 and moves within the list', () => {
-    const m = withResult([screenEvent(ladderEvent)[0], screenEvent(ladderEvent)[0], screenEvent(ladderEvent)[0]]);
-    expect(moveSelection(v({ tab: 'anomalies' }), '9', m).tab).toBe('edge');
-    expect(moveSelection(v({ sel: 0 }), 'end', m).sel).toBe(2);
-  });
-  it('never overflows its box at any size', () => {
-    const cands = Array.from({ length: 25 }, (_, i) => ({ ...screenEvent(ladderEvent)[0], title: `日本語のイベント ${i} with a very long title that must be clipped at every width`, caveats: ['a caveat '.repeat(30)], note: 'a note '.repeat(30), verified: i % 2 === 0 ? true : null, liveEdgePts: 5, depthUsd: 100, profitUsd: 5 }));
-    for (const [cols, rows] of [[50, 12], [60, 16], [80, 24], [140, 40], [220, 60]]) {
-      const lines = render(withResult(cands, { error: 'events 100+: HTTP 500' }), v({ cols, rows, sel: 3 }), Date.now());
-      expect(lines, `${cols}x${rows}`).toHaveLength(rows);
-      for (const l of lines) expect(vlen(l), `${cols}x${rows}`).toBeLessThanOrEqual(cols);
-    }
-  });
-});
 
 describe('external-price (REF) rows', () => {
   const NOW_MS = Date.UTC(2026, 10, 2, 12);

@@ -391,7 +391,7 @@ describe('decision tab', () => {
   };
   it('explains how to open it when nothing is loaded', () => {
     const text = strip(render(empty, view(), Date.now()).join('\n'));
-    expect(text).toMatch(/6 Decision/);
+    expect(text).toMatch(/5 Decision/);
     expect(text).toMatch(/press p to decide/);
   });
   it('shows actions, quotes, the model range, wallet creation dates and flags, and the standing caveat', async () => {
@@ -414,7 +414,7 @@ describe('decision tab', () => {
     expect(text).toMatch(/NO \$500: /);
     expect(dv.books && Object.keys(dv.books).length).toBeGreaterThan(0);
     expect(dv.fee?.rate).toBeGreaterThanOrEqual(0);
-    expect(text).toMatch(/1-9,0 tabs/);
+    expect(text).toMatch(/1-7 tabs/);
     for (const l of lines) expect(l.length).toBeLessThanOrEqual(140 + 20); // no line overflows the terminal (width counts glyphs, not bytes)
   });
   it('never overflows its box at any terminal size, with a loaded decision', async () => {
@@ -429,12 +429,12 @@ describe('decision tab', () => {
       }
     }
   });
-  it('moves the selection within the decision rows and switches with key 6', async () => {
+  it('moves the selection within the decision rows and switches with key 5', async () => {
     const store = openStore();
     const dv = await loadDecision(new PolymarketClient(fakeApi(), fast), store, 'acme-fdv', { now: () => NOW * 1000 });
     store.close();
     const m: Model = { ...empty, decision: dv };
-    expect(moveSelection(view({ tab: 'anomalies' }), '6', m).tab).toBe('decision');
+    expect(moveSelection(view({ tab: 'anomalies' }), '5', m).tab).toBe('decision');
     expect(moveSelection(view({ sel: 0 }), 'down', m).sel).toBe(1);
     expect(moveSelection(view({ sel: 1 }), 'down', m).sel).toBe(1); // two markets: stops at the last
   });

@@ -379,3 +379,11 @@ Experimental, no longer in the TUI. Scans 14 days of USDC transfers on a public 
 that pay many strangers (bridges, relayers, exchanges). It works on real cases (it found 4 bot wallets with one source holding dust positions in one market) but the evidence for it is thin: it sees one hop and only a
 recent window, so exchange-funded or multi-hop setups, the ones public investigations (e.g. Bubblemaps) caught, are invisible to it. Most Polymarket wallets are relayer-funded proxy wallets, so most scans show nothing.
 Protocol-contract holders (exchange/adapter) are skipped from the Holders list instead of erroring.
+
+## What the TUI is now (the short version)
+
+Seven tabs, nothing else: 1 Markets (anomaly list), 2 Games, 3 Newbies (markets ranked by new-account money), 4 Holders (market strip, holders by class, flow by class, new-account clusters; `[ ] { }` switch markets),
+5 Decision (`p`: order-book prices, cost of a trade, fair-value references, `h` opens holders of the selected row), 6 X-ray (a wallet's real record), 7 Search (`/`; paste a 0x address to X-ray it).
+Typical flow: 3 Newbies -> Enter on a market -> read Holders -> `p` for prices and cost -> `x` on a suspicious wallet.
+Removed from the TUI (code and CLI kept, nothing deleted from git history): Big prints, Leads, News, Edge, Jumps, New markets, Ledger. They still run as CLI commands (`edges`, `jumps`, `watch`, `new-scan`, `ledger`,
+`forward-log`, `daemon`); they found no edge.
