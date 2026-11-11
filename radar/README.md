@@ -382,8 +382,15 @@ Protocol-contract holders (exchange/adapter) are skipped from the Holders list i
 
 ## What the TUI is now (the short version)
 
-Seven tabs, nothing else: 1 Markets (anomaly list), 2 Games, 3 Newbies (markets ranked by new-account money), 4 Holders (market strip, holders by class, flow by class, new-account clusters; `[ ] { }` switch markets),
+Eight tabs, nothing else (8 Book was added last): 1 Markets (anomaly list), 2 Games, 3 Newbies (markets ranked by new-account money), 4 Holders (market strip, holders by class, flow by class, new-account clusters; `[ ] { }` switch markets),
 5 Decision (`p`: order-book prices, cost of a trade, fair-value references, `h` opens holders of the selected row), 6 X-ray (a wallet's real record), 7 Search (`/`; paste a 0x address to X-ray it).
 Typical flow: 3 Newbies -> Enter on a market -> read Holders -> `p` for prices and cost -> `x` on a suspicious wallet.
 Removed from the TUI (code and CLI kept, nothing deleted from git history): Big prints, Leads, News, Edge, Jumps, New markets, Ledger. They still run as CLI commands (`edges`, `jumps`, `watch`, `new-scan`, `ledger`,
 `forward-log`, `daemon`); they found no edge.
+
+## Order book (tab 8, `radar/bookview.ts`)
+
+Live ladder of one market, refreshed every 3 seconds: asks (red) down to the best ask, the spread, then bids (green), each with both outcome prices, shares and cumulative dollars with a depth bar,
+plus the best bid/ask, depth within 5c, and what $50 / $500 of each outcome would cost (average fill, slippage, break-even probability, loss of selling straight back, estimated taker fee).
+Press `8` while a market is on screen: from Holders it opens that market, from Decision the selected row, from Newbies the selected market. `[ ] { }` step through the event's markets (when its holders are loaded).
+A closed or non-trading market says "no order book" instead of erroring.

@@ -11,18 +11,19 @@ import { CLUSTER_CAVEAT, findClusters, formatCluster } from '../clusters.ts';
 import { formatInfo } from '../marketinfo.ts';
 import { costLines, formatCost } from '../cost.ts';
 import { summarizeScan, usdShort, type NewWalletsResult } from '../newwallets.ts';
+import { costSummary, ladder, type BookView } from '../bookview.ts';
 import { formatXray, type XrayReport } from '../xray.ts';
 import { peopleOnly, type HolderRow, type HoldersView } from '../holders.ts';
 import { accountAge, dateOf } from '../identity.ts';
 import type { NewsRow, PrintRow } from '../store.ts';
 import { c, clip, fit, sparkline, vlen } from './ansi.ts';
 
-export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search' | 'news' | 'edge' | 'ledger' | 'new' | 'jumps' | 'xray' | 'wallets';
+export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search' | 'news' | 'edge' | 'ledger' | 'new' | 'jumps' | 'xray' | 'wallets' | 'book';
 /** The tools that stay: the home list, games, the new-wallets screener, holders, the decision page, wallet X-ray and search. The removed experiments (news, edges, jumps, new markets, leads, ledger, big prints) live on as CLI commands. */
-export const TABS: readonly Tab[] = ['anomalies', 'games', 'wallets', 'holders', 'decision', 'xray', 'search'];
+export const TABS: readonly Tab[] = ['anomalies', 'games', 'wallets', 'holders', 'decision', 'xray', 'search', 'book'];
 export const LABS: readonly Tab[] = [];
 export const MAIN_TABS: readonly Tab[] = TABS;
-const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Markets', games: '2 Games', wallets: '3 Newbies', holders: '4 Holders', decision: '5 Decision', xray: '6 X-ray', search: '7 Search', prints: 'Big prints', leads: 'Leads', news: 'News', edge: 'Edge', ledger: 'Ledger', new: 'New markets', jumps: 'Jumps' };
+const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Markets', games: '2 Games', wallets: '3 Newbies', holders: '4 Holders', decision: '5 Decision', xray: '6 X-ray', search: '7 Search', book: '8 Book', prints: 'Big prints', leads: 'Leads', news: 'News', edge: 'Edge', ledger: 'Ledger', new: 'New markets', jumps: 'Jumps' };
 
 export interface TaggedPrint extends PrintRow {
   tag: WalletTag;
@@ -69,6 +70,8 @@ export interface Model {
   xray?: XrayView | null;
   /** New wallets tab: markets ranked by the money new accounts put in (null until `w`). */
   newWallets?: NewWalletsView | null;
+  /** Book tab: live order book of one market (null until `8`). */
+  book?: BookView | null;
 }
 
 export interface JumpsView {
@@ -858,6 +861,29 @@ export function walletsRows(m: Model, v: View, height: number): string[] {
   return out.slice(0, height);
 }
 
+export function bookRows(m: Model, v: View, height: number): string[] {
+  const b = m.book;
+  if (!b) return [c.gray('  press 8 on a market (Holders, Decision or Newbies row) to see its live order book; [ ] switch market')];
+  const age = b.fetchedAt ? `${Math.max(0, Math.round((Date.now() - b.fetchedAt) / 1000))}s ago` : 'loading…';
+  const out = [clip(`${c.bold(' Order book')}  ${b.question || b.slug}  ${b.error ? c.red(b.error) : c.gray(`updated ${age}, refreshes every 3s`)}`, v.cols)];
+  if (!b.book || !b.summary) return out;
+  const s = b.summary;
+  out.push(clip(` ${c.gray(`${b.outcomes[0]} ${s.bid === null ? '-' : (s.bid * 100).toFixed(1)}/${s.ask === null ? '-' : (s.ask * 100).toFixed(1)}c · within 5c: ${s.bidDepthUsd >= 1000 ? `$${(s.bidDepthUsd / 1000).toFixed(1)}k` : `$${Math.round(s.bidDepthUsd)}`} bids / ${s.askDepthUsd >= 1000 ? `$${(s.askDepthUsd / 1000).toFixed(1)}k` : `$${Math.round(s.askDepthUsd)}`} asks`)}`, v.cols));
+  const costs = height >= 22 ? costSummary(b.book, b.outcomes, b.feeRate) : [];
+  const depth = Math.max(2, Math.floor((height - out.length - 2 - (costs.length ? costs.length + 1 : 0)) / 2));
+  out.push(c.gray(`  ${(b.outcomes[0] + ' px').padStart(7)} ${(b.outcomes[1] + ' px').padStart(8)}  ${'SHARES'.padStart(10)}  ${'CUM $'.padStart(7)}`));
+  const lines = ladder(b.book, b.outcomes, depth);
+  for (const l of lines) {
+    const bar = '█'.repeat(Math.round(l.frac * 18));
+    out.push(clip(l.side === 'spread' ? `  ${c.yellow(l.text)}` : `  ${l.side === 'ask' ? c.red(l.text) : c.green(l.text)} ${l.side === 'ask' ? c.red(bar) : c.green(bar)}`, v.cols));
+  }
+  if (costs.length) {
+    out.push(c.gray(`  cost of a trade (taker fee ${(b.feeRate * 100).toFixed(0)}% x p x (1-p), estimated from tags):`));
+    for (const l of costs) out.push(clip(`  ${l}`, v.cols));
+  }
+  return out.slice(0, height);
+}
+
 export function printRows(m: Model, v: View, height: number): string[] {
   const cols = layout(
     [
@@ -1059,7 +1085,7 @@ export function render(m: Model, v: View, nowMs: number): string[] {
   const tabs = clip(vlen(tabBar) + vlen(extras) <= cols ? tabBar + extras : tabBar, cols);
   const detailH = rows >= 30 && v.tab !== 'decision' ? 8 : 0;
   const bodyH = Math.max(3, rows - 3 - detailH - (detailH ? 1 : 0));
-  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : v.tab === 'search' ? searchRows(m, v, bodyH) : v.tab === 'news' ? newsRows(m, v, bodyH) : v.tab === 'edge' ? edgeRows(m, v, bodyH) : v.tab === 'ledger' ? ledgerRows(m, v, bodyH) : v.tab === 'new' ? newRows(m, v, bodyH) : v.tab === 'jumps' ? jumpRows(m, v, bodyH) : v.tab === 'xray' ? xrayRows(m, v, bodyH) : v.tab === 'wallets' ? walletsRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
+  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : v.tab === 'search' ? searchRows(m, v, bodyH) : v.tab === 'news' ? newsRows(m, v, bodyH) : v.tab === 'edge' ? edgeRows(m, v, bodyH) : v.tab === 'ledger' ? ledgerRows(m, v, bodyH) : v.tab === 'new' ? newRows(m, v, bodyH) : v.tab === 'jumps' ? jumpRows(m, v, bodyH) : v.tab === 'xray' ? xrayRows(m, v, bodyH) : v.tab === 'wallets' ? walletsRows(m, v, bodyH) : v.tab === 'book' ? bookRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
   const lines = [header, tabs, ...body];
   while (lines.length < 2 + bodyH) lines.push('');
   if (detailH) {
@@ -1068,7 +1094,7 @@ export function render(m: Model, v: View, nowMs: number): string[] {
     for (let i = 0; i < detailH; i++) lines.push(d[i] ?? '');
   }
   while (lines.length < rows - 1) lines.push('');
-  const hint = c.gray(' ↑↓ move · 1-7 tabs · h holders (on 5: the selected row) · p decision · w newbies · x x-ray · a watch wallet · / search (or paste a 0x wallet) · enter open · f category · b bots · o link · r refresh · q quit');
+  const hint = c.gray(' ↑↓ move · 1-8 tabs · 8 order book · h holders (on 5: the selected row) · p decision · w newbies · x x-ray · a watch wallet · / search (or paste a 0x wallet) · enter open · f category · b bots · o link · r refresh · q quit');
   // the status message goes first: the key hint is long and would push a trailing message off a narrow screen
   lines.push(clip(s.message ? `${c.yellow(` ${s.message}`)}  ${hint}` : hint, cols));
   return lines.slice(0, rows).map((l) => (vlen(l) > cols ? clip(l, cols) : l));
@@ -1076,7 +1102,7 @@ export function render(m: Model, v: View, nowMs: number): string[] {
 
 export type Key = 'up' | 'down' | 'pageup' | 'pagedown' | 'home' | 'end' | 'tab' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '0' | 'w' | 'j' | 'x' | 'u';
 export function listLength(m: Model, tab: Tab): number {
-  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : tab === 'search' ? (m.search?.results.length ?? 0) : tab === 'news' ? (m.news?.hits.length ?? 0) : tab === 'edge' ? (m.edges?.result?.candidates.length ?? 0) : tab === 'ledger' ? (m.ledger?.report?.strategies.length ?? 0) : tab === 'new' ? flaggedNew(m).length : tab === 'jumps' ? jumpFlags(m).length : tab === 'xray' ? 0 : tab === 'wallets' ? newWalletRows(m).length : m.leads.length;
+  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : tab === 'search' ? (m.search?.results.length ?? 0) : tab === 'news' ? (m.news?.hits.length ?? 0) : tab === 'edge' ? (m.edges?.result?.candidates.length ?? 0) : tab === 'ledger' ? (m.ledger?.report?.strategies.length ?? 0) : tab === 'new' ? flaggedNew(m).length : tab === 'jumps' ? jumpFlags(m).length : tab === 'xray' ? 0 : tab === 'wallets' ? newWalletRows(m).length : tab === 'book' ? 0 : m.leads.length;
 }
 
 /** Pure keyboard reducer; the shell only translates raw input into these keys. */
@@ -1098,6 +1124,7 @@ export function moveSelection(v: View, key: Key, m: Model): View {
     case '5': return { ...v, tab: 'decision', sel: 0 };
     case '6': case 'x': return { ...v, tab: 'xray', sel: 0 };
     case '7': return { ...v, tab: 'search', sel: 0 };
+    case '8': return { ...v, tab: 'book', sel: 0 };
     default: return v;
   }
 }

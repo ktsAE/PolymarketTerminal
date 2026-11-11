@@ -138,6 +138,15 @@ print(f"  new-wallet scan took {time.time() - t9:.0f}s")
 check("new wallets tab shows the scan summary and the ranked table (or says nothing qualified)", ("fills" in wtext and "markets" in wtext) and ("NEW$" in wtext or "no market had" in wtext))
 os.write(fd, b"\r"); pump(2.0)
 check("Enter on a market opens its holders", "4 Holders" in plain(screen()[1]) and ("loading" in plain("\n".join(screen()[:ROWS])) or "market " in plain("\n".join(screen()[:ROWS])) or "WHO" in plain("\n".join(screen()[:ROWS]))))
+# order book: 8 on the holders tab opens the live book of the market on screen
+os.write(fd, b"4"); pump(0.8); os.write(fd, b"8"); pump(1.0)
+check("8 opens the order book tab", "8 Book" in plain(screen()[1]))
+t10 = time.time()
+while time.time() - t10 < 30:
+    pump(1)
+    if "SHARES" in plain("\n".join(screen()[:ROWS])) or "no order book" in plain("\n".join(screen()[:ROWS])): break
+btext = plain("\n".join(screen()[:ROWS]))
+check("order book shows the ladder with spread and cumulative dollars (or says the market has no book)", ("SHARES" in btext and ("spread" in btext or "one-sided" in btext) and "CUM $" in btext) or "no order book" in btext)
 pump(6)
 check("still alive after background activity", alive())
 os.write(fd, b"q")

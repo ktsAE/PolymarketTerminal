@@ -414,7 +414,7 @@ describe('decision tab', () => {
     expect(text).toMatch(/NO \$500: /);
     expect(dv.books && Object.keys(dv.books).length).toBeGreaterThan(0);
     expect(dv.fee?.rate).toBeGreaterThanOrEqual(0);
-    expect(text).toMatch(/1-7 tabs/);
+    expect(text).toMatch(/1-8 tabs/);
     for (const l of lines) expect(l.length).toBeLessThanOrEqual(140 + 20); // no line overflows the terminal (width counts glyphs, not bytes)
   });
   it('never overflows its box at any terminal size, with a loaded decision', async () => {

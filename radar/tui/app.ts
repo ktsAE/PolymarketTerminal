@@ -9,6 +9,7 @@ import { logFlagged, scanNewMarkets } from '../newmarkets.ts';
 import { loadHolders } from '../holders.ts';
 import { pickMarket } from './pick.ts';
 import { loadXray } from '../xray.ts';
+import { loadBook, refreshBook } from '../bookview.ts';
 import { scanNewWallets } from '../newwallets.ts';
 import { addWatched, isAddress } from '../walletwatch.ts';
 import { loadNews } from '../newsview.ts';
@@ -128,6 +129,7 @@ function snapshotModel(store: RadarStore, prev: Model | null, nowMs: number, sta
     jumps: prev?.jumps ?? null,
     xray: prev?.xray ?? null,
     newWallets: prev?.newWallets ?? null,
+    book: prev?.book ?? null,
   };
 }
 
@@ -407,6 +409,36 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     paint();
   };
   let xrayToken = 0;
+  let bookToken = 0;
+  let bookTokenId: string | null = null;
+  const openBook = (slug: string, cid: string) => {
+    const token = ++bookToken;
+    bookTokenId = null;
+    model = { ...model, book: { slug, cid, question: 'loading…', outcomes: ['Yes', 'No'], book: null, summary: null, feeRate: 0.05, fetchedAt: null, error: null } };
+    view = { ...view, tab: 'book', sel: 0 };
+    paint();
+    void loadBook(client, slug, cid).then(async (bv) => {
+      if (token !== bookToken) return;
+      model = { ...model, book: bv };
+      paint();
+      try {
+        const ev = await client.eventBySlug(slug);
+        bookTokenId = ev?.markets.find((x) => x.cid === cid)?.tokenIds[0] ?? null;
+      } catch {
+        /* the next manual open retries */
+      }
+    });
+  };
+  timers.push(setInterval(() => {
+    const bk = model.book;
+    if (view.tab !== 'book' || !bk || !bookTokenId) return;
+    const token = bookToken;
+    void refreshBook(client, bookTokenId, bk).then((patch) => {
+      if (token !== bookToken || !model.book) return;
+      model = { ...model, book: { ...model.book, ...patch } };
+      paint();
+    });
+  }, 3_000));
   let walletsToken = 0;
   const startWalletScan = () => {
     const token = ++walletsToken;
@@ -556,6 +588,24 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
       if ((d === '[' || d === ']' || d === '{' || d === '}') && view.tab === 'holders' && model.holders && model.holders.markets.length > 1) {
         const next = pickMarket(model.holders.markets, model.holders.cid, d);
         return next ? openHolders(model.holders.slug, next.cid) : paint();
+      }
+      if (d === '8') {
+        const h = model.holders;
+        const row = view.tab === 'wallets' ? model.newWallets?.result?.rows[view.sel] : undefined;
+        const dm = view.tab === 'decision' ? model.decision?.decision?.markets[Math.min(view.sel, (model.decision?.decision?.markets.length ?? 1) - 1)] : undefined;
+        if (row) return openBook(row.eventSlug, row.cid);
+        if (dm && model.decision) return openBook(model.decision.slug, dm.cid);
+        if (view.tab !== 'book' && h?.cid) return openBook(h.slug, h.cid);
+        if (model.book) {
+          view = { ...view, tab: 'book', sel: 0 };
+          return paint();
+        }
+        setStatus({ message: 'open Holders, Decision or a Newbies row first, then press 8' });
+        return paint();
+      }
+      if ((d === '[' || d === ']' || d === '{' || d === '}') && view.tab === 'book' && model.book && model.holders?.slug === model.book.slug && model.holders.markets.length > 1) {
+        const next = pickMarket(model.holders.markets, model.book.cid, d);
+        return next ? openBook(model.book.slug, next.cid) : paint();
       }
       if (d === 'h' && view.tab === 'wallets') {
         const row = model.newWallets?.result?.rows[view.sel];

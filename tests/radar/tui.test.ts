@@ -106,10 +106,10 @@ describe('keyboard reducer', () => {
     expect(moveSelection(v, 'pagedown', m).sel).toBe(9);
     expect(moveSelection({ ...v, sel: 4 }, '2', m)).toMatchObject({ tab: 'games', sel: 0 });
     expect(moveSelection({ ...v, sel: 4 }, '3', m)).toMatchObject({ tab: 'wallets', sel: 0 });
-    const cycle = ['anomalies', 'games', 'wallets', 'holders', 'decision', 'xray', 'search', 'anomalies'] as const;
+    const cycle = ['anomalies', 'games', 'wallets', 'holders', 'decision', 'xray', 'search', 'book', 'anomalies'] as const;
     for (let k = 0; k < cycle.length - 1; k++) expect(moveSelection({ ...v, tab: cycle[k] }, 'tab', m).tab).toBe(cycle[k + 1]);
-    for (const [key, tab] of [['4', 'holders'], ['5', 'decision'], ['6', 'xray'], ['7', 'search'], ['w', 'wallets'], ['x', 'xray']] as const) expect(moveSelection(v, key, m).tab).toBe(tab);
-    for (const gone of ['8', '9', '0', 'j', 'u']) expect(moveSelection(v, gone as never, m).tab).toBe('anomalies'); // removed tools no longer have keys
+    for (const [key, tab] of [['4', 'holders'], ['5', 'decision'], ['6', 'xray'], ['7', 'search'], ['8', 'book'], ['w', 'wallets'], ['x', 'xray']] as const) expect(moveSelection(v, key, m).tab).toBe(tab);
+    for (const gone of ['9', '0', 'j', 'u']) expect(moveSelection(v, gone as never, m).tab).toBe('anomalies'); // removed tools no longer have keys
     expect(strip(render(m, v, Date.now())[1])).not.toMatch(/News|Edge|Jumps|Ledger|Leads|Big prints/);
     expect(moveSelection({ ...v, tab: 'anomalies' }, 'tab', m).tab).toBe('games');
   });
