@@ -509,6 +509,14 @@ export class PolymarketClient {
     return out;
   }
 
+  /** Profiles whose name matches `query` (Gamma public-search), for turning a polymarket.com/@name link into a wallet. */
+  async searchProfiles(query: string, limit = 5): Promise<Array<{ wallet: string; name: string | null; pseudonym: string | null }>> {
+    const d = (await this.get(`${GAMMA}/public-search?q=${encodeURIComponent(query)}&search_profiles=true&limit_per_type=${limit}`)) as Record<string, any>;
+    return ((d?.profiles as Record<string, any>[]) ?? [])
+      .filter((p) => typeof p.proxyWallet === 'string' && /^0x[0-9a-fA-F]{40}$/.test(p.proxyWallet))
+      .map((p) => ({ wallet: String(p.proxyWallet).toLowerCase(), name: p.name ? String(p.name) : null, pseudonym: p.pseudonym ? String(p.pseudonym) : null }));
+  }
+
   /** A wallet's latest trades (newest first), with the market they were in. */
   async recentTrades(wallet: string, limit = 50): Promise<TradeLine[]> {
     const { data } = await this.dataPage('activity', { user: wallet, limit: Math.min(limit, 500) });

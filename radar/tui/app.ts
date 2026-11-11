@@ -10,8 +10,10 @@ import { loadHolders } from '../holders.ts';
 import { pickMarket } from './pick.ts';
 import { loadXray } from '../xray.ts';
 import { loadBook, refreshBook } from '../bookview.ts';
+import { emptyFollow, loadFollowing } from '../following.ts';
+import { resolveWalletInput } from '../walletinput.ts';
 import { scanNewWallets } from '../newwallets.ts';
-import { addWatched, isAddress } from '../walletwatch.ts';
+import { addWatched, describeTrade, isAddress, loadWatched, notify, removeWatched } from '../walletwatch.ts';
 import { loadNews } from '../newsview.ts';
 import { loadPeople, type Person } from '../people.ts';
 import { httpFetchJson, type PolymarketClient } from '../polymarket.ts';
@@ -130,6 +132,7 @@ function snapshotModel(store: RadarStore, prev: Model | null, nowMs: number, sta
     xray: prev?.xray ?? null,
     newWallets: prev?.newWallets ?? null,
     book: prev?.book ?? null,
+    follow: prev?.follow ?? null,
   };
 }
 
@@ -409,12 +412,73 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     paint();
   };
   let xrayToken = 0;
+  let followToken = 0;
+  const putFollow = (patch: Partial<ReturnType<typeof emptyFollow>>) => {
+    model = { ...model, follow: { ...(model.follow ?? emptyFollow()), ...patch } };
+  };
+  const refreshFollow = (notifyNew = true) => {
+    const list = loadWatched();
+    const token = ++followToken;
+    if (list.length === 0) {
+      putFollow({ cards: [], loading: false });
+      return paint();
+    }
+    putFollow({ loading: true });
+    paint();
+    void loadFollowing(client, store, list, model.follow?.seen ?? {}).then(({ cards, seen, fresh }) => {
+      if (token !== followToken) return;
+      putFollow({ cards, seen, loading: false, loadedAt: Date.now() });
+      view = { ...view, sel: Math.min(view.sel, Math.max(0, cards.length - 1)) };
+      if (notifyNew) for (const { card, trade } of fresh.slice(0, 5)) notify('Followed wallet traded', `${describeTrade({ wallet: card.wallet, note: card.note ?? card.name ?? undefined }, trade)}\nhttps://polymarket.com/event/${trade.slug}`);
+      paint();
+    });
+  };
+  const typeFollow = (d: string) => {
+    const text = model.follow?.input ?? '';
+    if (d === '\x03') return quit();
+    if (d === ESC) {
+      putFollow({ input: null });
+      return paint();
+    }
+    if (d === '\r' || d === '\n') {
+      if (!text.trim()) {
+        putFollow({ input: null });
+        return paint();
+      }
+      putFollow({ input: null, message: 'looking that up…' });
+      paint();
+      void resolveWalletInput(client, text.trim()).then(
+        (r) => {
+          try {
+            const res = addWatched(r.wallet, r.name ?? undefined);
+            putFollow({ message: `${res.added ? 'now following' : 'already following'} ${r.name ?? `${r.wallet.slice(0, 10)}…`} (${res.list.length} total)` });
+            refreshFollow(false);
+          } catch (error) {
+            putFollow({ message: error instanceof Error ? error.message : String(error) });
+            paint();
+          }
+        },
+        (error) => {
+          putFollow({ message: error instanceof Error ? error.message : String(error) });
+          paint();
+        },
+      );
+      return;
+    }
+    if (d === '\x7f' || d === '\b') putFollow({ input: text.slice(0, -1) });
+    else if (!d.startsWith(ESC) && !/[\x00-\x1f]/.test(d)) putFollow({ input: (text + d).slice(0, 300) });
+    paint();
+  };
+  timers.push(setInterval(() => {
+    if (!model.follow || loadWatched().length === 0) return;
+    refreshFollow(true);
+  }, 90_000));
   let bookToken = 0;
   let bookTokenId: string | null = null;
   const openBook = (slug: string, cid: string) => {
     const token = ++bookToken;
     bookTokenId = null;
-    model = { ...model, book: { slug, cid, question: 'loading…', outcomes: ['Yes', 'No'], book: null, summary: null, feeRate: 0.05, fetchedAt: null, error: null } };
+    model = { ...model, book: { slug, cid, question: 'loading…', outcomes: ['Yes', 'No'], book: null, summary: null, feeRate: 0.05, fetchedAt: null, error: null, trades: [] } };
     view = { ...view, tab: 'book', sel: 0 };
     paint();
     void loadBook(client, slug, cid).then(async (bv) => {
@@ -547,6 +611,7 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
         '\t': 'tab', k: 'up', g: 'home', G: 'end', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7', '8': '8', '9': '9', '0': '0',
       };
       if (model.search?.typing) return typeSearch(d);
+      if (model.follow?.input !== null && model.follow?.input !== undefined) return typeFollow(d);
       if (d === '/') return beginSearch();
       if (d === 'w') return openWallets();
       if ((d === '\r' || d === '\n') && view.tab === 'wallets') {
@@ -572,6 +637,8 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
       if (d === 'x') {
         const holder = view.tab === 'holders' ? visibleHolders(model)[view.sel] : undefined;
         if (holder) return openXray(holder.wallet);
+        const followed = view.tab === 'follow' ? model.follow?.cards[view.sel] : undefined;
+        if (followed) return openXray(followed.wallet);
         if (model.xray) {
           view = { ...view, tab: 'xray', sel: 0 };
           return paint();
@@ -588,6 +655,30 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
       if ((d === '[' || d === ']' || d === '{' || d === '}') && view.tab === 'holders' && model.holders && model.holders.markets.length > 1) {
         const next = pickMarket(model.holders.markets, model.holders.cid, d);
         return next ? openHolders(model.holders.slug, next.cid) : paint();
+      }
+      if (d === '+' || d === '=') {
+        putFollow({ input: '', message: null });
+        view = { ...view, tab: 'follow', sel: 0 };
+        if (!model.follow?.loadedAt) refreshFollow(false);
+        return paint();
+      }
+      if (d === '-' && view.tab === 'follow') {
+        const card = model.follow?.cards[Math.min(view.sel, (model.follow?.cards.length ?? 1) - 1)];
+        if (!card) return;
+        removeWatched(card.wallet);
+        putFollow({ cards: (model.follow?.cards ?? []).filter((k) => k.wallet !== card.wallet), message: `unfollowed ${card.note ?? card.name ?? card.wallet.slice(0, 10)}` });
+        view = { ...view, sel: Math.max(0, view.sel - 1) };
+        return paint();
+      }
+      if (d === '9') {
+        press('9');
+        const f = model.follow;
+        if (!f || !f.loadedAt || Date.now() - f.loadedAt > 45_000) refreshFollow(false);
+        return paint();
+      }
+      if ((d === '\r' || d === '\n') && view.tab === 'follow') {
+        const card = model.follow?.cards[Math.min(view.sel, (model.follow?.cards.length ?? 1) - 1)];
+        return card ? openXray(card.wallet) : undefined;
       }
       if (d === '8') {
         const h = model.holders;

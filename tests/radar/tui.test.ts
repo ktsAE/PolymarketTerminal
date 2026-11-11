@@ -106,10 +106,10 @@ describe('keyboard reducer', () => {
     expect(moveSelection(v, 'pagedown', m).sel).toBe(9);
     expect(moveSelection({ ...v, sel: 4 }, '2', m)).toMatchObject({ tab: 'games', sel: 0 });
     expect(moveSelection({ ...v, sel: 4 }, '3', m)).toMatchObject({ tab: 'wallets', sel: 0 });
-    const cycle = ['anomalies', 'games', 'wallets', 'holders', 'decision', 'xray', 'search', 'book', 'anomalies'] as const;
+    const cycle = ['anomalies', 'games', 'wallets', 'holders', 'decision', 'xray', 'search', 'book', 'follow', 'anomalies'] as const;
     for (let k = 0; k < cycle.length - 1; k++) expect(moveSelection({ ...v, tab: cycle[k] }, 'tab', m).tab).toBe(cycle[k + 1]);
-    for (const [key, tab] of [['4', 'holders'], ['5', 'decision'], ['6', 'xray'], ['7', 'search'], ['8', 'book'], ['w', 'wallets'], ['x', 'xray']] as const) expect(moveSelection(v, key, m).tab).toBe(tab);
-    for (const gone of ['9', '0', 'j', 'u']) expect(moveSelection(v, gone as never, m).tab).toBe('anomalies'); // removed tools no longer have keys
+    for (const [key, tab] of [['4', 'holders'], ['5', 'decision'], ['6', 'xray'], ['7', 'search'], ['8', 'book'], ['9', 'follow'], ['w', 'wallets'], ['x', 'xray']] as const) expect(moveSelection(v, key, m).tab).toBe(tab);
+    for (const gone of ['0', 'j', 'u']) expect(moveSelection(v, gone as never, m).tab).toBe('anomalies'); // removed tools no longer have keys
     expect(strip(render(m, v, Date.now())[1])).not.toMatch(/News|Edge|Jumps|Ledger|Leads|Big prints/);
     expect(moveSelection({ ...v, tab: 'anomalies' }, 'tab', m).tab).toBe('games');
   });
@@ -342,5 +342,44 @@ describe('new wallets tab', () => {
     }
     expect(moveSelection({ tab: 'anomalies', sel: 0, cols: 120, rows: 40 }, 'w', m).tab).toBe('wallets');
     expect(moveSelection({ tab: 'wallets', sel: 0, cols: 120, rows: 40 }, 'end', m).sel).toBe(1);
+  });
+});
+
+describe('following tab', () => {
+  const NOWS = () => Math.floor(Date.now() / 1000);
+  const trade = (ago: number, isNew = false) => ({ ts: NOWS() - ago, tx: `0x${ago}`, token: 't', side: 'BUY', price: 0.62, size: 500, outcome: 'Yes', title: 'Will the thing happen?', slug: 's', cid: 'c', isNew });
+  const card = (over = {}) => ({
+    wallet: `0x${'a'.repeat(40)}`, name: 'Sonix', note: null, error: null, loadedAt: NOWS(), pnl7d: -84_000, pnl30d: 13_000, pnlAll: 75_900, volume: 1e7, openCount: 2, openValue: 28_600, unrealized: -11_800,
+    positions: [{ cid: 'c', title: 'Big open market', slug: 's', outcome: 'No', status: 'OPEN', cost: 20_000, value: 18_000, totalPnl: -2_000, realizedPnl: 0, unrealizedPnl: -2_000, firstEntryAt: null }],
+    trades: [trade(30, true), trade(4_000)], style: { trades: 40, buyShare: 0.8, avgUsd: 310, medianUsd: 120, markets: 12, avgBuyPrice: 0.55 }, newTrades: 1, ...over,
+  });
+  const base = (follow: unknown) => ({ anomalies: [], games: [], prints: [], leads: [], holders: null, showBots: false, oiSeries: [], filter: null, status: { lastPollAt: 1, nextPollAt: null, busy: false, error: null, events: 0, historySecs: 0, printsWindowMin: null, message: null }, follow }) as unknown as Model;
+  const fv = (cards: unknown[], extra = {}) => ({ cards, seen: {}, loading: false, loadedAt: Date.now(), input: null, message: null, ...extra });
+  it('lists accounts with PnL, open size, last bet and style, and details the selected one: bets, holdings, new marks', () => {
+    const text = render(base(fv([card(), card({ wallet: `0x${'b'.repeat(40)}`, name: null, note: 'whale', newTrades: 0 })])), { tab: 'follow', sel: 0, cols: 150, rows: 40 }, Date.now()).map(strip).join('\n');
+    expect(text).toMatch(/FOLLOWING\s+2 wallets/);
+    expect(text).toMatch(/●1\s+Sonix\s+-\$84k\s+\+\$13k\s+\+\$76k\s+\$29k/);
+    expect(text).toMatch(/whale/);
+    expect(text).toMatch(/last 40 bets: avg \$310, median \$120, 80% buys, 12 markets, buys at 55c on average/);
+    expect(text).toMatch(/RECENT BETS/);
+    expect(text).toMatch(/BUY\s+Yes\s+62c\s+\$310\s+● Will the thing happen\?/);
+    expect(text).toMatch(/HOLDING NOW\s+2 open positions, \$29k/);
+    expect(text).toMatch(/Big open market/);
+  });
+  it('shows the add-by-link prompt, a message, the empty state and a failed wallet', () => {
+    const prompt = strip(render(base(fv([card()], { input: 'https://polymarket.com/@tech' })), { tab: 'follow', sel: 0, cols: 140, rows: 30 }, Date.now()).join('\n'));
+    expect(prompt).toMatch(/Follow: paste a 0x wallet, polymarket\.com\/profile\/0x… or polymarket\.com\/@name\s+https:\/\/polymarket\.com\/@tech/);
+    expect(strip(render(base(fv([card()], { message: 'now following Sonix (1 total)' })), { tab: 'follow', sel: 0, cols: 140, rows: 30 }, Date.now()).join('\n'))).toMatch(/now following Sonix/);
+    expect(strip(render(base(fv([])), { tab: 'follow', sel: 0, cols: 140, rows: 30 }, Date.now()).join('\n'))).toMatch(/nobody followed yet: press \+ and paste/);
+    expect(strip(render(base(fv([card({ error: 'HTTP 500', trades: [], positions: [], style: null, newTrades: 0 })])), { tab: 'follow', sel: 0, cols: 140, rows: 30 }, Date.now()).join('\n'))).toMatch(/HTTP 500/);
+  });
+  it('stays inside its box at every size', () => {
+    const m = base(fv([card(), card({ name: 'B' }), card({ name: 'C' })]));
+    for (const [cols, rows] of [[40, 10], [60, 14], [80, 24], [140, 40], [220, 60]])
+      for (const sel of [0, 2]) {
+        const lines = render(m, { tab: 'follow', sel, cols, rows }, Date.now());
+        expect(lines, `${cols}x${rows}`).toHaveLength(rows);
+        for (const l of lines) expect(vlen(l)).toBeLessThanOrEqual(cols);
+      }
   });
 });

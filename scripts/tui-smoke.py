@@ -17,7 +17,7 @@ for suffix in ("", "-wal", "-shm"):
 pid, fd = pty.fork()
 if pid == 0:
     os.chdir(ROOT)
-    os.execvpe("node", ["node", "--no-warnings", "radar/cli.ts", "tui", "--no-news"], dict(os.environ, RADAR_DB=DB, TERM="xterm-256color"))
+    os.execvpe("node", ["node", "--no-warnings", "radar/cli.ts", "tui", "--no-news"], dict(os.environ, RADAR_DB=DB, RADAR_WALLETS=os.path.join(os.environ.get("TMPDIR", "/tmp"), "radar-smoke-wallets.json"), TERM="xterm-256color"))
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
 os.kill(pid, signal.SIGWINCH)
 stream = b""
@@ -144,9 +144,25 @@ check("8 opens the order book tab", "8 Book" in plain(screen()[1]))
 t10 = time.time()
 while time.time() - t10 < 30:
     pump(1)
-    if "SHARES" in plain("\n".join(screen()[:ROWS])) or "no order book" in plain("\n".join(screen()[:ROWS])): break
+    if "CUM$" in plain("\n".join(screen()[:ROWS])) or "no order book" in plain("\n".join(screen()[:ROWS])): break
 btext = plain("\n".join(screen()[:ROWS]))
-check("order book shows the ladder with spread and cumulative dollars (or says the market has no book)", ("SHARES" in btext and ("spread" in btext or "one-sided" in btext) and "CUM $" in btext) or "no order book" in btext)
+check("order book shows the ladder with spread and cumulative dollars (or says the market has no book)", ("ORDER BOOK" in btext and "BID" in btext and "ASK" in btext and "CUM$" in btext) or "no order book" in btext)
+# following: + opens the add-by-link prompt, a polymarket.com/@name link resolves to a wallet, 9 shows the card, - unfollows
+if os.path.exists(os.path.join(os.environ.get("TMPDIR", "/tmp"), "radar-smoke-wallets.json")): os.remove(os.path.join(os.environ.get("TMPDIR", "/tmp"), "radar-smoke-wallets.json"))
+os.write(fd, b"+"); pump(0.8)
+check("+ opens the follow prompt", "9 Following" in plain(screen()[1]) and "Follow:" in plain("\n".join(screen()[:6])))
+os.write(fd, b"https://polymarket.com/@technician2"); pump(0.5)
+check("the pasted link appears in the prompt", "@technician2" in plain("\n".join(screen()[:6])))
+os.write(fd, b"\r")
+t11 = time.time()
+while time.time() - t11 < 90:
+    pump(1)
+    ftxt = plain("\n".join(screen()[:ROWS]))
+    if "RECENT BETS" in ftxt or "no profile" in ftxt.lower(): break
+check("following a @name link resolves it and shows the account card with its recent bets", "now following" in ftxt or "RECENT BETS" in ftxt)
+check("the follow list has its columns", "ACCOUNT" in ftxt and "LAST BET" in ftxt)
+os.write(fd, b"-"); pump(1.0)
+check("- unfollows", "unfollowed" in plain("\n".join(screen()[:6])) or "nobody followed" in plain("\n".join(screen()[:ROWS])))
 pump(6)
 check("still alive after background activity", alive())
 os.write(fd, b"q")

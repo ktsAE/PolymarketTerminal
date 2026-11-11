@@ -390,7 +390,15 @@ Removed from the TUI (code and CLI kept, nothing deleted from git history): Big 
 
 ## Order book (tab 8, `radar/bookview.ts`)
 
-Live ladder of one market, refreshed every 3 seconds: asks (red) down to the best ask, the spread, then bids (green), each with both outcome prices, shares and cumulative dollars with a depth bar,
-plus the best bid/ask, depth within 5c, and what $50 / $500 of each outcome would cost (average fill, slippage, break-even probability, loss of selling straight back, estimated taker fee).
-Press `8` while a market is on screen: from Holders it opens that market, from Decision the selected row, from Newbies the selected market. `[ ] { }` step through the event's markets (when its holders are loaded).
-A closed or non-trading market says "no order book" instead of erroring.
+A terminal-style book, refreshed every 3 seconds. Header: BID / ASK / MID / SPR, last fill, both outcomes' implied prices, and a depth gauge of how much of the nearby money (within 5c) is bids vs asks.
+Ladder: the i-th best bid and ask share a row, with cumulative dollars and a depth bar growing outward from the spread (bids green on the left, asks red on the right). Beside it (on terminals 111+ columns wide)
+the TAPE: the latest fills with time, side, outcome, price, dollars (bold from $1k) and wallet. Below: what $50 / $500 of each outcome would cost (average fill, slippage, break-even probability, loss of leaving at once, estimated fee).
+Press `8` while a market is on screen: from Holders it opens that market, from Decision the selected row, from Newbies the selected market; `[ ] { }` step through the event's markets. A closed market says "no order book".
+
+## Following (tab 9, `radar/following.ts`, `radar/walletinput.ts`)
+
+Follow wallets by pasting anything: a `0x` address, a `polymarket.com/profile/0x…` link, or a `polymarket.com/@name` link (the name is looked up in Polymarket's profile search and must match exactly, so a typo never follows a stranger).
+Press `+` on any tab, paste, Enter. The list (shared with `a` on a holder/X-ray and the `wallet-watch` CLI, stored in `.radar/wallets.json`) shows per account: new bets since you last looked (●n), 7d / 30d / all-in PnL,
+open size and unrealized PnL, time since the last bet, average bet size, share of buys and the biggest position. The selected account shows its RECENT BETS (when, side, what it bet on, price, dollars, market; new ones marked ●),
+a one-line style summary (average and median bet, number of markets, typical buy price) and what it is HOLDING NOW. `Enter` or `x` opens its X-ray, `-` unfollows. The tab refreshes every 90 seconds while the TUI runs and
+sends a desktop notification (`notify-send`) when a followed wallet makes a new bet. Everything is the wallet's own record at its own prices; a follower would not get the same fills, and backtests found that following wallets does not pay.

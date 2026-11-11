@@ -11,19 +11,20 @@ import { CLUSTER_CAVEAT, findClusters, formatCluster } from '../clusters.ts';
 import { formatInfo } from '../marketinfo.ts';
 import { costLines, formatCost } from '../cost.ts';
 import { summarizeScan, usdShort, type NewWalletsResult } from '../newwallets.ts';
-import { costSummary, ladder, type BookView } from '../bookview.ts';
+import type { FollowCard, FollowView } from '../following.ts';
+import { bidShare, costSummary, dom, tape, type BookView } from '../bookview.ts';
 import { formatXray, type XrayReport } from '../xray.ts';
 import { peopleOnly, type HolderRow, type HoldersView } from '../holders.ts';
 import { accountAge, dateOf } from '../identity.ts';
 import type { NewsRow, PrintRow } from '../store.ts';
 import { c, clip, fit, sparkline, vlen } from './ansi.ts';
 
-export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search' | 'news' | 'edge' | 'ledger' | 'new' | 'jumps' | 'xray' | 'wallets' | 'book';
+export type Tab = 'anomalies' | 'games' | 'prints' | 'holders' | 'leads' | 'decision' | 'search' | 'news' | 'edge' | 'ledger' | 'new' | 'jumps' | 'xray' | 'wallets' | 'book' | 'follow';
 /** The tools that stay: the home list, games, the new-wallets screener, holders, the decision page, wallet X-ray and search. The removed experiments (news, edges, jumps, new markets, leads, ledger, big prints) live on as CLI commands. */
-export const TABS: readonly Tab[] = ['anomalies', 'games', 'wallets', 'holders', 'decision', 'xray', 'search', 'book'];
+export const TABS: readonly Tab[] = ['anomalies', 'games', 'wallets', 'holders', 'decision', 'xray', 'search', 'book', 'follow'];
 export const LABS: readonly Tab[] = [];
 export const MAIN_TABS: readonly Tab[] = TABS;
-const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Markets', games: '2 Games', wallets: '3 Newbies', holders: '4 Holders', decision: '5 Decision', xray: '6 X-ray', search: '7 Search', book: '8 Book', prints: 'Big prints', leads: 'Leads', news: 'News', edge: 'Edge', ledger: 'Ledger', new: 'New markets', jumps: 'Jumps' };
+const TAB_LABEL: Record<Tab, string> = { anomalies: '1 Markets', games: '2 Games', wallets: '3 Newbies', holders: '4 Holders', decision: '5 Decision', xray: '6 X-ray', search: '7 Search', book: '8 Book', follow: '9 Following', prints: 'Big prints', leads: 'Leads', news: 'News', edge: 'Edge', ledger: 'Ledger', new: 'New markets', jumps: 'Jumps' };
 
 export interface TaggedPrint extends PrintRow {
   tag: WalletTag;
@@ -72,6 +73,8 @@ export interface Model {
   newWallets?: NewWalletsView | null;
   /** Book tab: live order book of one market (null until `8`). */
   book?: BookView | null;
+  /** Following tab: the wallets you follow, with what they bet and hold. */
+  follow?: FollowView | null;
 }
 
 export interface JumpsView {
@@ -861,25 +864,160 @@ export function walletsRows(m: Model, v: View, height: number): string[] {
   return out.slice(0, height);
 }
 
+const agoText = (secs: number): string => (secs < 90 ? `${Math.max(0, Math.round(secs))}s` : secs < 5_400 ? `${Math.round(secs / 60)}m` : secs < 172_800 ? `${Math.round(secs / 3_600)}h` : `${Math.round(secs / 86_400)}d`);
+const px1 = (p: number): string => (p * 100).toFixed(1);
+const shortAddr = (a: string): string => `${a.slice(0, 6)}…${a.slice(-4)}`;
+const compact = (x: number): string => (x >= 1e6 ? `${(x / 1e6).toFixed(1)}M` : x >= 1e3 ? `${(x / 1e3).toFixed(1)}k` : `${Math.round(x)}`);
+
+/** Terminal-style order book: bids on the left and asks on the right with depth bars growing outward from the spread, the live tape of fills beside it, and the cost of a trade below. */
 export function bookRows(m: Model, v: View, height: number): string[] {
   const b = m.book;
-  if (!b) return [c.gray('  press 8 on a market (Holders, Decision or Newbies row) to see its live order book; [ ] switch market')];
-  const age = b.fetchedAt ? `${Math.max(0, Math.round((Date.now() - b.fetchedAt) / 1000))}s ago` : 'loading…';
-  const out = [clip(`${c.bold(' Order book')}  ${b.question || b.slug}  ${b.error ? c.red(b.error) : c.gray(`updated ${age}, refreshes every 3s`)}`, v.cols)];
+  if (!b) return [c.gray('  press 8 on a market (Holders, Decision or a Newbies row) to see its live order book; [ ] switch market')];
+  const out = [clip(`${c.bold(' ORDER BOOK')}  ${b.question || b.slug}  ${b.error ? c.red(b.error) : c.gray(`${b.fetchedAt ? `updated ${agoText((Date.now() - b.fetchedAt) / 1000)} ago` : 'loading…'} · refresh 3s`)}`, v.cols)];
   if (!b.book || !b.summary) return out;
   const s = b.summary;
-  out.push(clip(` ${c.gray(`${b.outcomes[0]} ${s.bid === null ? '-' : (s.bid * 100).toFixed(1)}/${s.ask === null ? '-' : (s.ask * 100).toFixed(1)}c · within 5c: ${s.bidDepthUsd >= 1000 ? `$${(s.bidDepthUsd / 1000).toFixed(1)}k` : `$${Math.round(s.bidDepthUsd)}`} bids / ${s.askDepthUsd >= 1000 ? `$${(s.askDepthUsd / 1000).toFixed(1)}k` : `$${Math.round(s.askDepthUsd)}`} asks`)}`, v.cols));
-  const costs = height >= 22 ? costSummary(b.book, b.outcomes, b.feeRate) : [];
-  const depth = Math.max(2, Math.floor((height - out.length - 2 - (costs.length ? costs.length + 1 : 0)) / 2));
-  out.push(c.gray(`  ${(b.outcomes[0] + ' px').padStart(7)} ${(b.outcomes[1] + ' px').padStart(8)}  ${'SHARES'.padStart(10)}  ${'CUM $'.padStart(7)}`));
-  const lines = ladder(b.book, b.outcomes, depth);
-  for (const l of lines) {
-    const bar = '█'.repeat(Math.round(l.frac * 18));
-    out.push(clip(l.side === 'spread' ? `  ${c.yellow(l.text)}` : `  ${l.side === 'ask' ? c.red(l.text) : c.green(l.text)} ${l.side === 'ask' ? c.red(bar) : c.green(bar)}`, v.cols));
+  const last = b.trades[0];
+  const mid = s.bid !== null && s.ask !== null ? (s.bid + s.ask) / 2 : null;
+  out.push(clip(
+    ` ${c.green(c.bold(`BID ${s.bid === null ? '--' : px1(s.bid)}`))}  ${c.red(c.bold(`ASK ${s.ask === null ? '--' : px1(s.ask)}`))}  ${c.bold(`MID ${mid === null ? '--' : px1(mid)}`)}  ${c.yellow(`SPR ${s.spreadCents === null ? '--' : s.spreadCents.toFixed(1)}c`)}`
+    + `  ${c.gray('│')} LAST ${last ? `${px1(last.price)}c ${b.outcomes[last.outcomeIndex] ?? ''} ${agoText(Date.now() / 1000 - last.ts)}` : '--'}`
+    + `  ${c.gray('│')} ${b.outcomes[0]} ${mid === null ? '--' : px1(mid)} / ${b.outcomes[1]} ${mid === null ? '--' : px1(1 - mid)}`, v.cols));
+  const share = bidShare(s);
+  if (share !== null) {
+    const W = 24;
+    const n = Math.round(share * W);
+    out.push(clip(` ${c.gray('DEPTH ±5c')} ${c.green(`$${compact(s.bidDepthUsd)}`.padStart(7))} ${c.green('█'.repeat(n))}${c.red('█'.repeat(W - n))} ${c.red(`$${compact(s.askDepthUsd)}`)}  ${c.gray(`${Math.round(share * 100)}% of nearby money is bids`)}`, v.cols));
   }
+  const costs = height >= 22 ? costSummary(b.book, b.outcomes, b.feeRate) : [];
+  const B = v.cols >= 150 ? 12 : v.cols >= 120 ? 8 : 4;
+  const domW = 2 * B + 47;
+  const side = v.cols >= domW + 3 + 38; // room for the tape beside the ladder
+  const tapeW = side ? v.cols - domW - 3 : 0;
+  const bodyH = Math.max(2, height - out.length - 1 - (costs.length ? costs.length + 1 : 0));
+  const { rows, max } = dom(b.book, bodyH);
+  const bar = (cum: number, left: boolean): string => {
+    const n = Math.max(cum > 0 ? 1 : 0, Math.round((cum / max) * B));
+    return left ? ' '.repeat(B - n) + '█'.repeat(n) : '█'.repeat(n) + ' '.repeat(B - n);
+  };
+  out.push(clip(c.dim(`${'DEPTH'.padStart(B)} ${'CUM$'.padStart(7)} ${'SIZE'.padStart(9)} ${'BID'.padStart(6)} │ ${'ASK'.padEnd(6)} ${'SIZE'.padStart(9)} ${'CUM$'.padStart(7)} ${'DEPTH'.padEnd(B)}`) + (side ? `   ${c.dim(`${'TIME'.padEnd(8)} ${'SIDE'.padEnd(4)} ${'OUTCOME'.padEnd(10)} ${'PRICE'.padStart(6)} ${'$'.padStart(7)}  WALLET`)}` : ''), v.cols));
+  const tp = tape(b.trades, b.outcomes);
+  const shown = Math.min(bodyH, Math.max(rows.length, side ? tp.length : 0, 6)); // no padding with empty rows: costs come right after the ladder
+  for (let i = 0; i < shown; i++) {
+    const r = rows[i];
+    const L = r?.bid ? `${bar(r.bid.cum, true)} ${compact(r.bid.cum).padStart(7)} ${Math.round(r.bid.size).toLocaleString('en-US').padStart(9)} ${px1(r.bid.price).padStart(6)}` : ' '.repeat(B + 7 + 9 + 6 + 3);
+    const R = r?.ask ? `${px1(r.ask.price).padEnd(6)} ${Math.round(r.ask.size).toLocaleString('en-US').padStart(9)} ${compact(r.ask.cum).padStart(7)} ${bar(r.ask.cum, false)}` : ' '.repeat(B + 7 + 9 + 6 + 3);
+    // colour the bars separately from the numbers so the ladder reads at a glance
+    const Lc = r?.bid ? `${c.green(L.slice(0, B))}${L.slice(B)}` : L;
+    const Rc = r?.ask ? `${R.slice(0, R.length - B)}${c.red(R.slice(R.length - B))}` : R;
+    const t = side ? tp[i] : undefined;
+    const tapeCell = t
+      ? `${new Date(t.ts * 1000).toLocaleTimeString('en-GB')} ${(t.side === 'BUY' ? c.green : c.red)(t.side.padEnd(4))} ${fit(t.outcome, 10)} ${px1(t.price).padStart(6)} ${(t.big ? c.bold : (x: string) => x)(`$${compact(t.usd)}`.padStart(7))}  ${c.gray(shortAddr(t.wallet))}`
+      : '';
+    out.push(clip(`${Lc} ${c.gray('│')} ${Rc}${side ? `   ${tapeCell}` : ''}`, v.cols));
+  }
+  if (!side && tp.length && height >= 40) out.push(c.gray(`  last fill: ${tp[0].side} ${tp[0].outcome} ${px1(tp[0].price)}c $${compact(tp[0].usd)}`));
   if (costs.length) {
-    out.push(c.gray(`  cost of a trade (taker fee ${(b.feeRate * 100).toFixed(0)}% x p x (1-p), estimated from tags):`));
+    out.push(c.gray(`  COST OF A TRADE (taker fee ${(b.feeRate * 100).toFixed(0)}% x p x (1-p), estimated from tags)`));
     for (const l of costs) out.push(clip(`  ${l}`, v.cols));
+  }
+  return out.slice(0, height);
+}
+
+export function followRows(m: Model, v: View, height: number): string[] {
+  const f = m.follow;
+  const cards = f?.cards ?? [];
+  const nowSecs = Date.now() / 1000;
+  const head = `${c.bold(' FOLLOWING')}  ${c.gray(`${cards.length} wallet${cards.length === 1 ? '' : 's'}${f?.loadedAt ? ` · updated ${agoText(nowSecs - f.loadedAt / 1000)} ago` : ''} · refresh 90s`)}${f?.loading ? c.yellow('  loading…') : ''}  ${c.gray('+ add by link · - unfollow · enter x-ray')}`;
+  const out = [clip(head, v.cols)];
+  if (f?.input !== null && f?.input !== undefined) out.push(clip(` ${c.yellow('Follow:')} paste a 0x wallet, polymarket.com/profile/0x… or polymarket.com/@name   ${c.bold(f.input)}${c.inverse(' ')}  ${c.gray('Enter follows · Esc cancels')}`, v.cols));
+  else if (f?.message) out.push(clip(` ${c.yellow(f.message)}`, v.cols));
+  if (cards.length === 0) {
+    out.push(c.gray('  nobody followed yet: press + and paste a wallet address or a polymarket.com profile link (also: a on a holder, or in an X-ray)'));
+    return out.slice(0, height);
+  }
+  const cols = layout(
+    [
+      { key: 'new', head: 'NEW', w: 3, align: 'right', keep: 9 },
+      { key: 'name', head: 'ACCOUNT', w: 24, keep: 10 },
+      { key: 'd7', head: '7D', w: 8, align: 'right', keep: 8 },
+      { key: 'd30', head: '30D', w: 8, align: 'right', keep: 4 },
+      { key: 'all', head: 'ALL-IN', w: 9, align: 'right', keep: 5 },
+      { key: 'open', head: 'OPEN', w: 8, align: 'right', keep: 6 },
+      { key: 'up', head: 'uPNL', w: 8, align: 'right', keep: 3 },
+      { key: 'last', head: 'LAST BET', w: 8, align: 'right', keep: 7 },
+      { key: 'avg', head: 'AVG BET', w: 8, align: 'right', keep: 2 },
+      { key: 'buy', head: 'BUYS', w: 5, align: 'right', keep: 1 },
+      { key: 'top', head: 'BIGGEST POSITION', w: 30, keep: 0, flex: true },
+    ],
+    v.cols,
+  );
+  out.push(headOf(cols));
+  const w = (k: string) => cols.find((x) => x.key === k)?.w ?? 0;
+  const listMax = Math.max(2, Math.min(cards.length, Math.floor(height * 0.3)));
+  const sel = Math.min(v.sel, cards.length - 1);
+  const start = Math.max(0, Math.min(sel - Math.floor(listMax / 2), cards.length - listMax));
+  for (const [i, k] of cards.slice(start, start + listMax).entries()) {
+    const lastTs = k.trades[0]?.ts;
+    out.push(rowOf(cols, {
+      new: k.newTrades ? c.yellow(c.bold(fit(`●${k.newTrades}`, w('new'), 'right'))) : fit('', w('new')),
+      name: k.error ? c.red(fit(`${k.note ?? shortAddr(k.wallet)} ${k.error}`, w('name'))) : fit(k.note ?? k.name ?? shortAddr(k.wallet), w('name')),
+      d7: signColor(k.pnl7d, fit(k.pnl7d === null ? '-' : usd(k.pnl7d, true), w('d7'), 'right')),
+      d30: signColor(k.pnl30d, fit(k.pnl30d === null ? '-' : usd(k.pnl30d, true), w('d30'), 'right')),
+      all: signColor(k.pnlAll, fit(k.pnlAll === null ? '-' : usd(k.pnlAll, true), w('all'), 'right')),
+      open: fit(k.openCount ? usd(k.openValue) : '-', w('open'), 'right'),
+      up: signColor(k.openCount ? k.unrealized : null, fit(k.openCount ? usd(k.unrealized, true) : '-', w('up'), 'right')),
+      last: fit(lastTs ? agoText(nowSecs - lastTs) : '-', w('last'), 'right'),
+      avg: fit(k.style ? usd(k.style.avgUsd) : '-', w('avg'), 'right'),
+      buy: fit(k.style ? `${Math.round(k.style.buyShare * 100)}%` : '-', w('buy'), 'right'),
+      top: c.gray(fit(k.positions[0] ? `${usd(k.positions[0].value)} ${k.positions[0].outcome} · ${k.positions[0].title}` : '', w('top'))),
+    }, start + i === sel));
+  }
+  const k: FollowCard = cards[sel];
+  const room = height - out.length;
+  if (room < 5 || k.error) return out.slice(0, height);
+  out.push(clip(` ${c.bold(k.note ?? k.name ?? shortAddr(k.wallet))}  ${c.gray(`${k.wallet}  polymarket.com/profile/${k.wallet}`)}`, v.cols));
+  if (k.style) out.push(clip(` ${c.gray(`last ${k.style.trades} bets: avg ${usd(k.style.avgUsd)}, median ${usd(k.style.medianUsd)}, ${Math.round(k.style.buyShare * 100)}% buys, ${k.style.markets} markets${k.style.avgBuyPrice === null ? '' : `, buys at ${(k.style.avgBuyPrice * 100).toFixed(0)}c on average`} · their own prices, not what a follower would get`)}`, v.cols));
+  const left = height - out.length;
+  const betRows = Math.max(1, Math.min(k.trades.length, Math.ceil((left - 4) * 0.6)));
+  const betCols = layout(
+    [
+      { key: 'age', head: 'AGO', w: 5, align: 'right', keep: 10 },
+      { key: 'side', head: 'SIDE', w: 5, keep: 9 },
+      { key: 'out', head: 'BET ON', w: 14, keep: 8 },
+      { key: 'px', head: 'PRICE', w: 6, align: 'right', keep: 7 },
+      { key: 'usd', head: '$', w: 7, align: 'right', keep: 6 },
+      { key: 'q', head: 'MARKET', w: 40, keep: 11, flex: true },
+    ],
+    v.cols - 2,
+  );
+  const bw = (key: string) => betCols.find((x) => x.key === key)?.w ?? 0;
+  out.push(c.dim(` RECENT BETS`) + c.gray(k.trades.length ? '' : '  none in the feed'));
+  if (k.trades.length) out.push(` ${headOf(betCols)}`);
+  for (const t of k.trades.slice(0, betRows))
+    out.push(clip(` ${rowOf(betCols, {
+      age: (t.isNew ? c.yellow : (x: string) => x)(fit(agoText(nowSecs - t.ts), bw('age'), 'right')),
+      side: (t.side === 'BUY' ? c.green : c.red)(fit(t.side, bw('side'))),
+      out: fit(t.outcome, bw('out')),
+      px: fit(`${(t.price * 100).toFixed(0)}c`, bw('px'), 'right'),
+      usd: c.bold(fit(usd(t.size * t.price), bw('usd'), 'right')),
+      q: fit(`${t.isNew ? '● ' : ''}${t.title}`, bw('q')),
+    }, false)}`, v.cols));
+  const posRoom = height - out.length - 2;
+  if (posRoom >= 2 && k.positions.length) {
+    const pc = layout(
+      [
+        { key: 'val', head: 'VALUE', w: 8, align: 'right', keep: 10 },
+        { key: 'up', head: 'uPNL', w: 8, align: 'right', keep: 9 },
+        { key: 'out', head: 'HOLDS', w: 14, keep: 8 },
+        { key: 'q', head: 'MARKET', w: 40, keep: 11, flex: true },
+      ],
+      v.cols - 2,
+    );
+    const pw = (key: string) => pc.find((x) => x.key === key)?.w ?? 0;
+    out.push(c.dim(` HOLDING NOW`) + c.gray(`  ${k.openCount} open position${k.openCount === 1 ? '' : 's'}, ${usd(k.openValue)}`));
+    out.push(` ${headOf(pc)}`);
+    for (const p of k.positions.slice(0, Math.max(1, posRoom - 1)))
+      out.push(clip(` ${rowOf(pc, { val: c.bold(fit(usd(p.value), pw('val'), 'right')), up: signColor(p.unrealizedPnl, fit(usd(p.unrealizedPnl, true), pw('up'), 'right')), out: fit(p.outcome, pw('out')), q: fit(p.title, pw('q')) }, false)}`, v.cols));
   }
   return out.slice(0, height);
 }
@@ -1085,7 +1223,7 @@ export function render(m: Model, v: View, nowMs: number): string[] {
   const tabs = clip(vlen(tabBar) + vlen(extras) <= cols ? tabBar + extras : tabBar, cols);
   const detailH = rows >= 30 && v.tab !== 'decision' ? 8 : 0;
   const bodyH = Math.max(3, rows - 3 - detailH - (detailH ? 1 : 0));
-  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : v.tab === 'search' ? searchRows(m, v, bodyH) : v.tab === 'news' ? newsRows(m, v, bodyH) : v.tab === 'edge' ? edgeRows(m, v, bodyH) : v.tab === 'ledger' ? ledgerRows(m, v, bodyH) : v.tab === 'new' ? newRows(m, v, bodyH) : v.tab === 'jumps' ? jumpRows(m, v, bodyH) : v.tab === 'xray' ? xrayRows(m, v, bodyH) : v.tab === 'wallets' ? walletsRows(m, v, bodyH) : v.tab === 'book' ? bookRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
+  const body = (v.tab === 'anomalies' ? anomalyRows(m, v, bodyH) : v.tab === 'games' ? gameRows(m, v, bodyH) : v.tab === 'prints' ? printRows(m, v, bodyH) : v.tab === 'holders' ? holderRows(m, v, bodyH) : v.tab === 'decision' ? decisionRows(m, v, bodyH) : v.tab === 'search' ? searchRows(m, v, bodyH) : v.tab === 'news' ? newsRows(m, v, bodyH) : v.tab === 'edge' ? edgeRows(m, v, bodyH) : v.tab === 'ledger' ? ledgerRows(m, v, bodyH) : v.tab === 'new' ? newRows(m, v, bodyH) : v.tab === 'jumps' ? jumpRows(m, v, bodyH) : v.tab === 'xray' ? xrayRows(m, v, bodyH) : v.tab === 'wallets' ? walletsRows(m, v, bodyH) : v.tab === 'book' ? bookRows(m, v, bodyH) : v.tab === 'follow' ? followRows(m, v, bodyH) : leadRows(m, v, bodyH)).map((l) => clip(l, cols));
   const lines = [header, tabs, ...body];
   while (lines.length < 2 + bodyH) lines.push('');
   if (detailH) {
@@ -1094,7 +1232,7 @@ export function render(m: Model, v: View, nowMs: number): string[] {
     for (let i = 0; i < detailH; i++) lines.push(d[i] ?? '');
   }
   while (lines.length < rows - 1) lines.push('');
-  const hint = c.gray(' ↑↓ move · 1-8 tabs · 8 order book · h holders (on 5: the selected row) · p decision · w newbies · x x-ray · a watch wallet · / search (or paste a 0x wallet) · enter open · f category · b bots · o link · r refresh · q quit');
+  const hint = c.gray(' ↑↓ move · 1-9 tabs · 8 order book · 9 following (+ add by link) · h holders (on 5: the selected row) · p decision · w newbies · x x-ray · a watch wallet · / search (or paste a 0x wallet) · enter open · f category · b bots · o link · r refresh · q quit');
   // the status message goes first: the key hint is long and would push a trailing message off a narrow screen
   lines.push(clip(s.message ? `${c.yellow(` ${s.message}`)}  ${hint}` : hint, cols));
   return lines.slice(0, rows).map((l) => (vlen(l) > cols ? clip(l, cols) : l));
@@ -1102,7 +1240,7 @@ export function render(m: Model, v: View, nowMs: number): string[] {
 
 export type Key = 'up' | 'down' | 'pageup' | 'pagedown' | 'home' | 'end' | 'tab' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '0' | 'w' | 'j' | 'x' | 'u';
 export function listLength(m: Model, tab: Tab): number {
-  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : tab === 'search' ? (m.search?.results.length ?? 0) : tab === 'news' ? (m.news?.hits.length ?? 0) : tab === 'edge' ? (m.edges?.result?.candidates.length ?? 0) : tab === 'ledger' ? (m.ledger?.report?.strategies.length ?? 0) : tab === 'new' ? flaggedNew(m).length : tab === 'jumps' ? jumpFlags(m).length : tab === 'xray' ? 0 : tab === 'wallets' ? newWalletRows(m).length : tab === 'book' ? 0 : m.leads.length;
+  return tab === 'anomalies' ? m.anomalies.length : tab === 'games' ? m.games.length : tab === 'prints' ? m.prints.length : tab === 'holders' ? visibleHolders(m).length : tab === 'decision' ? (m.decision?.decision?.markets.length ?? 0) : tab === 'search' ? (m.search?.results.length ?? 0) : tab === 'news' ? (m.news?.hits.length ?? 0) : tab === 'edge' ? (m.edges?.result?.candidates.length ?? 0) : tab === 'ledger' ? (m.ledger?.report?.strategies.length ?? 0) : tab === 'new' ? flaggedNew(m).length : tab === 'jumps' ? jumpFlags(m).length : tab === 'xray' ? 0 : tab === 'wallets' ? newWalletRows(m).length : tab === 'book' ? 0 : tab === 'follow' ? (m.follow?.cards.length ?? 0) : m.leads.length;
 }
 
 /** Pure keyboard reducer; the shell only translates raw input into these keys. */
@@ -1125,6 +1263,7 @@ export function moveSelection(v: View, key: Key, m: Model): View {
     case '6': case 'x': return { ...v, tab: 'xray', sel: 0 };
     case '7': return { ...v, tab: 'search', sel: 0 };
     case '8': return { ...v, tab: 'book', sel: 0 };
+    case '9': return { ...v, tab: 'follow', sel: 0 };
     default: return v;
   }
 }
