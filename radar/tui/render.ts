@@ -12,7 +12,8 @@ import { formatInfo } from '../marketinfo.ts';
 import { costLines, formatCost } from '../cost.ts';
 import { summarizeScan, usdShort, type NewWalletsResult } from '../newwallets.ts';
 import type { FollowCard, FollowView } from '../following.ts';
-import { bidShare, costSummary, dom, tape, type BookView } from '../bookview.ts';
+import { costSummary, toBook, type BookView } from '../bookview.ts';
+import { buildDom, tapeOf } from '../dom.ts';
 import { formatXray, type XrayReport } from '../xray.ts';
 import { peopleOnly, type HolderRow, type HoldersView } from '../holders.ts';
 import { accountAge, dateOf } from '../identity.ts';
@@ -867,59 +868,82 @@ export function walletsRows(m: Model, v: View, height: number): string[] {
 const agoText = (secs: number): string => (secs < 90 ? `${Math.max(0, Math.round(secs))}s` : secs < 5_400 ? `${Math.round(secs / 60)}m` : secs < 172_800 ? `${Math.round(secs / 3_600)}h` : `${Math.round(secs / 86_400)}d`);
 const px1 = (p: number): string => (p * 100).toFixed(1);
 const shortAddr = (a: string): string => `${a.slice(0, 6)}…${a.slice(-4)}`;
-const compact = (x: number): string => (x >= 1e6 ? `${(x / 1e6).toFixed(1)}M` : x >= 1e3 ? `${(x / 1e3).toFixed(1)}k` : `${Math.round(x)}`);
+const compact = (x: number): string => (x >= 1e6 ? `${(x / 1e6).toFixed(1)}M` : x >= 1e5 ? `${Math.round(x / 1e3)}k` : x >= 1e3 ? `${(x / 1e3).toFixed(1)}k` : `${Math.round(x)}`);
 
-/** Terminal-style order book: bids on the left and asks on the right with depth bars growing outward from the spread, the live tape of fills beside it, and the cost of a trade below. */
+/** Live DOM ("glass") like Tiger.com / CScalp: price ladder with resting sizes either side of the price (shaded depth), trade clusters per time bucket, print bubbles, and the trade feed beside it. */
+const SGR = (code: string, text: string): string => `\x1b[${code}m${text}\x1b[0m`;
+const shade = (color: number, text: string): string => SGR(`48;5;${color};97`, text);
+const bubbleGlyph = (x: number): string => (x >= 1000 ? '⬤' : x >= 200 ? '●' : x >= 50 ? '◉' : '•');
+const depthCell = (value: number, max: number, w: number, side: 'bid' | 'ask', best: boolean): string => {
+  if (value <= 0) return ' '.repeat(w);
+  const txt = compact(value);
+  const n = Math.max(1, Math.round(Math.min(1, value / max) * w));
+  const chars = [...(side === 'bid' ? txt.padStart(w) : txt.padEnd(w))];
+  const color = side === 'bid' ? (best ? 34 : 22) : best ? 160 : 52;
+  return side === 'bid' ? chars.slice(0, w - n).join('') + shade(color, chars.slice(w - n).join('')) : shade(color, chars.slice(0, n).join('')) + chars.slice(n).join('');
+};
+const clusterCell = (cl: { buy: number; sell: number }, max: number, w: number): string => {
+  const tot = Math.max(cl.buy, cl.sell);
+  if (tot <= 0) return ' '.repeat(w);
+  const level = tot / max > 0.6 ? 2 : tot / max > 0.2 ? 1 : 0;
+  return shade((cl.buy >= cl.sell ? [22, 28, 34] : [52, 88, 124])[level], compact(tot).padStart(w));
+};
+
 export function bookRows(m: Model, v: View, height: number): string[] {
   const b = m.book;
-  if (!b) return [c.gray('  press 8 on a market (Holders, Decision or a Newbies row) to see its live order book; [ ] switch market')];
-  const out = [clip(`${c.bold(' ORDER BOOK')}  ${b.question || b.slug}  ${b.error ? c.red(b.error) : c.gray(`${b.fetchedAt ? `updated ${agoText((Date.now() - b.fetchedAt) / 1000)} ago` : 'loading…'} · refresh 3s`)}`, v.cols)];
-  if (!b.book || !b.summary) return out;
-  const s = b.summary;
-  const last = b.trades[0];
-  const mid = s.bid !== null && s.ask !== null ? (s.bid + s.ask) / 2 : null;
+  if (!b) return [c.gray('  press 8 on a market (Holders, Decision or a Newbies row) to open its live order book; [ ] switch market')];
+  const s = b.live;
+  const ui = b.ui;
+  const status = !s ? c.yellow('◌ CONNECTING') : s.status === 'live' ? c.green('● LIVE') : s.status === 'polling' ? c.yellow('◐ POLLING (socket down, refreshing every 3s)') : s.status === 'connecting' ? c.yellow('◌ CONNECTING') : c.red('○ DOWN');
+  const out = [clip(`${c.bold(' ORDER BOOK')}  ${b.question}  ${status}${s?.error ? c.red(`  ${s.error.slice(0, 60)}`) : ''}${b.error ? c.red(`  ${b.error}`) : ''}`, v.cols)];
+  if (!s || (s.bids.size === 0 && s.asks.size === 0)) {
+    out.push(c.gray(b.error ? '' : '  waiting for the book…'));
+    return out.slice(0, height);
+  }
+  const nC = v.cols >= 128 ? 3 : v.cols >= 100 ? 2 : v.cols >= 84 ? 1 : 0;
+  const core = nC * 8 + 38;
+  const tapeW = Math.min(64, v.cols - core - 3);
+  const withTape = tapeW >= 40;
+  const costs = height >= 28 ? costSummary(toBook(s, ui.flip), b.outcomes, b.feeRate) : [];
+  const fixed = 3 + 1 + 1 + 1 + (costs.length ? costs.length + 1 : 0);
+  const nRows = Math.max(3, height - fixed);
+  const d = buildDom({ ...s }, { rows: nRows % 2 ? nRows : nRows - 1, group: ui.group, unit: ui.unit, flip: ui.flip, periodSecs: ui.periodSecs, clusterCols: nC, scroll: ui.scroll, manualCenter: ui.manualCenter, nowMs: Date.now() });
+  const unitTag = ui.unit === 'USD' ? '$' : 'sh';
+  const outcome = b.outcomes[ui.flip ? 1 : 0];
+  const nowSecs = Date.now() / 1000;
+  const tape = tapeOf(s, ui.flip, ui.tapeMin, nRows + 2);
+  const px = (mm: number | null): string => (mm === null ? '--' : (mm / 10).toFixed(d.stepMills % 10 ? 1 : 1));
+  const spread = d.bestBid !== null && d.bestAsk !== null ? (d.bestAsk - d.bestBid) / 10 : null;
   out.push(clip(
-    ` ${c.green(c.bold(`BID ${s.bid === null ? '--' : px1(s.bid)}`))}  ${c.red(c.bold(`ASK ${s.ask === null ? '--' : px1(s.ask)}`))}  ${c.bold(`MID ${mid === null ? '--' : px1(mid)}`)}  ${c.yellow(`SPR ${s.spreadCents === null ? '--' : s.spreadCents.toFixed(1)}c`)}`
-    + `  ${c.gray('│')} LAST ${last ? `${px1(last.price)}c ${b.outcomes[last.outcomeIndex] ?? ''} ${agoText(Date.now() / 1000 - last.ts)}` : '--'}`
-    + `  ${c.gray('│')} ${b.outcomes[0]} ${mid === null ? '--' : px1(mid)} / ${b.outcomes[1]} ${mid === null ? '--' : px1(1 - mid)}`, v.cols));
-  const share = bidShare(s);
-  if (share !== null) {
-    const W = 24;
-    const n = Math.round(share * W);
-    out.push(clip(` ${c.gray('DEPTH ±5c')} ${c.green(`$${compact(s.bidDepthUsd)}`.padStart(7))} ${c.green('█'.repeat(n))}${c.red('█'.repeat(W - n))} ${c.red(`$${compact(s.askDepthUsd)}`)}  ${c.gray(`${Math.round(share * 100)}% of nearby money is bids`)}`, v.cols));
+    ` ${c.green(c.bold(`BID ${px(d.bestBid)}`))}  ${c.red(c.bold(`ASK ${px(d.bestAsk)}`))}  ${c.bold(`MID ${d.mid === null ? '--' : (d.mid / 10).toFixed(2)}`)}  ${c.yellow(`SPR ${spread === null ? '--' : spread.toFixed(1)}c`)}`
+    + `  ${c.gray('│')} LAST ${d.last ? `${(d.last.price * 100).toFixed(1)}c ${d.last.side} ${agoText(nowSecs - d.last.ts)}` : '--'}`
+    + `  ${c.gray('│')} ${c.bold(outcome)} view · ${ui.group}T · ${unitTag} · ${ui.periodSecs >= 60 ? `${ui.periodSecs / 60}m` : `${ui.periodSecs}s`} clusters${ui.scroll || ui.manualCenter !== null ? c.yellow('  (scrolled: c re-centres)') : ''}`, v.cols));
+  const near = d.bidNear + d.askNear;
+  if (near > 0) {
+    const W = 22;
+    const n = Math.round((d.bidNear / near) * W);
+    out.push(clip(` ${c.gray('±5c depth')} ${c.green(compact(d.bidNear).padStart(7))} ${c.green('█'.repeat(n))}${c.red('█'.repeat(W - n))} ${c.red(compact(d.askNear))}  ${c.gray(`${Math.round((d.bidNear / near) * 100)}% bids · ${s.trades.length} fills in memory · ${s.frames.toLocaleString('en-US')} msgs`)}`, v.cols));
+  } else out.push(c.gray(' ±5c depth: none'));
+  const timeLab = (t: number): string => new Date(t * 1000).toLocaleTimeString('en-GB').slice(0, ui.periodSecs < 60 ? 8 : 5);
+  const head = (nC ? d.colStarts.map((t) => timeLab(t).padStart(7)).join(' ') + ' ' : '') + `${'BID'.padStart(11)} ${'PRICE'.padStart(6)} ${'ASK'.padEnd(11)} ${'PRINTS'.padEnd(8)}`;
+  out.push(clip(c.dim(head) + (withTape ? `   ${c.dim(`${'TIME'.padEnd(8)} ${'SIDE'.padEnd(4)} ${'PRICE'.padStart(6)} ${'SIZE'.padStart(8)}  WALLET`)}` : ''), v.cols));
+  for (const [i, r] of d.rows.entries()) {
+    const label = (r.mills / 10).toFixed(d.stepMills % 10 ? 1 : 0).padStart(5);
+    const priceCell = r.isLast ? SGR('30;43', ` ${label} `) : r.isBestBid ? c.green(c.bold(` ${label} `)) : r.isBestAsk ? c.red(c.bold(` ${label} `)) : c.bold(` ${label} `);
+    const pr = r.print.buy + r.print.sell;
+    const printCell = pr > 0 ? (r.print.buy >= r.print.sell ? c.green : c.red)(`${bubbleGlyph(pr)}${compact(pr)}`.padEnd(8)) : ' '.repeat(8);
+    const left = (nC ? r.clusters.map((cl) => clusterCell(cl, d.clusterMax, 7)).join(' ') + ' ' : '') + `${depthCell(r.bid, d.maxDepth, 11, 'bid', r.isBestBid)} ${priceCell} ${depthCell(r.ask, d.maxDepth, 11, 'ask', r.isBestAsk)} ${printCell}`;
+    const t = withTape ? tape[i] : undefined;
+    const tapeCell = t ? `${new Date(t.ts * 1000).toLocaleTimeString('en-GB')} ${(t.side === 'BUY' ? c.green : c.red)(t.side.padEnd(4))} ${(t.price * 100).toFixed(1).padStart(6)} ${(t.size * t.price >= 1000 ? c.bold : (x: string) => x)(`${bubbleGlyph(t.size * t.price)}$${compact(t.size * t.price)}`.padStart(8))}  ${c.gray(t.wallet ? shortAddr(t.wallet) : '·')}` : '';
+    out.push(clip(`${left}${withTape ? `   ${tapeCell}` : ''}`, v.cols));
   }
-  const costs = height >= 22 ? costSummary(b.book, b.outcomes, b.feeRate) : [];
-  const B = v.cols >= 150 ? 12 : v.cols >= 120 ? 8 : 4;
-  const domW = 2 * B + 47;
-  const side = v.cols >= domW + 3 + 38; // room for the tape beside the ladder
-  const tapeW = side ? v.cols - domW - 3 : 0;
-  const bodyH = Math.max(2, height - out.length - 1 - (costs.length ? costs.length + 1 : 0));
-  const { rows, max } = dom(b.book, bodyH);
-  const bar = (cum: number, left: boolean): string => {
-    const n = Math.max(cum > 0 ? 1 : 0, Math.round((cum / max) * B));
-    return left ? ' '.repeat(B - n) + '█'.repeat(n) : '█'.repeat(n) + ' '.repeat(B - n);
-  };
-  out.push(clip(c.dim(`${'DEPTH'.padStart(B)} ${'CUM$'.padStart(7)} ${'SIZE'.padStart(9)} ${'BID'.padStart(6)} │ ${'ASK'.padEnd(6)} ${'SIZE'.padStart(9)} ${'CUM$'.padStart(7)} ${'DEPTH'.padEnd(B)}`) + (side ? `   ${c.dim(`${'TIME'.padEnd(8)} ${'SIDE'.padEnd(4)} ${'OUTCOME'.padEnd(10)} ${'PRICE'.padStart(6)} ${'$'.padStart(7)}  WALLET`)}` : ''), v.cols));
-  const tp = tape(b.trades, b.outcomes);
-  const shown = Math.min(bodyH, Math.max(rows.length, side ? tp.length : 0, 6)); // no padding with empty rows: costs come right after the ladder
-  for (let i = 0; i < shown; i++) {
-    const r = rows[i];
-    const L = r?.bid ? `${bar(r.bid.cum, true)} ${compact(r.bid.cum).padStart(7)} ${Math.round(r.bid.size).toLocaleString('en-US').padStart(9)} ${px1(r.bid.price).padStart(6)}` : ' '.repeat(B + 7 + 9 + 6 + 3);
-    const R = r?.ask ? `${px1(r.ask.price).padEnd(6)} ${Math.round(r.ask.size).toLocaleString('en-US').padStart(9)} ${compact(r.ask.cum).padStart(7)} ${bar(r.ask.cum, false)}` : ' '.repeat(B + 7 + 9 + 6 + 3);
-    // colour the bars separately from the numbers so the ladder reads at a glance
-    const Lc = r?.bid ? `${c.green(L.slice(0, B))}${L.slice(B)}` : L;
-    const Rc = r?.ask ? `${R.slice(0, R.length - B)}${c.red(R.slice(R.length - B))}` : R;
-    const t = side ? tp[i] : undefined;
-    const tapeCell = t
-      ? `${new Date(t.ts * 1000).toLocaleTimeString('en-GB')} ${(t.side === 'BUY' ? c.green : c.red)(t.side.padEnd(4))} ${fit(t.outcome, 10)} ${px1(t.price).padStart(6)} ${(t.big ? c.bold : (x: string) => x)(`$${compact(t.usd)}`.padStart(7))}  ${c.gray(shortAddr(t.wallet))}`
-      : '';
-    out.push(clip(`${Lc} ${c.gray('│')} ${Rc}${side ? `   ${tapeCell}` : ''}`, v.cols));
-  }
-  if (!side && tp.length && height >= 40) out.push(c.gray(`  last fill: ${tp[0].side} ${tp[0].outcome} ${px1(tp[0].price)}c $${compact(tp[0].usd)}`));
+  const deltaCells = nC ? d.colDelta.map((x) => (x >= 0 ? c.green : c.red)(`${x >= 0 ? '+' : '-'}${compact(Math.abs(x))}`.padStart(7))).join(' ') + ' ' : '';
+  out.push(clip(`${deltaCells}${c.gray(`${'Δ buy−sell'.padStart(11)}`)}`, v.cols));
   if (costs.length) {
     out.push(c.gray(`  COST OF A TRADE (taker fee ${(b.feeRate * 100).toFixed(0)}% x p x (1-p), estimated from tags)`));
     for (const l of costs) out.push(clip(`  ${l}`, v.cols));
   }
+  out.push(clip(c.gray(' + / - compress ticks · ↑↓ scroll · c centre · m shares/$ · t cluster period · i flip outcome · s tape filter · [ ] market'), v.cols));
   return out.slice(0, height);
 }
 

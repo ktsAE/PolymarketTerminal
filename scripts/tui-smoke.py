@@ -144,11 +144,15 @@ check("8 opens the order book tab", "8 Book" in plain(screen()[1]))
 t10 = time.time()
 while time.time() - t10 < 30:
     pump(1)
-    if "CUM$" in plain("\n".join(screen()[:ROWS])) or "no order book" in plain("\n".join(screen()[:ROWS])): break
+    if ("PRICE" in plain("\n".join(screen()[:ROWS])) and "PRINTS" in plain("\n".join(screen()[:ROWS]))) or "no order book" in plain("\n".join(screen()[:ROWS])): break
 btext = plain("\n".join(screen()[:ROWS]))
-check("order book shows the ladder with spread and cumulative dollars (or says the market has no book)", ("ORDER BOOK" in btext and "BID" in btext and "ASK" in btext and "CUM$" in btext) or "no order book" in btext)
+check("order book shows the live DOM: ladder columns, status and the controls hint (or says the market has no book)", ("ORDER BOOK" in btext and "PRICE" in btext and "PRINTS" in btext and ("LIVE" in btext or "POLLING" in btext) and "compress ticks" in btext) or "no order book" in btext)
+os.write(fd, b"+"); pump(0.6); os.write(fd, b"m"); pump(0.6); os.write(fd, b"i"); pump(0.6)
+check("book keys + m i change the view (grouping, unit, outcome)", ("2T" in plain("\n".join(screen()[:6])) and "view" in plain("\n".join(screen()[:6]))) or "no order book" in plain("\n".join(screen()[:ROWS])))
+os.write(fd, b"c"); pump(0.5)
 # following: + opens the add-by-link prompt, a polymarket.com/@name link resolves to a wallet, 9 shows the card, - unfollows
 if os.path.exists(os.path.join(os.environ.get("TMPDIR", "/tmp"), "radar-smoke-wallets.json")): os.remove(os.path.join(os.environ.get("TMPDIR", "/tmp"), "radar-smoke-wallets.json"))
+os.write(fd, b"1"); pump(0.6)  # leave the Book tab: there + and - compress the ladder
 os.write(fd, b"+"); pump(0.8)
 check("+ opens the follow prompt", "9 Following" in plain(screen()[1]) and "Follow:" in plain("\n".join(screen()[:6])))
 os.write(fd, b"https://polymarket.com/@technician2"); pump(0.5)

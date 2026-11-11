@@ -9,14 +9,16 @@ import { logFlagged, scanNewMarkets } from '../newmarkets.ts';
 import { loadHolders } from '../holders.ts';
 import { pickMarket } from './pick.ts';
 import { loadXray } from '../xray.ts';
-import { loadBook, refreshBook } from '../bookview.ts';
+import { cycle, emptyBook, GROUPS, loadBookMeta, PERIODS, TAPE_MINS } from '../bookview.ts';
+import { autoCenter } from '../dom.ts';
+import { LiveBookFeed } from '../livebook.ts';
 import { emptyFollow, loadFollowing } from '../following.ts';
 import { resolveWalletInput } from '../walletinput.ts';
 import { scanNewWallets } from '../newwallets.ts';
 import { addWatched, describeTrade, isAddress, loadWatched, notify, removeWatched } from '../walletwatch.ts';
 import { loadNews } from '../newsview.ts';
 import { loadPeople, type Person } from '../people.ts';
-import { httpFetchJson, type PolymarketClient } from '../polymarket.ts';
+import { httpFetchJson, NotFoundError, type PolymarketClient } from '../polymarket.ts';
 import { httpFetchText, pollFeeds } from '../poll.ts';
 import { loadRefs, type RefConfig } from '../refs.ts';
 import type { RadarStore } from '../store.ts';
@@ -225,6 +227,7 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
   const timers: NodeJS.Timeout[] = [];
   let pollTimer: NodeJS.Timeout | undefined;
   const quit = () => {
+    bookFeed?.stop();
     for (const t of timers) clearInterval(t);
     if (pollTimer) clearTimeout(pollTimer);
     restore();
@@ -473,36 +476,78 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     if (!model.follow || loadWatched().length === 0) return;
     refreshFollow(true);
   }, 90_000));
+  // ---- live order book: the feed (WebSocket, REST fallback) runs only while the Book tab is on screen
   let bookToken = 0;
-  let bookTokenId: string | null = null;
+  let bookFeed: LiveBookFeed | null = null;
+  const stopBookFeed = () => {
+    bookFeed?.stop();
+    bookFeed = null;
+  };
+  const startBookFeed = (token: number) => {
+    const bv = model.book;
+    if (!bv || !bv.tokenIds[0] || bookFeed) return;
+    const tokenId = bv.tokenIds[0];
+    const feed = new LiveBookFeed({
+      tokenId,
+      tokenIndex: 0,
+      tickMills: bv.tickMills,
+      fetchBook: () => client.book(tokenId).catch((e: unknown) => { throw e instanceof NotFoundError ? new Error('no order book: this market is closed or not trading') : e; }),
+      fetchTrades: () => client.tradesPage(bv.cid, { limit: 200 }),
+      onUpdate: (st) => {
+        if (token !== bookToken || !model.book) return;
+        model = { ...model, book: { ...model.book, live: st } };
+        paint();
+      },
+    });
+    bookFeed = feed;
+    model = { ...model, book: { ...bv, live: feed.state } };
+    feed.start();
+  };
   const openBook = (slug: string, cid: string) => {
     const token = ++bookToken;
-    bookTokenId = null;
-    model = { ...model, book: { slug, cid, question: 'loading…', outcomes: ['Yes', 'No'], book: null, summary: null, feeRate: 0.05, fetchedAt: null, error: null, trades: [] } };
+    stopBookFeed();
+    model = { ...model, book: emptyBook(slug, cid) };
     view = { ...view, tab: 'book', sel: 0 };
     paint();
-    void loadBook(client, slug, cid).then(async (bv) => {
+    void loadBookMeta(client, slug, cid).then((bv) => {
       if (token !== bookToken) return;
-      model = { ...model, book: bv };
+      model = { ...model, book: { ...bv, ui: model.book?.ui ?? bv.ui } };
+      if (!bv.error) startBookFeed(token);
       paint();
-      try {
-        const ev = await client.eventBySlug(slug);
-        bookTokenId = ev?.markets.find((x) => x.cid === cid)?.tokenIds[0] ?? null;
-      } catch {
-        /* the next manual open retries */
-      }
     });
   };
   timers.push(setInterval(() => {
-    const bk = model.book;
-    if (view.tab !== 'book' || !bk || !bookTokenId) return;
-    const token = bookToken;
-    void refreshBook(client, bookTokenId, bk).then((patch) => {
-      if (token !== bookToken || !model.book) return;
-      model = { ...model, book: { ...model.book, ...patch } };
+    // leave the tab: stop the socket; come back: resume (a fresh snapshot is fetched)
+    if (view.tab !== 'book' && bookFeed) stopBookFeed();
+    else if (view.tab === 'book' && !bookFeed && model.book && !model.book.error && model.book.tokenIds[0]) startBookFeed(bookToken);
+  }, 1_000));
+  const bookKey = (d: string): boolean => {
+    const bv = model.book;
+    if (view.tab !== 'book' || !bv) return false;
+    const ui = bv.ui;
+    const set = (patch: Partial<typeof ui>) => {
+      model = { ...model, book: { ...bv, ui: { ...ui, ...patch } } };
       paint();
-    });
-  }, 3_000));
+      return true;
+    };
+    const rows = Math.max(5, view.rows - 14);
+    const scroll = (delta: number) => {
+      const centre = ui.manualCenter ?? (bv.live ? autoCenter(bv.live, ui.flip, ui.group) : null);
+      return set({ manualCenter: centre, scroll: ui.scroll + delta });
+    };
+    if (d === '+' || d === '=') return set({ group: cycle(GROUPS, ui.group, 1) === GROUPS[0] ? GROUPS[GROUPS.length - 1] : cycle(GROUPS, ui.group, 1), scroll: 0, manualCenter: null });
+    if (d === '-' || d === '_') return set({ group: ui.group === GROUPS[0] ? GROUPS[0] : cycle(GROUPS, ui.group, -1), scroll: 0, manualCenter: null });
+    if (d === 'm') return set({ unit: ui.unit === 'SH' ? 'USD' : 'SH' });
+    if (d === 't') return set({ periodSecs: cycle(PERIODS, ui.periodSecs as (typeof PERIODS)[number], 1) });
+    if (d === 's') return set({ tapeMin: cycle(TAPE_MINS, ui.tapeMin as (typeof TAPE_MINS)[number], 1) });
+    if (d === 'i') return set({ flip: !ui.flip, scroll: 0, manualCenter: null });
+    if (d === 'c') return set({ scroll: 0, manualCenter: null });
+    if (d === `${ESC}[A` || d === 'k') return scroll(1);
+    if (d === `${ESC}[B` || d === 'j') return scroll(-1);
+    if (d === `${ESC}[5~`) return scroll(rows);
+    if (d === `${ESC}[6~`) return scroll(-rows);
+    return false;
+  };
   let walletsToken = 0;
   const startWalletScan = () => {
     const token = ++walletsToken;
@@ -656,6 +701,7 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
         const next = pickMarket(model.holders.markets, model.holders.cid, d);
         return next ? openHolders(model.holders.slug, next.cid) : paint();
       }
+      if (bookKey(d)) return;
       if (d === '+' || d === '=') {
         putFollow({ input: '', message: null });
         view = { ...view, tab: 'follow', sel: 0 };

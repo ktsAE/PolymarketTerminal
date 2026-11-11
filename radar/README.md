@@ -388,12 +388,19 @@ Typical flow: 3 Newbies -> Enter on a market -> read Holders -> `p` for prices a
 Removed from the TUI (code and CLI kept, nothing deleted from git history): Big prints, Leads, News, Edge, Jumps, New markets, Ledger. They still run as CLI commands (`edges`, `jumps`, `watch`, `new-scan`, `ledger`,
 `forward-log`, `daemon`); they found no edge.
 
-## Order book (tab 8, `radar/bookview.ts`)
+## Order book (tab 8): a live DOM like Tiger.com / CScalp (`radar/livebook.ts`, `radar/dom.ts`, `radar/bookview.ts`)
 
-A terminal-style book, refreshed every 3 seconds. Header: BID / ASK / MID / SPR, last fill, both outcomes' implied prices, and a depth gauge of how much of the nearby money (within 5c) is bids vs asks.
-Ladder: the i-th best bid and ask share a row, with cumulative dollars and a depth bar growing outward from the spread (bids green on the left, asks red on the right). Beside it (on terminals 111+ columns wide)
-the TAPE: the latest fills with time, side, outcome, price, dollars (bold from $1k) and wallet. Below: what $50 / $500 of each outcome would cost (average fill, slippage, break-even probability, loss of leaving at once, estimated fee).
-Press `8` while a market is on screen: from Holders it opens that market, from Decision the selected row, from Newbies the selected market; `[ ] { }` step through the event's markets. A closed market says "no order book".
+Scalping terminals show a "glass": one row per price, high to low, with the resting size on each side of the price, traded volume as clusters beside it, execution bubbles at the traded price, and a trade feed
+next to it. This tab is that, for Polymarket, fed live by the CLOB WebSocket (`wss://ws-subscriptions-clob.polymarket.com/ws/market`: `book` snapshot, `price_change` level updates, `last_trade_price` fills).
+
+- **Ladder:** bid size left of the price, ask size right of it, each with a shaded depth bar scaled to the biggest visible level; the best bid/ask rows and the last traded price are highlighted; the ladder re-centres as the market moves.
+- **Clusters (left):** volume traded at each price per time bucket (30s / 1m / 5m, newest nearest the book), green when buys dominate, red for sells, shade by size; the bottom row is each bucket's net buy-sell.
+- **Prints:** fills of the last 20 seconds at their price, as bubbles (• ◉ ● ⬤ by size).
+- **Trade feed (right, 128+ columns):** time, taker side, price, size and the wallet (from the REST feed when the socket delivered the fill first).
+- **Header:** BID / ASK / MID / SPR, last fill, the ±5c depth gauge, message and fill counts, and LIVE / POLLING status. If the socket drops it polls the REST book every 3s and reconnects with backoff; while live it re-syncs from REST every 30s to correct drift. A hot market sends ~300 updates a second; the screen updates at most ~8 times a second.
+- **Cost of a trade** below the ladder (average fill, slippage, break-even probability, loss of leaving at once, estimated fee).
+- **Keys:** `+` / `-` compress price ticks (1T 2T 5T 10T), `↑` `↓` / PgUp / PgDn scroll (freezes the view; `c` re-centres), `m` shares / dollars, `t` cluster period, `i` flip to the other outcome (a NO book is the YES book mirrored), `s` minimum size on the tape, `[ ] { }` other markets of the event.
+- Open with `8` while a market is on screen: from Holders it opens that market, from Decision the selected row, from Newbies the selected market. The socket runs only while the tab is open. Read-only: it never places orders.
 
 ## Following (tab 9, `radar/following.ts`, `radar/walletinput.ts`)
 

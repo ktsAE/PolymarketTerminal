@@ -1,71 +1,97 @@
 import { describe, expect, it } from 'vitest';
-import { bidShare, costSummary, dom, loadBook, tape } from '../../radar/bookview';
+import { costSummary, cycle, defaultUi, emptyBook, GROUPS, loadBookMeta, toBook, type BookView } from '../../radar/bookview';
+import { newLiveState } from '../../radar/livebook';
 import { PolymarketClient } from '../../radar/polymarket';
-import { render, strip, vlen } from './helpers-book';
+import { strip, vlen } from '../../radar/tui/ansi';
+import { render, type Model } from '../../radar/tui/render';
 
-const book = { bids: [{ price: 0.48, size: 1000 }, { price: 0.45, size: 2000 }], asks: [{ price: 0.5, size: 400 }, { price: 0.53, size: 800 }, { price: 0.6, size: 100 }] };
+const fast = { minIntervalMs: 0, retries: 0, sleep: async () => undefined, now: () => 0 };
 
-describe('order book view', () => {
-  it('puts the i-th best bid and ask on one row with cumulative dollars growing away from the spread', () => {
-    const d = dom(book, 3);
-    expect(d.rows).toHaveLength(3);
-    expect(d.rows[0].bid).toMatchObject({ price: 0.48, size: 1000 });
-    expect(d.rows[0].bid?.cum).toBeCloseTo(480);
-    expect(d.rows[1].bid?.cum).toBeCloseTo(480 + 900);
-    expect(d.rows[0].ask?.cum).toBeCloseTo(200);
-    expect(d.rows[2].ask?.cum).toBeCloseTo(200 + 424 + 60);
-    expect(d.rows[2].bid).toBeNull(); // only two bids
-    expect(d.max).toBeCloseTo(1380);
-    expect(dom({ bids: [], asks: [] }, 3)).toEqual({ rows: [], max: 1 });
+describe('book metadata', () => {
+  const ev = [{ slug: 's', title: 'T', volume: 1, closed: false, tags: [{ slug: 'sports' }], markets: [{ conditionId: '0xc', question: 'Q?', outcomes: '["Heat","Jazz"]', clobTokenIds: '["t1","t2"]', orderPriceMinTickSize: 0.001, volume: 1, closed: false }] }];
+  it('reads the tokens, outcome names, tick size and fee category of a market', async () => {
+    const f = async (url: string) => (url.includes('/events?') ? ev : Promise.reject(new Error('x')));
+    const v = await loadBookMeta(new PolymarketClient(f as never, fast), 's', '0xc');
+    expect(v).toMatchObject({ question: 'Q?', outcomes: ['Heat', 'Jazz'], tokenIds: ['t1', 't2'], tickMills: 1, feeRate: 0.05, error: null });
   });
-  it('turns fills into tape lines with the outcome name and flags the big ones', () => {
-    const t = tape([{ cid: 'c', wallet: '0xabc', side: 'SELL', outcomeIndex: 1, price: 0.4, size: 5000, ts: 9, tx: null }, { cid: 'c', wallet: '0xdef', side: 'BUY', outcomeIndex: 0, price: 0.5, size: 10, ts: 8, tx: null }] as never, ['Yes', 'No']);
-    expect(t[0]).toMatchObject({ side: 'SELL', outcome: 'No', usd: 2000, big: true });
-    expect(t[1]).toMatchObject({ outcome: 'Yes', big: false });
-  });
-  it('measures how much of the nearby money is bids', () => {
-    expect(bidShare({ bid: 0.4, ask: 0.5, spreadCents: 10, bidDepthUsd: 300, askDepthUsd: 100 })).toBeCloseTo(0.75);
-    expect(bidShare({ bid: null, ask: null, spreadCents: null, bidDepthUsd: 0, askDepthUsd: 0 })).toBeNull();
-  });
-  it('prices both outcomes with slippage and the cost of leaving', () => {
-    const c = costSummary(book, ['Yes', 'No'], 0.05);
-    expect(c).toHaveLength(4);
-    expect(c[0]).toMatch(/^buy \$50 Yes: avg 50\.0c, slip 0\.0c, needs 51\.\dc? ?%? ?/);
-    expect(c.join('\n')).toMatch(/buy \$500 No:/);
-  });
-  it('loads the market book through the client and reports failures', async () => {
-    const ev = [{ slug: 's', title: 'T', volume: 1, closed: false, tags: ['sports'], markets: [{ conditionId: '0xc', question: 'Q?', outcomes: '["Yes","No"]', clobTokenIds: '["t1","t2"]', volume: 1, closed: false }] }];
-    const f = async (url: string) => (url.includes('/events?') ? ev : url.includes('/book?') ? { bids: [{ price: '0.4', size: '10' }], asks: [{ price: '0.6', size: '10' }] } : Promise.reject(new Error('x')));
-    const v = await loadBook(new PolymarketClient(f as never, { minIntervalMs: 0, sleep: async () => undefined, now: () => 0 }), 's', '0xc', () => 5);
-    expect(v).toMatchObject({ question: 'Q?', fetchedAt: 5, error: null, feeRate: 0.05 });
-    expect(v.summary?.bid).toBe(0.4);
-    const bad = await loadBook(new PolymarketClient(async () => [] as never, { minIntervalMs: 0, retries: 0, sleep: async () => undefined, now: () => 0 }), 's', '0xc');
-    expect(bad.error).toMatch(/market not found/);
-  });
-  it('renders inside every box size', () => {
-    const m = { anomalies: [], games: [], prints: [], leads: [], holders: null, showBots: false, oiSeries: [], filter: null, status: { lastPollAt: 1, nextPollAt: null, busy: false, error: null, events: 0, historySecs: 0, printsWindowMin: null, message: null },
-      book: { slug: 's', cid: 'c', question: 'Will X?', outcomes: ['Yes', 'No'], book, summary: { bid: 0.48, ask: 0.5, spreadCents: 2, bidDepthUsd: 900, askDepthUsd: 400 }, feeRate: 0.05, fetchedAt: Date.now(), error: null, trades: [{ cid: 'c', wallet: `0x${'a'.repeat(40)}`, side: 'BUY', outcomeIndex: 0, price: 0.62, size: 2000, ts: Math.floor(Date.now() / 1000) - 5, tx: null }] } };
-    const text = render(m as never, { tab: 'book', sel: 0, cols: 120, rows: 40 }, Date.now()).map(strip).join('\n');
-    expect(text).toMatch(/ORDER BOOK\s+Will X\?/);
-    expect(text).toMatch(/BID 48\.0\s+ASK 50\.0\s+MID 49\.0\s+SPR 2\.0c/);
-    expect(text).toMatch(/DEPTH ±5c.*69% of nearby money is bids/);
-    expect(text).toMatch(/TIME\s+SIDE\s+OUTCOME\s+PRICE/);
-    expect(text).toMatch(/BUY\s+Yes\s+62\.0\s+\$1\.2k/);
-    expect(text).toMatch(/buy \$500 No:/);
-    for (const [cols, rows] of [[40, 10], [80, 24], [100, 30], [111, 40], [140, 50], [220, 60]]) {
-      const lines = render(m as never, { tab: 'book', sel: 0, cols, rows }, Date.now());
-      expect(lines).toHaveLength(rows);
-      for (const l of lines) expect(vlen(l)).toBeLessThanOrEqual(cols);
-    }
-    expect(strip(render({ ...m, book: null } as never, { tab: 'book', sel: 0, cols: 120, rows: 20 }, Date.now()).join('\n'))).toMatch(/press 8 on a market/);
+  it('defaults the tick to one cent and reports an unknown market or one without a book', async () => {
+    const noTick = [{ ...ev[0], markets: [{ ...ev[0].markets[0], orderPriceMinTickSize: undefined }] }];
+    expect((await loadBookMeta(new PolymarketClient((async () => noTick) as never, fast), 's', '0xc')).tickMills).toBe(10);
+    expect((await loadBookMeta(new PolymarketClient((async () => []) as never, fast), 's', '0xc')).error).toMatch(/market not found/);
+    const noBook = [{ ...ev[0], markets: [{ ...ev[0].markets[0], clobTokenIds: '[]' }] }];
+    expect((await loadBookMeta(new PolymarketClient((async () => noBook) as never, fast), 's', '0xc')).error).toMatch(/no order book/);
   });
 });
 
-describe('closed markets', () => {
-  it('say there is no order book instead of showing a URL', async () => {
-    const { refreshBook } = await import('../../radar/bookview');
-    const f = async () => { throw new Error('HTTP 404'); };
-    const r = await refreshBook(new PolymarketClient(f as never, { minIntervalMs: 0, retries: 0, sleep: async () => undefined, now: () => 0 }), 'tok', {} as never);
-    expect(r.error).toBe('no order book: this market has closed or is not trading');
+describe('cost lines and helpers', () => {
+  it('prices both outcomes from the live state, including after flipping the view', () => {
+    const s = newLiveState('t');
+    s.bids.set(480, 1000); s.bids.set(450, 2000); s.asks.set(500, 400); s.asks.set(530, 800);
+    const b = toBook(s, false);
+    expect(b.bids.map((l) => l.price)).toEqual([0.48, 0.45]);
+    expect(toBook(s, true).bids.map((l) => l.price)).toEqual([0.5, 0.47]);
+    const c = costSummary(b, ['Yes', 'No'], 0.05);
+    expect(c).toHaveLength(4);
+    expect(c[0]).toMatch(/^buy \$50 Yes: avg 50\.0c, slip 0\.0c, needs 51\.\d% to break even/);
+    expect(c.join('\n')).toMatch(/buy \$500 No:/);
+    expect(costSummary({ bids: [], asks: [] }, ['A', 'B'], 0.05)[0]).toBe('buy $50 A: nothing to buy');
+  });
+  it('cycles through options and wraps', () => {
+    expect(cycle(GROUPS, 5, 1)).toBe(10);
+    expect(cycle(GROUPS, 10, 1)).toBe(1);
+    expect(cycle(GROUPS, 1, -1)).toBe(10);
+  });
+});
+
+describe('rendering the order book tab', () => {
+  const model = (book: BookView | null) => ({ anomalies: [], games: [], prints: [], leads: [], holders: null, showBots: false, oiSeries: [], filter: null, status: { lastPollAt: 1, nextPollAt: null, busy: false, error: null, events: 0, historySecs: 0, printsWindowMin: null, message: null }, book }) as unknown as Model;
+  const live = (): BookView => {
+    const s = newLiveState('t', 10);
+    for (const [p, z] of [[480, 120_000], [470, 5_000], [460, 800], [450, 40_000]]) s.bids.set(p, z);
+    for (const [p, z] of [[500, 30_000], [510, 2_000], [520, 90_000], [560, 600]]) s.asks.set(p, z);
+    const now = Date.now() / 1000;
+    s.trades.push({ ts: now - 3, side: 'BUY', price: 0.5, size: 2_400, tx: '0x1', wallet: `0x${'a'.repeat(40)}` }, { ts: now - 9, side: 'SELL', price: 0.48, size: 150, tx: '0x2', wallet: null }, { ts: now - 90, side: 'BUY', price: 0.5, size: 800, tx: '0x3', wallet: null });
+    s.status = 'live'; s.synced = true; s.frames = 12_345;
+    return { ...emptyBook('s', 'c'), question: 'Will X happen?', outcomes: ['Yes', 'No'], tokenIds: ['t'], live: s, ui: defaultUi() };
+  };
+  it('draws the ladder with sizes either side of the price, best bid/ask, clusters, prints and the trade feed', () => {
+    const text = render(model(live()), { tab: 'book', sel: 0, cols: 150, rows: 44 }, Date.now()).map(strip).join('\n');
+    expect(text).toMatch(/ORDER BOOK\s+Will X happen\?\s+● LIVE/);
+    expect(text).toMatch(/BID 48\.0\s+ASK 50\.0\s+MID 49\.00\s+SPR 2\.0c/);
+    expect(text).toMatch(/Yes view · 1T · sh · 1m clusters/);
+    expect(text).toMatch(/±5c depth/);
+    expect(text).toMatch(/BID\s+PRICE\s+ASK\s+PRINTS/);
+    expect(text).toMatch(/120k\s+48\s+/); // bid size left of its price
+    expect(text).toMatch(/\s50\s+30\.0k/); // ask size right of its price
+    expect(text).toMatch(/TIME\s+SIDE\s+PRICE\s+SIZE\s+WALLET/);
+    expect(text).toMatch(/BUY\s+50\.0\s+⬤\$1\.2k\s+0xaaaa…aaaa/); // tape line, newest first
+    expect(text).toMatch(/\+ \/ - compress ticks/);
+    expect(text).toMatch(/buy \$500 No:/);
+  });
+  it('shows the polling and connecting states, the empty state and a lookup error', () => {
+    const polling = live();
+    polling.live!.status = 'polling';
+    expect(strip(render(model(polling), { tab: 'book', sel: 0, cols: 130, rows: 30 }, Date.now()).join('\n'))).toMatch(/◐ POLLING \(socket down/);
+    const wait = { ...emptyBook('s', 'c'), live: newLiveState('t') };
+    expect(strip(render(model(wait), { tab: 'book', sel: 0, cols: 130, rows: 30 }, Date.now()).join('\n'))).toMatch(/waiting for the book…/);
+    expect(strip(render(model({ ...emptyBook('s', 'c'), error: 'market not found: s' }), { tab: 'book', sel: 0, cols: 130, rows: 30 }, Date.now()).join('\n'))).toMatch(/market not found: s/);
+    expect(strip(render(model(null), { tab: 'book', sel: 0, cols: 120, rows: 20 }, Date.now()).join('\n'))).toMatch(/press 8 on a market/);
+  });
+  it('flips to the other outcome and changes grouping and units', () => {
+    const v = live();
+    v.ui = { ...v.ui, flip: true, group: 5, unit: 'USD' };
+    const text = render(model(v), { tab: 'book', sel: 0, cols: 150, rows: 44 }, Date.now()).map(strip).join('\n');
+    expect(text).toMatch(/No view · 5T · \$ · 1m clusters/);
+    expect(text).toMatch(/BID 50\.0\s+ASK 52\.0/); // NO bid = 1 - YES best ask
+  });
+  it('stays inside its box at every size, with and without the cluster and tape columns', () => {
+    for (const [cols, rows] of [[40, 10], [60, 14], [84, 20], [100, 24], [128, 30], [150, 44], [220, 60]])
+      for (const flip of [false, true]) {
+        const v = live();
+        v.ui.flip = flip;
+        const lines = render(model(v), { tab: 'book', sel: 0, cols, rows }, Date.now());
+        expect(lines, `${cols}x${rows}`).toHaveLength(rows);
+        for (const l of lines) expect(vlen(l), `${cols}x${rows}`).toBeLessThanOrEqual(cols);
+      }
   });
 });

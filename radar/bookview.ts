@@ -1,80 +1,87 @@
 import { buyQuote, sellProceeds, FEE_RATES, feeCategory } from './cost.ts';
-import { summarizeBook, type BookSummary } from './marketinfo.ts';
-import { NotFoundError, type Book, type PolymarketClient } from './polymarket.ts';
-import type { TradeRow } from './store.ts';
+import { viewOf } from './dom.ts';
+import { MILLS, type LiveState } from './livebook.ts';
+import { mapEvent, type Book, type PolymarketClient } from './polymarket.ts';
 
-/** Live order book of one market: the ladder, the spread, depth, and what $50 / $500 would cost right now. Refreshed every few seconds while the tab is open. */
+/** The order-book tab's state: which market and token, how the ladder is displayed, and the live feed's data. */
+
+export const GROUPS = [1, 2, 5, 10] as const;
+export const PERIODS = [30, 60, 300] as const;
+export const TAPE_MINS = [0, 10, 50, 250, 1_000] as const;
+
+export interface BookUi {
+  group: number;
+  unit: 'SH' | 'USD';
+  /** Viewing the second outcome. */
+  flip: boolean;
+  periodSecs: number;
+  scroll: number;
+  manualCenter: number | null;
+  tapeMin: number;
+}
+
+export const defaultUi = (): BookUi => ({ group: 1, unit: 'SH', flip: false, periodSecs: 60, scroll: 0, manualCenter: null, tapeMin: 0 });
 
 export interface BookView {
   slug: string;
   cid: string;
   question: string;
   outcomes: [string, string];
-  book: Book | null;
-  summary: BookSummary | null;
+  /** Token ids of the two outcomes; the feed follows the first. */
+  tokenIds: string[];
+  tickMills: number;
   feeRate: number;
-  fetchedAt: number | null;
   error: string | null;
-  /** Latest fills of the market, newest first (the tape). */
-  trades: TradeRow[];
+  live: LiveState | null;
+  ui: BookUi;
 }
 
-export async function loadBook(client: PolymarketClient, slug: string, cid: string, now: () => number = Date.now): Promise<BookView> {
-  const view: BookView = { slug, cid, question: '', outcomes: ['Yes', 'No'], book: null, summary: null, feeRate: FEE_RATES.other, fetchedAt: null, error: null, trades: [] };
+export const emptyBook = (slug: string, cid: string): BookView => ({ slug, cid, question: 'loading…', outcomes: ['Yes', 'No'], tokenIds: [], tickMills: 10, feeRate: FEE_RATES.other, error: null, live: null, ui: defaultUi() });
+
+const parseList = (v: unknown): string[] => {
+  if (Array.isArray(v)) return v.map(String);
   try {
-    const ev = await client.eventBySlug(slug);
-    const m = ev?.markets.find((x) => x.cid === cid) ?? ev?.markets[0];
-    if (!ev || !m) throw new Error(`market not found: ${slug}`);
+    const p = JSON.parse(String(v));
+    return Array.isArray(p) ? p.map(String) : [];
+  } catch {
+    return [];
+  }
+};
+
+/** Looks up the market's tokens, outcome names, tick size and fee category. Never throws: a failure lands in `error`. */
+export async function loadBookMeta(client: PolymarketClient, slug: string, cid: string): Promise<BookView> {
+  const view = emptyBook(slug, cid);
+  try {
+    const raw = await client.eventRaw(slug);
+    if (!raw) throw new Error(`market not found: ${slug}`);
+    const ev = mapEvent(raw);
+    const m = ev.markets.find((x) => x.cid === cid) ?? ev.markets[0];
+    if (!m) throw new Error(`market not found: ${slug}`);
+    const rawM = ((raw.markets ?? []) as Array<Record<string, any>>).find((x) => x.conditionId === m.cid);
+    view.cid = m.cid;
     view.question = m.question;
     view.outcomes = [m.outcomes[0] ?? 'Yes', m.outcomes[1] ?? 'No'];
+    view.tokenIds = m.tokenIds.length ? m.tokenIds : parseList(rawM?.clobTokenIds);
+    const tick = Number.parseFloat(String(rawM?.orderPriceMinTickSize ?? ''));
+    view.tickMills = Number.isFinite(tick) && tick > 0 ? Math.max(1, Math.round(tick * MILLS)) : 10;
     view.feeRate = FEE_RATES[feeCategory(ev.tags ?? [])];
-    if (!m.tokenIds[0]) throw new Error('market has no order book');
-    return { ...view, ...(await refreshBook(client, m.tokenIds[0], view, now)) };
+    if (!view.tokenIds[0]) throw new Error('market has no order book');
   } catch (error) {
     view.error = error instanceof Error ? error.message : String(error);
-    return view;
   }
+  return view;
 }
 
-export async function refreshBook(client: PolymarketClient, token: string, prev: BookView, now: () => number = Date.now): Promise<Partial<BookView>> {
-  try {
-    const [book, trades] = await Promise.all([client.book(token), client.tradesPage(prev.cid, { limit: 40 }).catch(() => null)]);
-    return { book, summary: summarizeBook(book), fetchedAt: now(), error: null, ...(trades ? { trades: [...trades].sort((a, b) => b.ts - a.ts) } : {}) };
-  } catch (error) {
-    return { error: error instanceof NotFoundError ? 'no order book: this market has closed or is not trading' : error instanceof Error ? error.message : String(error) };
-  }
+/** The live state as a plain book (best first) from one outcome's point of view, for the cost calculation. */
+export function toBook(s: Pick<LiveState, 'bids' | 'asks' | 'trades'>, flip: boolean): Book {
+  const v = viewOf(s, flip);
+  const lv = (m: Map<number, number>) => [...m].map(([p, z]) => ({ price: p / MILLS, size: z }));
+  return { bids: lv(v.bids).sort((a, b) => b.price - a.price), asks: lv(v.asks).sort((a, b) => a.price - b.price) };
 }
 
 const c1 = (p: number): string => (p * 100).toFixed(1);
-const usd = (x: number): string => (x >= 1e6 ? `$${(x / 1e6).toFixed(1)}M` : x >= 1e3 ? `$${(x / 1e3).toFixed(1)}k` : `$${Math.round(x)}`);
 
-export interface LadderLine {
-  side: 'ask' | 'bid' | 'spread';
-  /** Plain text without colour; `frac` is the cumulative-depth share for drawing a bar. */
-  text: string;
-  frac: number;
-}
-
-/** `depth` levels each side. Asks are listed top-down from the highest to the best; bids from the best down. Cumulative dollars grow away from the spread. */
-export function ladder(b: Book, o: [string, string], depth: number): LadderLine[] {
-  const asks = b.asks.filter((l) => l.price > 0 && l.price < 1 && l.size > 0).slice(0, depth);
-  const bids = b.bids.filter((l) => l.price > 0 && l.price < 1 && l.size > 0).slice(0, depth);
-  const cum = (ls: typeof asks) => ls.reduce<number[]>((a, l) => [...a, (a.at(-1) ?? 0) + l.size * l.price], []);
-  const ca = cum(asks);
-  const cb = cum(bids);
-  const max = Math.max(1, ca.at(-1) ?? 0, cb.at(-1) ?? 0);
-  const row = (side: 'ask' | 'bid', l: { price: number; size: number }, total: number): LadderLine => ({
-    side, frac: total / max, text: `${c1(l.price).padStart(5)}c ${c1(1 - l.price).padStart(5)}c  ${Math.round(l.size).toLocaleString('en-US').padStart(10)}  ${usd(total).padStart(7)}`,
-  });
-  const out: LadderLine[] = [];
-  for (let i = asks.length - 1; i >= 0; i--) out.push(row('ask', asks[i], ca[i]));
-  const sp = asks[0] && bids[0] ? (asks[0].price - bids[0].price) * 100 : null;
-  out.push({ side: 'spread', frac: 0, text: sp === null ? `one-sided book (${o[0]} price / ${o[1]} price)` : `spread ${sp.toFixed(1)}c  (${o[0]} price / ${o[1]} price, shares, cumulative $)` });
-  for (let i = 0; i < bids.length; i++) out.push(row('bid', bids[i], cb[i]));
-  return out;
-}
-
-/** One-line costs for the book: buying `usd` of the first outcome and of the second. */
+/** One line per size and outcome: average fill, slippage, break-even probability and the loss of leaving at once. */
 export function costSummary(b: Book, o: [string, string], rate: number, sizes: number[] = [50, 500]): string[] {
   const inv = (ls: Book['bids']) => ls.map((l) => ({ price: 1 - l.price, size: l.size })).sort((x, y) => x.price - y.price);
   const lines: string[] = [];
@@ -92,43 +99,4 @@ export function costSummary(b: Book, o: [string, string], rate: number, sizes: n
   return lines;
 }
 
-export interface DomSide {
-  price: number;
-  size: number;
-  /** Cumulative dollars from the best price out to this level. */
-  cum: number;
-}
-export interface DomRow {
-  bid: DomSide | null;
-  ask: DomSide | null;
-}
-
-/** Terminal-style ladder: row i holds the i-th best bid and the i-th best ask side by side. `max` is the largest cumulative dollars, for scaling the bars. */
-export function dom(b: Book, depth: number): { rows: DomRow[]; max: number } {
-  const side = (ls: Book['bids']): DomSide[] => {
-    let cum = 0;
-    return ls.filter((l) => l.price > 0 && l.price < 1 && l.size > 0).slice(0, depth).map((l) => ({ price: l.price, size: l.size, cum: (cum += l.size * l.price) }));
-  };
-  const bids = side(b.bids);
-  const asks = side(b.asks);
-  const n = Math.max(bids.length, asks.length);
-  const rows: DomRow[] = Array.from({ length: n }, (_, i) => ({ bid: bids[i] ?? null, ask: asks[i] ?? null }));
-  return { rows, max: Math.max(1, bids.at(-1)?.cum ?? 0, asks.at(-1)?.cum ?? 0) };
-}
-
-export interface TapeLine {
-  ts: number;
-  side: 'BUY' | 'SELL';
-  outcome: string;
-  price: number;
-  usd: number;
-  wallet: string;
-  big: boolean;
-}
-
-export function tape(trades: readonly TradeRow[], outcomes: [string, string], bigUsd = 1_000): TapeLine[] {
-  return trades.map((t) => ({ ts: t.ts, side: t.side, outcome: outcomes[t.outcomeIndex] ?? `#${t.outcomeIndex}`, price: t.price, usd: t.size * t.price, wallet: t.wallet, big: t.size * t.price >= bigUsd }));
-}
-
-/** Share of the dollars resting within 5 cents that sit on the bid side (0..1), or null for an empty book. */
-export const bidShare = (s: BookSummary): number | null => (s.bidDepthUsd + s.askDepthUsd > 0 ? s.bidDepthUsd / (s.bidDepthUsd + s.askDepthUsd) : null);
+export const cycle = <T,>(list: readonly T[], cur: T, dir: 1 | -1 = 1): T => list[(list.indexOf(cur) + dir + list.length) % list.length] ?? list[0];
