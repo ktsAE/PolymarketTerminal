@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 // Run with: node radar/cli.ts <command>   (Node >= 22.18 strips types natively)
-import { execFile } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { SEED_CASES } from './cases.seed.ts';
@@ -12,16 +11,19 @@ import { EDGES_PATH, KIND_TEXT, saveEdges, scanAll } from './edges.ts';
 import { FORWARD_DIR, readJsonl, RESULTS_PATH, settleSnapshots, snapshotUpcoming, SNAPSHOTS_PATH, type SettleSummary, type SnapshotSummary } from './forward.ts';
 import { formatLedger, scoreLedger } from './ledger.ts';
 import { captureEntries, formatJumps, JUMPS_PATH, logJumps, scanJumps, scoreJumps, settleJumps, validFlagLine, type EntrySummary, type JumpScan, type JumpSettleSummary } from './jump.ts';
-import { JUMPS_STANDING, LEDGER_STANDING, NEW_STANDING, unmappedNote } from './tui/render.ts';
+const JUMPS_STANDING = 'leads, not signals; no edge shown';
+const LEDGER_STANDING = 'paper results only; NO EDGE PROVEN until n>=300 and CI>0';
+const NEW_STANDING = 'behavior flags only: not evidence of insider trading; no edge proven until the forward log says so';
+const unmappedNote = (n: number): string => `${n} token markets have no reference price (add to .radar/refs.json)`;
 import { logFlagged, NEWMARKET_THRESHOLDS, NEWMARKETS_PATH, NEWMARKETS_RESULTS_PATH, scanNewMarkets, scoreNewMarketLog, type NewMarketScore, type ScanSummary } from './newmarkets.ts';
 import { cleanHandle, DEFAULT_HANDLES_PATH, DEFAULT_POSTS_PATH, loadHandles, loadPosts, pollAccounts, type AccountPollResult } from './xaccounts.ts';
 import { loadHolders, peopleOnly } from './holders.ts';
 import { loadMap } from './loadmap.ts';
-import { scanNewWallets, summarizeScan, usdShort } from './newwallets.ts';
+import { newbiesLines, scanNewWallets, summarizeScan } from './newwallets.ts';
 import { formatFundMap } from './fundmap.ts';
 import { coreHealthy, formatHealth, runHealth } from './health.ts';
 import { formatXray, loadXray } from './xray.ts';
-import { addWatched, describeTrade, loadWatched, notify, pollWatched, removeWatched, WALLETS_PATH } from './walletwatch.ts';
+import { addWatched, describeTrade, loadWatched, notify as notifyDesktop, pollWatched, removeWatched, WALLETS_PATH } from './walletwatch.ts';
 import { loadNews } from './newsview.ts';
 import { accountAge, identityFor } from './identity.ts';
 import { addPerson, describePerson, loadPeople, matchPeople, PEOPLE_PATH, removePerson } from './people.ts';
@@ -216,7 +218,7 @@ async function watchJumps(client: PolymarketClient, everyMin: number, notify: bo
         seen.set(f.cid, now);
         const line = `${f.direction === 'up' ? 'UP' : 'DOWN'} ${f.title.slice(0, 60)} | ${f.outcomes[0]} ${f.pRef.toFixed(2)}->${f.pNow.toFixed(2)} in 30m | ${f.calm ? 'calm' : 'loose'} | vol30m ${usd(f.vol30m)}`;
         console.log(`${stamp()} ${line}\n       https://polymarket.com/event/${f.eventSlug}`);
-        if (notify) execFile('notify-send', ['-a', 'polymarket-radar', 'Price jump (a lead, not a signal)', `${line}\nhttps://polymarket.com/event/${f.eventSlug}`], () => undefined);
+        if (notify) notifyDesktop('Price jump (a lead, not a signal)', `${line}\nhttps://polymarket.com/event/${f.eventSlug}`);
       }
       console.log(`${stamp()} scanned ${sc.markets} markets: ${sc.flags.length} flag(s), ${fresh.length} new${sc.errors.length ? `, ${sc.errors.length} error(s): ${sc.errors[0].slice(0, 80)}` : ''}`);
     } catch (error) {
@@ -408,7 +410,7 @@ async function main(): Promise<void> {
           if (!ws?.length) continue;
           console.log(`\nwallets around "${m.label}" (top holders and net buyers; CREATED is when the Polymarket profile was made):`);
           console.log(['WHO'.padEnd(5), 'SIDE'.padEnd(8), 'POSITION'.padStart(9), 'CREATED'.padEnd(18), 'MKTS'.padStart(6), 'X HANDLE'.padEnd(18), 'NAME'].join(' '));
-          for (const w of args.includes('--wallets') ? ws : ws.slice(0, 12)) console.log([(w.cls === 'LOW_DATA' ? 'NEW?' : w.cls).padEnd(5), (w.side === null ? '?' : (m.outcomes[w.side] ?? '?')).slice(0, 8).padEnd(8), (w.posUsd === null ? '-' : usd(w.posUsd)).padStart(9), accountAge(w.createdAt, nowSecs).label.padEnd(18), String(w.traded ?? '-').padStart(6), (w.xUsername ? `@${w.xUsername}` : '').padEnd(18), `${w.matches.length ? '≈ ' : ''}${w.name ?? w.wallet}`].join(' '));
+          for (const w of args.includes('--wallets') ? ws : ws.slice(0, 12)) console.log([(w.cls === 'LOW_DATA' ? 'NEW?' : w.cls).padEnd(5), (w.side === null ? '?' : (m.outcomes[w.side] ?? '?')).slice(0, 8).padEnd(8), (w.posUsd === null ? '-' : usd(w.posUsd)).padStart(9), accountAge(w.createdAt, nowSecs).label.padEnd(18), String(w.traded ?? '-').padStart(6), (w.xUsername ? `@${w.xUsername}` : '').padEnd(18), `${w.matches.length ? `≈ ${w.wallet}` : (w.name ?? w.wallet)}`].join(' '));
         }
         console.log('\nA decision is a reading of public data, not advice. ARB needs both legs filled; model calls are low confidence; wallet leads are never a trade signal.');
         return;
@@ -466,7 +468,7 @@ async function main(): Promise<void> {
           const hits = matchPeople(id, loadPeople());
           console.log(`${id.name ?? id.pseudonym ?? '(no name)'}${id.xUsername ? `  X @${id.xUsername}` : ''}  profile created ${accountAge(id.createdAt, Date.now() / 1000).label}`);
           if (id.bio) console.log(`bio: ${id.bio}`);
-          console.log(hits.length ? hits.map((h) => `  ≈ ${h.why} -> ${describePerson(h.person)} (${h.kind} ${h.score}); name match only, unverified`).join('\n') : '  no watchlist matches');
+          console.log(hits.length ? hits.map((h) => `  ≈ ${h.why} -> ${describePerson(h.person)} (${h.kind} ${h.score}); name match only, unverified; many people share names, not an identification`).join('\n') : '  no watchlist matches');
           return;
         }
         const people = loadPeople();
@@ -482,9 +484,7 @@ async function main(): Promise<void> {
         process.stderr.write('\r' + ' '.repeat(74) + '\r');
         if (error || !result) throw new Error(error ?? 'no result');
         console.log(summarizeScan(result));
-        console.log(`${'NEW$'.padStart(8)} ${'NEW'.padStart(4)} ${'/ALL'.padStart(5)} ${'SHARE'.padStart(6)} ${'LIFT'.padStart(5)}  LEANS TO              MARKET`);
-        for (const r of result.rows.slice(0, flag(args, 'top', 25)))
-          console.log(`${usdShort(r.newUsd).padStart(8)} ${String(r.newWallets).padStart(4)} ${String(r.wallets).padStart(5)} ${(r.newShare * 100).toFixed(0).padStart(5)}% ${('x' + r.lift.toFixed(1)).padStart(5)}  ${(r.lean ? `${r.lean.outcome.slice(0, 14)} ${Math.round(r.lean.share * 100)}%` : '-').padEnd(20)}  ${r.question.slice(0, 60)}  [${r.eventSlug}]`);
+        for (const line of newbiesLines(result, flag(args, 'top', 25))) console.log(line);
         return;
       }
       case 'map': {
@@ -526,11 +526,10 @@ async function main(): Promise<void> {
         const val = (n: string) => { const i = args.indexOf(`--${n}`); return i >= 0 ? args[i + 1] : undefined; };
         await runTui(store, client, {
           once: cmd === 'scan' || args.includes('--once'),
-          news: !args.includes('--no-news'),
           intervalSecs: flag(args, 'interval', 120),
           cols: cols || undefined,
           rows: rows || undefined,
-          tab: (['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new', 'jumps'] as const).find((t) => t === val('tab')),
+          tab: (['anomalies', 'games', 'holders', 'decision', 'search', 'xray', 'wallets', 'book', 'follow'] as const).find((t) => t === val('tab')),
           slug: val('slug'),
         });
         return;
@@ -594,13 +593,14 @@ async function main(): Promise<void> {
           const stamp = new Date().toISOString().slice(11, 16) + 'Z';
           const res = await pollWatched(client, list, seen, primed);
           let n = 0;
+          const MAX_NOTICES_PER_PASS = 5; // a wallet that traded 60 times while we slept must not flood the desktop
           for (const r of res) {
             const w = list.find((x) => x.wallet === r.wallet)!;
             for (const t of r.trades) {
               n++;
               const line = describeTrade(w, t);
               console.log(`${stamp} ${line}\n       https://polymarket.com/event/${t.slug}`);
-              if (!quiet) notify('Watched wallet traded', `${line}\nhttps://polymarket.com/event/${t.slug}`);
+              if (!quiet && n <= MAX_NOTICES_PER_PASS) notifyDesktop('Watched wallet traded', `${line}\nhttps://polymarket.com/event/${t.slug}`);
             }
             if (r.error) console.log(`${stamp} ${r.wallet.slice(0, 10)}…: ${r.error.slice(0, 90)}`);
           }
@@ -703,7 +703,7 @@ async function main(): Promise<void> {
         return;
       }
       default:
-        console.log('commands: doctor | tui [--interval S --no-news --force --no-check] | daemon [--every SECS] | forward-log | forward-settle | ledger | new-scan [--hours N --top K] | new-score | jumps [--top N] | jumps-settle | jumps-score | x-add <handle> [note] | x-list | x-poll | decide <slug> [--wallets] | research <slug> | edges [--top N --events N --min-edge D --min-liq USD --verify K --no-verify] | people list|add|remove|check <wallet> | holders <slug> [--all] | scan [--cols N --rows N --tab games|prints|leads|decision|edge|ledger|new|jumps --slug S] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
+        console.log('commands: doctor | tui [--interval S --force --no-check] | daemon [--every SECS] | forward-log | forward-settle | ledger | new-scan [--hours N --top K] | new-score | jumps [--top N] | jumps-settle | jumps-score | x-add <handle> [note] | x-list | x-poll | decide <slug> [--wallets] | research <slug> | edges [--top N --events N --min-edge D --min-liq USD --verify K --no-verify] | people list|add|remove|check <wallet> | holders <slug> [--all] | scan [--cols N --rows N --tab games|holders|decision|search|wallets --slug S] | seed | cases | news poll|list|dismiss | case-add <file> | find <text> | ingest <slug> | report <slug> | link <case> <slug> | backfill [--max N --min-volume USD]');
     }
   } finally {
     store.close();

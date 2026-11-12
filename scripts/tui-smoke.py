@@ -17,7 +17,7 @@ for suffix in ("", "-wal", "-shm"):
 pid, fd = pty.fork()
 if pid == 0:
     os.chdir(ROOT)
-    os.execvpe("node", ["node", "--no-warnings", "radar/cli.ts", "tui", "--no-news"], dict(os.environ, RADAR_DB=DB, RADAR_WALLETS=os.path.join(os.environ.get("TMPDIR", "/tmp"), "radar-smoke-wallets.json"), TERM="xterm-256color"))
+    os.execvpe("node", ["node", "--no-warnings", "radar/cli.ts", "tui"], dict(os.environ, RADAR_DB=DB, RADAR_WALLETS=os.path.join(os.environ.get("TMPDIR", "/tmp"), "radar-smoke-wallets.json"), TERM="xterm-256color"))
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
 os.kill(pid, signal.SIGWINCH)
 stream = b""
@@ -56,6 +56,8 @@ while time.time() - t0 < 60:
     pump(1)
     if re.search(r"\b(WATCH|HOT)\b", plain("\n".join(screen()))): break
 check("rows appear within 30s of launch", time.time() - t0 < 30)
+foot = plain(screen()[ROWS - 1])
+check("footer is short and keeps the help, refresh and quit keys", "? all keys" in foot and "r refresh" in foot and "q quit" in foot and len(foot.rstrip()) <= 100)
 first = selected()
 check("a row is selected initially", len(first) == 1)
 os.write(fd, b"\x1b[B"); pump(0.8)
@@ -66,6 +68,18 @@ os.write(fd, b"2"); pump(1.0)
 check("tab 2 shows games", "GAME" in plain(screen()[2]) and "STARTS" in plain(screen()[2]))
 os.write(fd, b"1"); pump(0.8); os.write(fd, b"o"); pump(0.8)
 check("o shows the selected event link in the footer", "polymarket.com/event/" in plain(screen()[ROWS - 1]))
+os.write(fd, b"f"); pump(0.6)
+check("f gives feedback on the category filter", "categor" in plain(screen()[ROWS - 1]))
+os.write(fd, b"b"); pump(0.6)
+check("b off the Holders tab says what it is for", "Holders" in plain(screen()[ROWS - 1]))
+os.write(fd, b"?"); pump(0.8)
+htext = plain("\n".join(screen()[:ROWS]))
+check("? opens the help overlay with the key map", "KEYS" in htext and "EVERYWHERE" in htext and "Esc or ? closes help" in plain(screen()[ROWS - 1]))
+os.write(fd, b"\x1b"); pump(0.8)
+check("Esc closes the help overlay", "EVERYWHERE" not in plain("\n".join(screen()[:ROWS])) and alive())
+os.write(fd, b"\r"); pump(1.0)
+check("Enter on a Markets row opens its Decision", "5 Decision" in plain(screen()[1]))
+os.write(fd, b"1"); pump(0.8)
 
 # holders: open the selected event's top holders and wait for profiling to finish
 os.write(fd, b"h"); pump(1.0)
@@ -125,9 +139,10 @@ while time.time() - t8 < 90:
 xtext = plain("\n".join(screen()[:ROWS]))
 print(f"  x-ray took {time.time() - t8:.0f}s")
 check("pasting a wallet address after / opens its x-ray with all-in PnL and the closed-versus-open contrast", "ALL-IN PnL" in xtext and "CLOSED" in xtext and "OPEN" in xtext)
-# new wallets: w scans the platform feed, ranks markets by new-account money; Enter opens the selected market's holders
-os.write(fd, b"w"); pump(1.0)
-check("w opens the new wallets tab", "3 Newbies" in plain(screen()[1]) and "New wallets" in plain(screen()[2]))
+# new wallets: 3 scans the platform feed on first open, ranks markets by new-account money; Enter opens the selected market's holders
+os.write(fd, b"3"); pump(2.0)
+check("3 opens the new wallets tab and starts the scan by itself", "3 Newbies" in plain(screen()[1]) and "New wallets" in plain(screen()[2]) and "Esc cancels" in plain("\n".join(screen()[2:4])))
+check("newbies shows the ordinary-people caveat while scanning", "mostly ordinary people; not evidence of wrongdoing" in plain("\n".join(screen()[2:5])))
 t9 = time.time()
 while time.time() - t9 < 240:
     pump(1)
@@ -135,6 +150,8 @@ while time.time() - t9 < 240:
     if "last " in h and "fills" in h and "looking up" not in h and "reading" not in h: break
 wtext = plain("\n".join(screen()[:ROWS]))
 print(f"  new-wallet scan took {time.time() - t9:.0f}s")
+scan_running = "Esc cancels" in plain("\n".join(screen()[2:4]))  # a slow scan (over 4 minutes) is still running: no as-of yet
+check("newbies shows the caveat, and an as-of time once the scan is done", "mostly ordinary people; not evidence of wrongdoing" in wtext and ("as of " in wtext or scan_running))
 check("new wallets tab shows the scan summary and the ranked table (or says nothing qualified)", ("fills" in wtext and "markets" in wtext) and ("NEW$" in wtext or "no market had" in wtext))
 os.write(fd, b"\r"); pump(2.0)
 check("Enter on a market opens its holders", "4 Holders" in plain(screen()[1]) and ("loading" in plain("\n".join(screen()[:ROWS])) or "market " in plain("\n".join(screen()[:ROWS])) or "WHO" in plain("\n".join(screen()[:ROWS]))))
@@ -167,6 +184,13 @@ check("following a @name link resolves it and shows the account card with its re
 check("the follow list has its columns", "ACCOUNT" in ftxt and "LAST BET" in ftxt)
 os.write(fd, b"-"); pump(1.0)
 check("- unfollows", "unfollowed" in plain("\n".join(screen()[:6])) or "nobody followed" in plain("\n".join(screen()[:ROWS])))
+os.write(fd, b"n"); pump(0.6)
+check("n opens the follow prompt", "Follow:" in plain("\n".join(screen()[:6])))
+os.write(fd, b"\x1b"); pump(0.5)
+# wallet-age scan: Esc cancels a running scan and keeps the partial table
+os.write(fd, b"3"); pump(0.8); os.write(fd, b"w"); pump(4.0)
+os.write(fd, b"\x1b"); pump(1.0)
+check("Esc cancels a running new-wallet scan", "cancelled" in plain("\n".join(screen()[:ROWS])).lower() and alive())
 pump(6)
 check("still alive after background activity", alive())
 os.write(fd, b"q")

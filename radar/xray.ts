@@ -39,6 +39,8 @@ export interface XrayReport {
   flags: string[];
   /** Rows capped at the sampling limits, so figures from positions may be incomplete. */
   truncated: string[];
+  /** When the numbers were read (epoch seconds). */
+  asOf: number;
 }
 
 const usd = (x: number): string => `${x < 0 ? '-' : ''}$${Math.round(Math.abs(x)).toLocaleString('en-US')}`;
@@ -112,7 +114,7 @@ export function makerShareOf(all: readonly FillLine[], takerOnly: readonly FillL
   return { share: 1 - matched / all.length, fills: all.length, hours: (Math.max(...ts) - Math.min(...ts)) / 3600 };
 }
 
-export function xrayFlags(r: Omit<XrayReport, 'flags' | 'truncated'>): string[] {
+export function xrayFlags(r: Omit<XrayReport, 'flags' | 'truncated' | 'asOf'>): string[] {
   const out: string[] = [];
   const pf = r.closed.profitFactor;
   if (pf !== null && Number.isFinite(pf) && pf >= 1.5 && r.economicPnl <= 0)
@@ -146,7 +148,7 @@ export function buildXray(wallet: string, points: readonly PnlPoint[], open: rea
     windows: { d7: windowOf(points, 7, nowSecs), d30: windowOf(points, 30, nowSecs), d90: windowOf(points, 90, nowSecs) }, maxDrawdown: drawdownOf(points), greenDays: greenDaysOf(points),
     firstDay: points[0]?.ts ?? null, closed: cl, open: op, profitFactorAllIn: grossLossAll > 0 ? grossWinAll / grossLossAll : null, makerShare: makerShareOf(fills.all, fills.takerOnly),
   };
-  return { ...base, flags: xrayFlags(base), truncated };
+  return { ...base, flags: xrayFlags(base), truncated, asOf: nowSecs };
 }
 
 export interface XrayLoad {
@@ -197,7 +199,13 @@ export function formatXray(r: XrayReport): string[] {
   out.push(`curve     deepest fall ${usd(r.maxDrawdown)}   green days ${r.greenDays.green}/${r.greenDays.active}${r.greenDays.active ? ` (${pct(r.greenDays.green / r.greenDays.active, 0)})` : ''}`);
   const c = r.closed;
   out.push(`CLOSED    ${c.n} positions: ${c.wins} won / ${c.losses} lost${c.winRate === null ? '' : ` (${pct(c.winRate, 0)})`}   profit factor ${c.profitFactor === null ? '-' : Number.isFinite(c.profitFactor) ? c.profitFactor.toFixed(2) : 'inf'}   net ${usd(c.net)}   biggest win ${usd(c.biggestWin)}${c.top5WinShare === null ? '' : `, top 5 = ${pct(c.top5WinShare, 0)} of gross profit`}`);
-  out.push(`OPEN      ${r.open.n} positions worth ${usd(r.open.value)}, unrealized ${usd(r.open.unrealized)}; ${r.open.underwater} under water (${usd(r.open.underwaterLoss)})   profit factor with open positions counted ${r.profitFactorAllIn === null ? '-' : r.profitFactorAllIn.toFixed(2)}`);
+  // open positions are partial by nature: values come from the positions feed and can be missing, and redeemable-but-unclaimed wins are not in them
+  const noValues = r.open.n > 0 && r.open.value === 0 && r.open.unrealized === 0;
+  out.push(
+    noValues
+      ? `OPEN      ${r.open.n} positions, but their value and unrealized PnL came back as 0 or missing: unknown, not zero (partial)   profit factor with open positions counted ${r.profitFactorAllIn === null ? '-' : r.profitFactorAllIn.toFixed(2)} (partial)`
+      : `OPEN      ${r.open.n} positions worth ${usd(r.open.value)}, unrealized ${usd(r.open.unrealized)} (partial: open figures can be missing or stale); ${r.open.underwater} under water (${usd(r.open.underwaterLoss)})   profit factor with open positions counted ${r.profitFactorAllIn === null ? '-' : r.profitFactorAllIn.toFixed(2)}`,
+  );
   out.push(`INCOME    referral ${usd(r.income.referral)}   rewards ${usd(r.income.rewards)}   yield ${usd(r.income.yield)}   maker rebate ${usd(r.income.makerRebate)}   taker rebate ${usd(r.income.takerRebate)}`);
   out.push(`STYLE     ${r.makerShare ? `${pct(r.makerShare.share, 0)} maker fills (last ${r.makerShare.fills} fills, ${r.makerShare.hours.toFixed(0)} hours: a recent window, not a lifetime figure)` : 'maker share: too few recent fills to say'}`);
   for (const f of r.flags) out.push(`NOTE      ${f}`);

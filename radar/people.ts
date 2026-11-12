@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 /**
@@ -127,7 +127,9 @@ export function loadPeople(path = PEOPLE_PATH): Person[] {
 
 export function savePeople(people: readonly Person[], path = PEOPLE_PATH): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(people, null, 2) + '\n');
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, JSON.stringify(people, null, 2) + '\n');
+  renameSync(tmp, path);
 }
 
 /** Adds a person, or merges aliases/handles into the entry with the same name. */

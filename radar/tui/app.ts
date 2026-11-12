@@ -1,11 +1,6 @@
-import { statSync } from 'node:fs';
 import { applyFilters, buildModel, runCycle } from '../collect.ts';
 import { loadDecision } from '../decide-data.ts';
-import { EDGES_PATH, saveEdges, scanAll } from '../edges.ts';
-import { readJsonl, RESULTS_PATH, SNAPSHOTS_PATH } from '../forward.ts';
-import { scoreLedger } from '../ledger.ts';
-import { JUMPS_PATH, scanJumps, scoreJumps, type JumpScan } from '../jump.ts';
-import { logFlagged, scanNewMarkets } from '../newmarkets.ts';
+import { scanJumps, type JumpScan } from '../jump.ts';
 import { loadHolders } from '../holders.ts';
 import { pickMarket } from './pick.ts';
 import { loadXray } from '../xray.ts';
@@ -13,25 +8,16 @@ import { cycle, emptyBook, GROUPS, loadBookMeta, PERIODS, TAPE_MINS } from '../b
 import { autoCenter } from '../dom.ts';
 import { LiveBookFeed } from '../livebook.ts';
 import { emptyFollow, loadFollowing } from '../following.ts';
-import { resolveWalletInput } from '../walletinput.ts';
+import { parseWalletInput, resolveWalletInput } from '../walletinput.ts';
 import { scanNewWallets } from '../newwallets.ts';
 import { addWatched, describeTrade, isAddress, loadWatched, notify, removeWatched } from '../walletwatch.ts';
-import { loadNews } from '../newsview.ts';
 import { loadPeople, type Person } from '../people.ts';
 import { httpFetchJson, NotFoundError, type PolymarketClient } from '../polymarket.ts';
-import { httpFetchText, pollFeeds } from '../poll.ts';
 import { loadRefs, type RefConfig } from '../refs.ts';
 import type { RadarStore } from '../store.ts';
-import { flaggedNew, jumpFlags, listLength, moveSelection, render, visibleHolders, type Key, type LedgerView, type Model, type View } from './render.ts';
+import { enterOpensDecision, listLength, moveSelection, opensFollowPrompt, render, visibleHolders, type Key, type Model, type View } from './render.ts';
 
 const ESC = '\x1b';
-/** Opening the New tab reuses a scan younger than this; pressing w on the tab always rescans. */
-const NEW_TAB_RESCAN_MS = 10 * 60_000;
-/** The TUI scans the 60 busiest new markets (~1.5 min) so the tab fills while you wait; `new-scan` and the daemon scan up to 150. */
-const TUI_SCAN = { hours: 24, maxMarkets: 60 } as const;
-/** Opening the Jumps tab reuses a scan younger than this; pressing j on the tab always rescans. */
-const JUMPS_TAB_RESCAN_MS = 5 * 60_000;
-
 /**
  * scanJumps with progress: scanJumps has no progress callback, so the client's event reads and the price-history fetches are
  * observed through a thin wrapper. Writes nothing, like scanJumps.
@@ -58,7 +44,6 @@ export function scanJumpsWithProgress(client: PolymarketClient, onProgress: (sta
 
 export interface TuiOptions {
   intervalSecs?: number;
-  news?: boolean;
   once?: boolean;
   cols?: number;
   rows?: number;
@@ -84,34 +69,6 @@ function readConfig(opts: TuiOptions): { people: readonly Person[]; refs: readon
   return { people, refs, problem };
 }
 
-/** Scores the forward logs; the bootstrap is only rerun when a log file changed since the last refresh. */
-let ledgerCache: { key: string; view: LedgerView } | null = null;
-function ledgerView(nowMs: number): LedgerView {
-  const stamp = (p: string) => {
-    try {
-      const st = statSync(p);
-      return `${st.size}:${st.mtimeMs}`;
-    } catch {
-      return 'none';
-    }
-  };
-  const key = `${stamp(SNAPSHOTS_PATH)}|${stamp(RESULTS_PATH)}|${stamp(JUMPS_PATH)}`;
-  if (ledgerCache?.key === key) return ledgerCache.view;
-  let view: LedgerView;
-  try {
-    view = { at: nowMs, error: null, report: scoreLedger(readJsonl(SNAPSHOTS_PATH), readJsonl(RESULTS_PATH)) };
-  } catch (error) {
-    view = { at: nowMs, error: `ledger: ${error instanceof Error ? error.message : String(error)}`, report: null };
-  }
-  try {
-    view.jumps = scoreJumps(readJsonl(JUMPS_PATH));
-  } catch (error) {
-    view.error = `${view.error ? `${view.error}; ` : ''}jumps: ${error instanceof Error ? error.message : String(error)}`;
-  }
-  ledgerCache = { key, view };
-  return view;
-}
-
 function snapshotModel(store: RadarStore, prev: Model | null, nowMs: number, status: Model['status'], filter: string | null, showBots: boolean): Model {
   const b = buildModel(store, nowMs);
   return {
@@ -126,11 +83,6 @@ function snapshotModel(store: RadarStore, prev: Model | null, nowMs: number, sta
     holders: prev?.holders ?? null,
     decision: prev?.decision ?? null,
     search: prev?.search ?? null,
-    news: prev?.news ?? null,
-    edges: prev?.edges ?? null,
-    ledger: ledgerView(nowMs),
-    newMarkets: prev?.newMarkets ?? null,
-    jumps: prev?.jumps ?? null,
     xray: prev?.xray ?? null,
     newWallets: prev?.newWallets ?? null,
     book: prev?.book ?? null,
@@ -145,8 +97,10 @@ function seriesFor(store: RadarStore, m: Model, v: View, nowSecs: number): numbe
 
 /** The event the user is looking at, for actions like "load holders" or "show link". */
 function selectedSlug(m: Model, v: View): string | undefined {
-  return v.tab === 'anomalies' ? m.anomalies[v.sel]?.slug : v.tab === 'games' ? m.games[v.sel]?.slug : v.tab === 'prints' ? m.prints[v.sel]?.eventSlug : v.tab === 'holders' ? m.holders?.slug : v.tab === 'decision' ? m.decision?.slug : v.tab === 'search' ? m.search?.results[v.sel]?.slug : v.tab === 'news' ? m.news?.slug : v.tab === 'edge' ? m.edges?.result?.candidates[v.sel]?.slug : v.tab === 'new' ? flaggedNew(m)[v.sel]?.eventSlug || undefined : v.tab === 'jumps' ? jumpFlags(m)[v.sel]?.eventSlug || undefined : undefined;
+  return v.tab === 'anomalies' ? m.anomalies[v.sel]?.slug : v.tab === 'games' ? m.games[v.sel]?.slug : v.tab === 'holders' ? m.holders?.slug : v.tab === 'decision' ? m.decision?.slug : v.tab === 'search' ? m.search?.results[v.sel]?.slug : undefined;
 }
+
+const errText = (error: unknown): string => (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 100);
 
 export async function runTui(store: RadarStore, client: PolymarketClient, opts: TuiOptions = {}): Promise<void> {
   const out = process.stdout;
@@ -197,15 +151,7 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     if (opts.slug && view.tab === 'decision') {
       const cfg = readConfig(opts);
       const dv = await loadDecision(client, store, opts.slug, { people: cfg.people, refs: cfg.refs });
-      model = { ...model, decision: dv };
-    }
-    if (view.tab === 'jumps') {
-      const scan = await scanJumps(client);
-      model = { ...model, jumps: { stage: 'done', done: true, error: scan.errors.length ? `${scan.errors.length} error(s): ${scan.errors[0]}` : null, at: Date.now(), scan } };
-    }
-    if (view.tab === 'new') {
-      const sum = await scanNewMarkets(client, TUI_SCAN);
-      model = { ...model, newMarkets: { stage: 'done', done: true, error: sum.errors.length ? `${sum.errors.length} error(s): ${sum.errors[0]}` : null, at: Date.now(), summary: sum, logged: logFlagged(sum.lines) } };
+      model = { ...model, decision: dv, decisionAt: Date.now() };
     }
     process.stdout.write(render(model, view, Date.now()).join('\n') + '\n');
     return;
@@ -236,9 +182,17 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
 
   const schedule = () => {
     pollTimer = setTimeout(async () => {
-      await poll();
-      paint();
-      schedule();
+      try {
+        await poll();
+        paint();
+      } catch (error) {
+        // a throwing poll must not end the polling: report it and try again next time
+        status = { ...status, busy: false, nextPollAt: Date.now() + interval };
+        setStatus({ message: `poll failed: ${errText(error)}; retrying` });
+        paint();
+      } finally {
+        schedule();
+      }
     }, Math.max(1_000, (status.nextPollAt ?? Date.now() + interval) - Date.now()));
   };
 
@@ -252,7 +206,7 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     const cfg = readConfig(opts);
     if (cfg.problem) setStatus({ message: cfg.problem });
     paint();
-    void loadHolders(client, store, slug, {
+    loadHolders(client, store, slug, {
       cid,
       people: cfg.people,
       onProgress: (hv) => {
@@ -261,6 +215,11 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
         view = { ...view, sel: Math.min(view.sel, Math.max(0, listLength(model, 'holders') - 1)) };
         paint();
       },
+    }).catch((error: unknown) => {
+      if (token !== holdersToken) return;
+      if (model.holders) model = { ...model, holders: { ...model.holders, done: true, error: errText(error) } };
+      setStatus({ message: `holders failed: ${errText(error)}` });
+      paint();
     });
   };
 
@@ -269,137 +228,24 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
   const openDecision = (slug: string) => {
     const token = ++decisionToken;
     const cfg = readConfig(opts);
-    model = { ...model, decision: { slug, title: slug, stage: 'reading the event', progress: { loaded: 0, total: 0 }, done: false, error: null, decision: null, wallets: {} } };
+    model = { ...model, decisionAt: null, decision: { slug, title: slug, stage: 'reading the event', progress: { loaded: 0, total: 0 }, done: false, error: null, decision: null, wallets: {} } };
     view = { ...view, tab: 'decision', sel: 0 };
     setStatus({ message: cfg.problem });
     paint();
-    void loadDecision(client, store, slug, {
+    loadDecision(client, store, slug, {
       people: cfg.people,
       refs: cfg.refs,
       onProgress: (dv) => {
         if (token !== decisionToken) return;
-        model = { ...model, decision: dv };
+        model = { ...model, decision: dv, decisionAt: dv.done ? Date.now() : (model.decisionAt ?? null) };
         view = { ...view, sel: Math.min(view.sel, Math.max(0, listLength(model, 'decision') - 1)) };
         paint();
       },
-    });
-  };
-
-  // Edge scan: `e` screens every active event, then checks the best candidates on live books. A newer scan supersedes an older one.
-  let edgeToken = 0;
-  const startEdgeScan = () => {
-    const token = ++edgeToken;
-    model = { ...model, edges: { stage: 'starting', done: false, error: null, result: model.edges?.result ?? null } };
-    view = { ...view, tab: 'edge', sel: 0 };
-    paint();
-    scanAll(client, {
-      onProgress: (stage, partial) => {
-        if (token !== edgeToken) return;
-        model = { ...model, edges: { stage, done: false, error: null, result: partial } };
-        view = { ...view, sel: Math.min(view.sel, Math.max(0, listLength(model, 'edge') - 1)) };
-        paint();
-      },
-    }).then(
-      (res) => {
-        if (token !== edgeToken) return;
-        let error: string | null = res.errors.length ? res.errors.join('; ') : null;
-        try {
-          saveEdges(res, EDGES_PATH);
-        } catch (e) {
-          error = `could not save ${EDGES_PATH}: ${e instanceof Error ? e.message : String(e)}`;
-        }
-        model = { ...model, edges: { stage: 'done', done: true, error, result: res } };
-        paint();
-      },
-      (error) => {
-        if (token !== edgeToken) return;
-        model = { ...model, edges: { stage: 'failed', done: true, error: error instanceof Error ? error.message : String(error), result: model.edges?.result ?? null } };
-        paint();
-      },
-    );
-  };
-
-  // New markets: `w` opens the tab and scans when there is no recent scan; `w` on the tab rescans. Flagged lines go to the forward log.
-  let newToken = 0;
-  const startNewScan = () => {
-    const token = ++newToken;
-    model = { ...model, newMarkets: { stage: 'scanning the 60 busiest markets created in the last 24h', done: false, error: null, at: null, summary: model.newMarkets?.summary ?? null, logged: null } };
-    paint();
-    scanNewMarkets(client, TUI_SCAN).then(
-      (sum) => {
-        if (token !== newToken) return;
-        let error: string | null = sum.errors.length ? `${sum.errors.length} error(s): ${sum.errors[0]}` : null;
-        let logged: { written: number; duplicates: number } | null = null;
-        try {
-          logged = logFlagged(sum.lines);
-        } catch (e) {
-          error = `could not write the forward log: ${e instanceof Error ? e.message : String(e)}`;
-        }
-        model = { ...model, newMarkets: { stage: 'done', done: true, error, at: Date.now(), summary: sum, logged } };
-        view = { ...view, sel: Math.min(view.sel, Math.max(0, listLength(model, 'new') - 1)) };
-        paint();
-      },
-      (error) => {
-        if (token !== newToken) return;
-        model = { ...model, newMarkets: { stage: 'failed', done: true, error: error instanceof Error ? error.message : String(error), at: null, summary: model.newMarkets?.summary ?? null, logged: null } };
-        paint();
-      },
-    );
-  };
-  const openNew = () => {
-    const nv = model.newMarkets;
-    const wasOn = view.tab === 'new';
-    press('u');
-    const stale = !nv || (nv.done && (wasOn || nv.at === null || Date.now() - nv.at > NEW_TAB_RESCAN_MS));
-    if (stale) startNewScan();
-  };
-
-  // Jumps: `j` opens the tab and scans when there is no recent scan; `j` on the tab rescans. A newer scan supersedes an older one. Nothing is logged here (the daemon logs).
-  let jumpsToken = 0;
-  const startJumpScan = () => {
-    const token = ++jumpsToken;
-    model = { ...model, jumps: { stage: 'starting', done: false, error: null, at: null, scan: model.jumps?.scan ?? null } };
-    paint();
-    scanJumpsWithProgress(client, (stage) => {
-      if (token !== jumpsToken || !model.jumps) return;
-      model = { ...model, jumps: { ...model.jumps, stage } };
+    }).catch((error: unknown) => {
+      if (token !== decisionToken) return;
+      if (model.decision) model = { ...model, decision: { ...model.decision, done: true, error: errText(error) } };
+      setStatus({ message: `decision failed: ${errText(error)}` });
       paint();
-    }).then(
-      (scan) => {
-        if (token !== jumpsToken) return;
-        model = { ...model, jumps: { stage: 'done', done: true, error: scan.errors.length ? `${scan.errors.length} error(s): ${scan.errors[0]}` : null, at: Date.now(), scan } };
-        view = { ...view, sel: Math.min(view.sel, Math.max(0, listLength(model, 'jumps') - 1)) };
-        paint();
-      },
-      (error) => {
-        if (token !== jumpsToken) return;
-        model = { ...model, jumps: { stage: 'failed', done: true, error: error instanceof Error ? error.message : String(error), at: null, scan: model.jumps?.scan ?? null } };
-        paint();
-      },
-    );
-  };
-  const openJumps = () => {
-    const jv = model.jumps;
-    const wasOn = view.tab === 'jumps';
-    press('j');
-    const stale = !jv || (jv.done && (wasOn || jv.at === null || Date.now() - jv.at > JUMPS_TAB_RESCAN_MS));
-    if (stale) startJumpScan();
-  };
-
-  // News: `n` searches headlines for the selected event; a newer request makes older progress irrelevant.
-  let newsToken = 0;
-  const openNews = (slug: string) => {
-    const token = ++newsToken;
-    model = { ...model, news: { slug, title: slug, query: '', stage: 'reading the market', done: false, error: null, hits: [], sourceErrors: [], markets: [], rules: '' } };
-    view = { ...view, tab: 'news', sel: 0 };
-    paint();
-    void loadNews(client, httpFetchText, slug, {
-      onProgress: (nv) => {
-        if (token !== newsToken) return;
-        model = { ...model, news: nv };
-        view = { ...view, sel: Math.min(view.sel, Math.max(0, listLength(model, 'news') - 1)) };
-        paint();
-      },
     });
   };
 
@@ -410,7 +256,7 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     model = { ...model, search: { ...cur, ...patch } };
   };
   const beginSearch = () => {
-    putSearch({ typing: true, error: null });
+    putSearch({ typing: true, query: '', error: null }); // a new search starts empty, so a pasted wallet or link is the whole input
     view = { ...view, tab: 'search', sel: 0 };
     paint();
   };
@@ -428,13 +274,19 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     }
     putFollow({ loading: true });
     paint();
-    void loadFollowing(client, store, list, model.follow?.seen ?? {}).then(({ cards, seen, fresh }) => {
-      if (token !== followToken) return;
-      putFollow({ cards, seen, loading: false, loadedAt: Date.now() });
-      view = { ...view, sel: Math.min(view.sel, Math.max(0, cards.length - 1)) };
-      if (notifyNew) for (const { card, trade } of fresh.slice(0, 5)) notify('Followed wallet traded', `${describeTrade({ wallet: card.wallet, note: card.note ?? card.name ?? undefined }, trade)}\nhttps://polymarket.com/event/${trade.slug}`);
-      paint();
-    });
+    loadFollowing(client, store, list, model.follow?.seen ?? {})
+      .then(({ cards, seen, fresh }) => {
+        if (token !== followToken) return;
+        putFollow({ cards, seen, loading: false, loadedAt: Date.now() });
+        view = { ...view, sel: Math.min(view.sel, Math.max(0, cards.length - 1)) };
+        if (notifyNew) for (const { card, trade } of fresh.slice(0, 5)) notify('Followed wallet traded', `${describeTrade({ wallet: card.wallet, note: card.note ?? card.name ?? undefined }, trade)}\nhttps://polymarket.com/event/${trade.slug}`);
+        paint();
+      })
+      .catch((error: unknown) => {
+        if (token !== followToken) return;
+        putFollow({ loading: false, message: `following failed: ${errText(error)}` });
+        paint();
+      });
   };
   const typeFollow = (d: string) => {
     const text = model.follow?.input ?? '';
@@ -509,12 +361,19 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     model = { ...model, book: emptyBook(slug, cid) };
     view = { ...view, tab: 'book', sel: 0 };
     paint();
-    void loadBookMeta(client, slug, cid).then((bv) => {
-      if (token !== bookToken) return;
-      model = { ...model, book: { ...bv, ui: model.book?.ui ?? bv.ui } };
-      if (!bv.error) startBookFeed(token);
-      paint();
-    });
+    loadBookMeta(client, slug, cid)
+      .then((bv) => {
+        if (token !== bookToken) return;
+        model = { ...model, book: { ...bv, ui: model.book?.ui ?? bv.ui } };
+        if (!bv.error) startBookFeed(token);
+        paint();
+      })
+      .catch((error: unknown) => {
+        if (token !== bookToken) return;
+        if (model.book) model = { ...model, book: { ...model.book, error: errText(error) } };
+        setStatus({ message: `order book failed: ${errText(error)}` });
+        paint();
+      });
   };
   timers.push(setInterval(() => {
     // leave the tab: stop the socket; come back: resume (a fresh snapshot is fetched)
@@ -554,7 +413,7 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     const prevResult = model.newWallets?.result ?? null;
     model = { ...model, newWallets: { stage: 'starting', done: false, error: null, result: prevResult, at: null } };
     paint();
-    void scanNewWallets(client, store, {
+    scanNewWallets(client, store, {
       cancelled: () => token !== walletsToken,
       onProgress: (stage, partial) => {
         if (token !== walletsToken) return;
@@ -566,29 +425,51 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
       model = { ...model, newWallets: { stage: 'done', done: true, error, result: result ?? prevResult, at: Date.now() } };
       view = { ...view, sel: Math.min(view.sel, Math.max(0, listLength(model, 'wallets') - 1)) };
       paint();
+    }).catch((error: unknown) => {
+      if (token !== walletsToken) return;
+      model = { ...model, newWallets: { stage: 'failed', done: true, error: errText(error), result: prevResult, at: null } };
+      setStatus({ message: `new-wallet scan failed: ${errText(error)}` });
+      paint();
     });
   };
+  /** Esc during a scan: stop the lookups and keep the partial table. */
+  const cancelWalletScan = (): boolean => {
+    const nw = model.newWallets;
+    if (view.tab !== 'wallets' || !nw || nw.done) return false;
+    walletsToken++;
+    model = { ...model, newWallets: { ...nw, stage: 'cancelled', done: true, cancelled: true, at: Date.now() } };
+    setStatus({ message: 'scan cancelled: showing the wallets aged so far (w scans again)' });
+    paint();
+    return true;
+  };
+  /** `w` on the tab rescans; arriving on it (3, w, Tab) scans when there is no result yet or it is over 5 minutes old (press() starts the first scan). */
   const openWallets = () => {
     const nw = model.newWallets;
     const wasOn = view.tab === 'wallets';
     press('w');
-    if (!nw || (nw.done && (wasOn || nw.at === null || Date.now() - nw.at > 5 * 60_000))) startWalletScan();
+    if (nw && nw.done && (wasOn || nw.at === null || Date.now() - nw.at > 5 * 60_000)) startWalletScan();
   };
   const openXray = (wallet: string) => {
     const token = ++xrayToken;
     model = { ...model, xray: { wallet, stage: 'starting', done: false, error: null, report: null } };
     view = { ...view, tab: 'xray', sel: 0 };
     paint();
-    void loadXray(client, wallet, {
+    loadXray(client, wallet, {
       onProgress: (x) => {
         if (token !== xrayToken) return;
         model = { ...model, xray: { wallet, stage: x.stage, done: x.done, error: x.error, report: x.report } };
         paint();
       },
+    }).catch((error: unknown) => {
+      if (token !== xrayToken) return;
+      model = { ...model, xray: { wallet, stage: 'failed', done: true, error: errText(error), report: null } };
+      setStatus({ message: `x-ray failed: ${errText(error)}` });
+      paint();
     });
   };
   const runSearch = (query: string) => {
-    const address = query.match(/0x[0-9a-fA-F]{40}/)?.[0]; // a pasted wallet address anywhere in the box (the box keeps the previous query)
+    const parsed = parseWalletInput(query);
+    const address = parsed && 'wallet' in parsed ? parsed.wallet : undefined; // only a whole address or a profile link counts, not any address inside pasted text
     if (address) {
       putSearch({ typing: false });
       return openXray(address);
@@ -629,11 +510,15 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
 
   out.write(`${ESC}[?1049h${ESC}[?25l${ESC}[2J`);
   process.on('exit', restore);
-  process.on('uncaughtException', (e) => {
+  // last resort: leave the alternate screen first so the error is readable, then exit non-zero
+  const die = (e: unknown) => {
+    bookFeed?.stop();
     restore();
     console.error(e);
     process.exit(1);
-  });
+  };
+  process.on('uncaughtException', die);
+  process.on('unhandledRejection', die);
   out.on('resize', () => {
     view = { ...view, cols: out.columns ?? view.cols, rows: out.rows ?? view.rows };
     paint(true);
@@ -644,6 +529,7 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
     view = moveSelection(view, key, model);
     model = { ...model, oiSeries: seriesFor(store, model, view, Math.floor(Date.now() / 1000)) };
     setStatus({ message: null });
+    if (view.tab === 'wallets' && !model.newWallets) return startWalletScan(); // first visit: scan right away (it paints)
     paint();
   };
   if (process.stdin.isTTY) {
@@ -657,8 +543,30 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
       };
       if (model.search?.typing) return typeSearch(d);
       if (model.follow?.input !== null && model.follow?.input !== undefined) return typeFollow(d);
+      if (view.help) {
+        // the overlay swallows everything except closing it and quitting
+        if (d === '?' || d === ESC) {
+          view = { ...view, help: false };
+          return paint(true);
+        }
+        if (d === 'q' || d === '\x03') return quit();
+        return;
+      }
+      if (d === '?') {
+        view = { ...view, help: true };
+        return paint(true);
+      }
+      if (d === ESC && cancelWalletScan()) return;
       if (d === '/') return beginSearch();
       if (d === 'w') return openWallets();
+      if ((d === '\r' || d === '\n') && enterOpensDecision(view.tab)) {
+        const slug = selectedSlug(model, view);
+        if (!slug) {
+          setStatus({ message: view.tab === 'search' ? 'press / and search first, then Enter on a result' : 'nothing selected yet' });
+          return paint();
+        }
+        return openDecision(slug);
+      }
       if ((d === '\r' || d === '\n') && view.tab === 'wallets') {
         const row = model.newWallets?.result?.rows[view.sel];
         if (!row) return;
@@ -668,12 +576,13 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
         const holder = view.tab === 'holders' ? visibleHolders(model)[view.sel] : undefined;
         const wallet = holder?.wallet ?? (view.tab === 'xray' ? model.xray?.wallet : undefined);
         if (!wallet || !isAddress(wallet)) {
-          setStatus({ message: 'select a holder (or open an x-ray) and press a to watch that wallet' });
+          setStatus({ message: 'a follows a wallet: select a holder on tab 4 (or open an X-ray on tab 6) first' });
           return paint();
         }
         try {
           const r = addWatched(wallet, holder?.name ?? undefined);
-          setStatus({ message: `${r.added ? 'watching' : 'already watching'} ${wallet.slice(0, 10)}…: run  npm run radar -- wallet-watch  to get a notice when it trades (${r.list.length} on the list)` });
+          setStatus({ message: `${r.added ? 'following' : 'already following'} ${wallet.slice(0, 10)}… (${r.list.length} on the list): its bets are on tab 9 Following` });
+          if (r.added) refreshFollow(false);
         } catch (error) {
           setStatus({ message: `could not save the watchlist: ${error instanceof Error ? error.message : String(error)}` });
         }
@@ -693,7 +602,12 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
       }
       if (d === 'q' || d === '\x03') return quit();
       if (d === 'r') {
-        void poll().then(() => paint());
+        poll()
+          .then(() => paint())
+          .catch((error: unknown) => {
+            setStatus({ message: `refresh failed: ${errText(error)}` });
+            paint();
+          });
         paint();
         return;
       }
@@ -702,7 +616,8 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
         return next ? openHolders(model.holders.slug, next.cid) : paint();
       }
       if (bookKey(d)) return;
-      if (d === '+' || d === '=') {
+      // `+` is a Book key (compress ticks) and Following has its own add box: there only n opens the prompt
+      if (opensFollowPrompt(d, view.tab)) {
         putFollow({ input: '', message: null });
         view = { ...view, tab: 'follow', sel: 0 };
         if (!model.follow?.loadedAt) refreshFollow(false);
@@ -771,6 +686,10 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
         }
         return openDecision(slug);
       }
+      if (d === 'b' && view.tab !== 'holders') {
+        setStatus({ message: 'b shows or hides bots and market makers on tab 4 Holders' });
+        return paint();
+      }
       if (d === 'b') {
         showBots = !showBots;
         model = { ...model, showBots };
@@ -778,18 +697,26 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
         setStatus({ message: showBots ? 'showing bots and market makers' : 'people only' });
         return paint();
       }
+      if (d === 'f' && view.tab !== 'anomalies') {
+        setStatus({ message: 'f filters tab 1 Markets by category' });
+        return paint();
+      }
       if (d === 'f') {
         const cats = ['', ...[...new Set(buildModel(store, Date.now()).anomalies.map((a) => a.cat).filter(Boolean))].sort()];
         filter = cats[(cats.indexOf(filter ?? '') + 1) % cats.length] || null;
         view = { ...view, sel: 0 };
         refresh();
+        setStatus({ message: filter ? `category: ${filter} (f cycles)` : cats.length > 1 ? 'all categories' : 'no categories to filter yet' });
         return paint();
       }
       if (d === 'o') {
         const slug = selectedSlug(model, view);
         const holder = view.tab === 'holders' ? visibleHolders(model)[view.sel] : undefined;
-        const url = view.tab === 'leads' ? model.leads[view.sel]?.url : view.tab === 'news' ? model.news?.hits[view.sel]?.url : holder ? `https://polymarket.com/profile/${holder.wallet}` : slug ? `https://polymarket.com/event/${slug}` : undefined;
-        setStatus({ message: url ?? 'nothing selected' });
+        const wslug = view.tab === 'wallets' ? model.newWallets?.result?.rows[view.sel]?.eventSlug : undefined;
+        const profile = view.tab === 'xray' ? model.xray?.wallet : view.tab === 'follow' ? model.follow?.cards[view.sel]?.wallet : holder?.wallet;
+        const url = profile ? `https://polymarket.com/profile/${profile}` : slug || wslug ? `https://polymarket.com/event/${slug ?? wslug}` : undefined;
+        // the terminal cannot open a browser: show the link to copy
+        setStatus({ message: url ? `link (copy it into a browser): ${url}` : 'o shows a link: select an event, holder or wallet row first' });
         return paint();
       }
       const k = map[d];
@@ -798,18 +725,6 @@ export async function runTui(store: RadarStore, client: PolymarketClient, opts: 
   }
 
   timers.push(setInterval(() => paint(), 1_000));
-  if (opts.news ?? true) {
-    const newsPoll = async () => {
-      try {
-        await pollFeeds(httpFetchText, store);
-        refresh();
-      } catch {
-        // news is a side feed; its failures are visible per-feed in `news poll`
-      }
-    };
-    setTimeout(newsPoll, 5_000);
-    timers.push(setInterval(newsPoll, 15 * 60_000));
-  }
   await poll();
   paint();
   schedule();

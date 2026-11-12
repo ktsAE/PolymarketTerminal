@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { aggregateNewWallets, labelOf, scanNewWallets, summarizeScan } from '../../radar/newwallets';
+import { aggregateNewWallets, coverageNote, etaText, isSmallSample, labelOf, liftText, NEWBIES_CAVEAT, newbiesNotes, scanNewWallets, SMALL_SAMPLE_NOTE, summarizeScan } from '../../radar/newwallets';
 import { PolymarketClient, type GlobalTrade } from '../../radar/polymarket';
 import { openStore } from '../../radar/store';
 import { cursorPage } from './v2';
@@ -83,11 +83,70 @@ describe('scanning the platform', () => {
     expect(stages.at(-1)).toBe('done');
     store.close();
   });
+  it('reports n/total and a time estimate while looking up wallet ages, and stops looking up when cancelled', async () => {
+    const store = openStore();
+    const feed = Array.from({ length: 24 }, (_, i) => rawRow(`wa${i}`, 'X', 100));
+    let looked = 0;
+    const f = async (url: string) => {
+      const u = new URL(url);
+      if (u.pathname === '/v2/trades') return cursorPage(feed, u.searchParams);
+      if (u.pathname === '/public-profile') {
+        looked++;
+        return { createdAt: new Date((NOW - 400 * DAY) * 1000).toISOString() };
+      }
+      throw new Error(`unexpected ${url}`);
+    };
+    let clock = NOW * 1000;
+    const stages: string[] = [];
+    await scanNewWallets(new PolymarketClient(f as never, fast), store, { windowMins: 30, now: () => (clock += 1000), concurrency: 2, onProgress: (st) => stages.push(st) });
+    expect(stages.some((st) => /^looking up wallet ages: 0\/24/.test(st))).toBe(true);
+    expect(stages.some((st) => /^looking up wallet ages: 10\/24, (~\d+s|~\d+m|a few seconds) left$/.test(st))).toBe(true);
+    const before = looked;
+    looked = 0;
+    let cancelled = false;
+    const feed2 = Array.from({ length: 24 }, (_, i) => rawRow(`wb${i}`, 'X', 100));
+    const g = async (url: string) => {
+      const u = new URL(url);
+      if (u.pathname === '/v2/trades') return cursorPage(feed2, u.searchParams);
+      looked++;
+      cancelled = true;
+      return { createdAt: new Date((NOW - 400 * DAY) * 1000).toISOString() };
+    };
+    const res = await scanNewWallets(new PolymarketClient(g as never, fast), store, { windowMins: 30, now: () => NOW * 1000, concurrency: 1, cancelled: () => cancelled });
+    expect(before).toBe(24);
+    expect(looked).toBeLessThan(24);
+    expect(res.result?.toAge).toBeGreaterThan(0); // the partial result says how many are not aged
+    store.close();
+  });
   it('reports an API failure instead of throwing', async () => {
     const store = openStore();
     const res = await scanNewWallets(new PolymarketClient(async () => Promise.reject(new Error('down')), { ...fast, retries: 0 }), store, { now: () => NOW * 1000 });
     expect(res.result).toBeNull();
     expect(res.error).toMatch(/failed after 1 attempts/);
     store.close();
+  });
+});
+
+describe('newbies honesty helpers', () => {
+  it('flags small samples by wallets (<5) or money (<$500) and stars the lift', () => {
+    expect(isSmallSample({ newWallets: 4, newUsd: 127 })).toBe(true);
+    expect(isSmallSample({ newWallets: 9, newUsd: 499 })).toBe(true);
+    expect(isSmallSample({ newWallets: 5, newUsd: 500 })).toBe(false);
+    expect(liftText({ lift: 14, newWallets: 4, newUsd: 127 })).toBe('x14.0*');
+    expect(liftText({ lift: 2.25, newWallets: 8, newUsd: 900 })).toBe('x2.3');
+  });
+  it('gives the CLI the caveat always, the small-sample note only when needed, and the coverage', () => {
+    const base = { rows: [], windowMins: 30, maxAgeDays: 14, trades: 1, markets: 1, wallets: 1, aged: 1, toAge: 0, coverage: 0.73, platformNewShare: 0.1, newWalletsTotal: 1 };
+    const small = { cid: 'c', eventSlug: 'e', question: 'q', wallets: 5, newWallets: 3, knownUsd: 10, newUsd: 100, newShare: 0.5, lift: 5, lean: null, topShare: 1, top: [] };
+    expect(newbiesNotes({ ...base, rows: [] })).toEqual([NEWBIES_CAVEAT, coverageNote(base)]);
+    expect(newbiesNotes({ ...base, rows: [small] })).toEqual([NEWBIES_CAVEAT, SMALL_SAMPLE_NOTE, coverageNote(base)]);
+    expect(NEWBIES_CAVEAT).toBe('new accounts are mostly ordinary people; not evidence of wrongdoing');
+    expect(coverageNote(base)).toMatch(/age known for 73% of the money.*not a funding trace/);
+  });
+  it('words a time estimate', () => {
+    expect(etaText(2)).toBe('a few seconds left');
+    expect(etaText(40)).toBe('~40s left');
+    expect(etaText(300)).toBe('~5m left');
+    expect(etaText(Number.NaN)).toBe('ETA unknown');
   });
 });

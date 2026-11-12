@@ -252,7 +252,6 @@ export class LiveBookFeed {
     this.ws = ws;
     ws.onopen = () => {
       if (this.ws !== ws) return;
-      this.attempt = 0;
       this.lastFrame = this.now();
       ws.send(JSON.stringify({ assets_ids: [this.o.tokenId], type: 'market' }));
       if (this.heartbeat) clearInterval(this.heartbeat);
@@ -281,6 +280,7 @@ export class LiveBookFeed {
       for (const m of Array.isArray(msgs) ? msgs : [msgs]) {
         const was = this.state.synced;
         if (applyEvent(this.state, m as Record<string, any>, this.now())) changed = true;
+        if ((m as Record<string, any>)?.event_type === 'book') this.attempt = 0; // only a real book frame proves the subscription worked
         if ((m as Record<string, any>)?.event_type === 'book' && this.state.synced && !was) this.lastBookSync = this.now();
         if ((m as Record<string, any>)?.event_type === 'book' && (m as Record<string, any>).asset_id === this.o.tokenId) this.state.status = 'live';
       }
@@ -306,7 +306,7 @@ export class LiveBookFeed {
     if (!this.running) return;
     this.state.status = 'polling';
     this.markDirty();
-    const delay = Math.min(1_000 * 2 ** this.attempt, 15_000);
+    const delay = Math.min(1_000 * 2 ** this.attempt, 15_000) + Math.floor(Math.random() * 250);
     this.attempt++;
     if (this.reconnect) clearTimeout(this.reconnect);
     this.reconnect = setTimeout(() => {

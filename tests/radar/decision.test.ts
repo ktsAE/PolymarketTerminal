@@ -392,13 +392,13 @@ describe('decision tab', () => {
   it('explains how to open it when nothing is loaded', () => {
     const text = strip(render(empty, view(), Date.now()).join('\n'));
     expect(text).toMatch(/5 Decision/);
-    expect(text).toMatch(/press p to decide/);
+    expect(text).toMatch(/press p to see the model estimate/);
   });
   it('shows actions, quotes, the model range, wallet creation dates and flags, and the standing caveat', async () => {
     const store = openStore();
     const dv = await loadDecision(new PolymarketClient(fakeApi(), fast), store, 'acme-fdv', { now: () => NOW * 1000, people: [JON], refs: [refCfg], fetchJson: dexApi });
     store.close();
-    const m: Model = { ...empty, decision: dv };
+    const m: Model = { ...empty, decision: dv, decisionAt: new Date(2026, 10, 12, 14, 7).getTime() };
     const lines = render(m, view({ sel: 1 }), Date.now()).map(strip);
     expect(lines.length).toBe(42);
     const text = lines.join('\n');
@@ -415,6 +415,10 @@ describe('decision tab', () => {
     expect(dv.books && Object.keys(dv.books).length).toBeGreaterThan(0);
     expect(dv.fee?.rate).toBeGreaterThanOrEqual(0);
     expect(text).toMatch(/1-9 tabs/);
+    expect(text).toMatch(/model estimate, not advice/);
+    expect(text).toMatch(/EST\.EDGE/);
+    expect(text).toMatch(/as of 14:07/);
+    expect(text).not.toMatch(/\bBUY (YES|NO)\b/); // verdicts read as estimates, not orders
     for (const l of lines) expect(l.length).toBeLessThanOrEqual(140 + 20); // no line overflows the terminal (width counts glyphs, not bytes)
   });
   it('never overflows its box at any terminal size, with a loaded decision', async () => {
@@ -446,7 +450,9 @@ describe('decision tab', () => {
     const text = strip(render(m, view({ tab: 'holders' }), Date.now()).join('\n'));
     expect(text).toMatch(/CREATED/);
     expect(text).toContain(new Date((now - 2 * 86_400) * 1000).toISOString().slice(0, 10));
-    expect(text).toMatch(/≈ Jonathan Smithers/);
+    expect(text).toMatch(/≈ 0xJonathan/); // a name-match row shows the address, not the name
+    expect(text).not.toContain('≈ Jonathan Smithers');
+    expect(text).toMatch(/labels \(NEW, !, ≈\) are screens/);
     const detail = strip(render(m, view({ tab: 'holders', sel: 0 }), Date.now()).join('\n'));
     expect(detail).toMatch(/profile created .*\(2d\).*NEW ACCOUNT/);
   });

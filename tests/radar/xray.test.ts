@@ -88,6 +88,25 @@ describe('the report and its notes', () => {
   });
 });
 
+describe('open figures are labelled partial', () => {
+  it('says unrealized and open figures are partial, and records when the numbers were read', () => {
+    const r = buildXray('0xabc', [pt(10, 0, 0), pt(0, 100, 1000)], [pos(0, { status: 'OPEN', value: 50, unrealizedPnl: -20 })], [], { all: [], takerOnly: [] }, NOW);
+    expect(r.asOf).toBe(NOW);
+    const open = formatXray(r).find((l) => l.startsWith('OPEN')) ?? '';
+    expect(open).toMatch(/unrealized -\$20 \(partial/);
+  });
+  it('does not print "unrealized $0" when positions exist but their values are missing', () => {
+    const r = buildXray('0xabc', [pt(10, 0, 0), pt(0, 100, 1000)], [pos(0, { status: 'OPEN', value: 0, unrealizedPnl: 0 }), pos(0, { status: 'OPEN', value: 0, unrealizedPnl: 0 })], [], { all: [], takerOnly: [] }, NOW);
+    const open = formatXray(r).find((l) => l.startsWith('OPEN')) ?? '';
+    expect(open).not.toMatch(/unrealized \$0/);
+    expect(open).not.toMatch(/worth \$0/);
+    expect(open).toMatch(/2 positions, but their value and unrealized PnL came back as 0 or missing: unknown, not zero \(partial\)/);
+    // no open positions at all is a plain zero
+    const none = buildXray('0xabc', [], [], [], { all: [], takerOnly: [] }, NOW);
+    expect(formatXray(none).find((l) => l.startsWith('OPEN'))).toMatch(/0 positions worth \$0, unrealized \$0 \(partial/);
+  });
+});
+
 describe('loading from the API', () => {
   const W = `0x${'a'.repeat(40)}`;
   const fast = { minIntervalMs: 0, sleep: async () => undefined, now: () => 0 };

@@ -240,15 +240,30 @@ export interface ClientOptions {
   retries?: number;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  /** Jitter source in [0,1); injectable for tests. */
+  random?: () => number;
+}
+
+/** Drops the query string and fragment so messages never carry cursors or wallet filters. */
+function stripQuery(url: string): string {
+  return url.replace(/[?#].*$/, '');
+}
+
+function stripQueryInText(t: string): string {
+  return t.replace(/(https?:\/\/[^\s?#)]+)[?#][^\s)]*/g, '$1');
 }
 
 export class PolymarketClient {
-  private lastCall = 0;
+  /** Earliest time the next request may start. Reserved synchronously, so concurrent callers queue instead of waking together. */
+  private nextSlot = 0;
+  /** Set by any 429: every worker waits for it, not just the one that was refused. */
+  private coolUntil = 0;
   private readonly fetchJson: FetchJson;
   private readonly minIntervalMs: number;
   private readonly retries: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
+  private readonly random: () => number;
 
   constructor(fetchJson: FetchJson, opts: ClientOptions = {}) {
     this.fetchJson = fetchJson;
@@ -256,14 +271,17 @@ export class PolymarketClient {
     this.retries = opts.retries ?? 3;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.now = opts.now ?? Date.now;
+    this.random = opts.random ?? Math.random;
   }
 
   private async get(url: string): Promise<unknown> {
     let lastError: unknown;
+    let attempts = 0;
     for (let attempt = 0; attempt <= this.retries; attempt++) {
-      const wait = this.lastCall + this.minIntervalMs - this.now();
-      if (wait > 0) await this.sleep(wait);
-      this.lastCall = this.now();
+      const t = this.now();
+      const slot = Math.max(t, this.nextSlot, this.coolUntil);
+      this.nextSlot = slot + this.minIntervalMs; // reserved before any await
+      if (slot > t) await this.sleep(slot - t);
       try {
         return await this.fetchJson(url);
       } catch (error) {
@@ -274,10 +292,22 @@ export class PolymarketClient {
         // 410 Gone: the endpoint was retired. Retrying cannot help, so fail at once with a message that names the cause.
         if (error instanceof Error && /^HTTP 410/.test(error.message)) throw new Error(`endpoint retired (HTTP 410): ${url}`);
         lastError = error;
-        await this.sleep(400 * 2 ** attempt);
+        const msg = error instanceof Error ? error.message : String(error);
+        // Auth/bad-request answers will not change on retry.
+        if (/^HTTP (400|401|403)\b/.test(msg)) {
+          attempts = attempt + 1;
+          break;
+        }
+        attempts = attempt + 1;
+        if (attempt >= this.retries) break;
+        const ra = /^HTTP 429.*retry-after: (\d+)/i.exec(msg);
+        const backoff = 400 * 2 ** attempt + Math.floor(this.random() * 100);
+        if (/^HTTP 429/i.test(msg)) this.coolUntil = Math.max(this.coolUntil, this.now() + (ra ? Math.min(Number(ra[1]), 30) * 1000 : backoff));
+        else await this.sleep(backoff);
       }
     }
-    throw new Error(`request failed after ${this.retries + 1} attempts: ${url}: ${String(lastError)}`);
+    const why = lastError instanceof Error ? lastError.message.replace(/\s*retry-after: \d+/i, '').slice(0, 120) : String(lastError).slice(0, 120);
+    throw new Error(`request failed after ${attempts} attempts: ${stripQuery(url)} (${stripQueryInText(why)})`);
   }
 
   /** One page of a Data API v2 route: payload unwrapped from `data`, keys camelCased, plus the cursor of the next page (null at the end). */
@@ -580,8 +610,10 @@ export class PolymarketClient {
 }
 
 export const httpFetchJson: FetchJson = async (url) => {
-  const res = await fetch(url, { headers: { 'user-agent': 'polymarket-radar/0.1' } });
+  const res = await fetch(url, { headers: { 'user-agent': 'polymarket-radar/0.1' }, signal: AbortSignal.timeout(15_000) });
   if (!res.ok) {
+    const ra = res.status === 429 ? res.headers.get('retry-after') : null;
+    if (ra && /^\d+$/.test(ra.trim())) throw new Error(`HTTP 429 retry-after: ${ra.trim()}`);
     // a 400 carries the reason in its body ("user is a protocol contract address"); keep it so callers can tell it from a glitch
     const reason = res.status === 400 ? await res.text().then((t) => t.slice(0, 200)).catch(() => '') : '';
     throw new Error(`HTTP ${res.status}${reason ? `: ${reason}` : ''}`);

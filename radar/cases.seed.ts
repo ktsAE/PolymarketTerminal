@@ -86,7 +86,7 @@ export const SEED_CASES: SeedCase[] = [
     },
     events: [
       {
-        at: d('2026-08-25'), approx: true, tier: 'ALLEGED_CONCRETE', summary: 'X user Feran flagged a >$348k in-play bet on the underdog after map 1; community alleges Alliance threw.',
+        at: d('2026-08-25'), approx: true, tier: 'ALLEGED_CONCRETE', summary: 'A social-media post flagged a >$348k in-play bet on the underdog after map 1 and questioned the result. Unproven: no club or organizer finding.',
         sources: [{ kind: 'journalism', url: 'https://temshik.ru/news/esports/alliance-obvinili-v-322-stavka-348-tysyach-united21-cs2', retrievedAt: RETRIEVED, documented: false, note: 'Publication date not read; original X post not retrieved. Clubs had not commented; no official investigation.' }],
         claims: [
           { kind: 'bet_amount', text: '>$348k on Phantom Academy after map 1, >$740k payout', amountUsd: 348_992, verified: 'onchain' },
@@ -99,11 +99,11 @@ export const SEED_CASES: SeedCase[] = [
     row: {
       id: 'epl35-lixo-nemiga', title: 'LiXO vs Nemiga, European Pro League 35 (Dota 2, Mar 24 2026)', game: 'Dota 2', tournament: 'European Pro League 35',
       teams: ['LiXO eSports', 'Nemiga Gaming'], matchAt: d('2026-03-24'), polymarketSlug: 'dota2-nemiga-lixoes-2026-03-25',
-      notes: 'Accuser is a former coach/analyst. The accused stand-in player denies intent. Polymarket event exists but traded $0, so no on-chain check is possible. The bet venue is unnamed.',
+      notes: 'The claim comes from a former coach/analyst. The player concerned denies intent. Polymarket event exists but traded $0, so no on-chain check is possible. The bet venue is unnamed.',
     },
     events: [
       {
-        at: d('2026-03-26'), tier: 'ALLEGED_CONCRETE', summary: 'Analyst Ahilles accused stand-in zvezd of throwing and cited ~$79.5k bet on LiXO 0:2 at 1.82 (~$144.6k payout).',
+        at: d('2026-03-26'), tier: 'ALLEGED_CONCRETE', summary: 'A former coach questioned the in-game play of one player and cited a ~$79.5k bet on LiXO 0:2 at 1.82 (~$144.6k payout). Unproven: no organizer finding.',
         sources: [{ kind: 'analyst_post', url: 'https://cyberscore.live/en/news/ex-1win-coach-ahilles-accuses-zvezd-322', publishedAt: '2026-03-26', retrievedAt: RETRIEVED, documented: false, note: 'Cyberscore reports no official evidence or investigation.' }],
         claims: [
           { kind: 'bet_amount', text: '$79,500 on LiXO to lose 0:2 at odds 1.82', amountUsd: 79_500, verified: 'none' },

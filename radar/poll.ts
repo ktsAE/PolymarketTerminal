@@ -1,12 +1,14 @@
 import { classify, FEEDS, parseFeed, parseWpJson, type FeedConfig, type NewsItem } from './news.ts';
 import type { RadarStore } from './store.ts';
 
+const MAX_FEED_BYTES = 2_000_000;
 export type FetchText = (url: string) => Promise<string>;
 
 export const httpFetchText: FetchText = async (url) => {
-  const res = await fetch(url, { headers: { 'user-agent': 'polymarket-radar/0.1' } });
+  const res = await fetch(url, { headers: { 'user-agent': 'polymarket-radar/0.1' }, signal: AbortSignal.timeout(15_000) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.text();
+  if (Number(res.headers?.get?.('content-length')) > MAX_FEED_BYTES) throw new Error('response too large');
+  return (await res.text()).slice(0, MAX_FEED_BYTES);
 };
 
 export interface PollResult {

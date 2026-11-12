@@ -37,10 +37,16 @@ export interface NewsItem {
 }
 
 const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+/** Code point -> text, or a space when it is not a printable character (controls, surrogates, out of range). */
+function safeCodePoint(n: number): string {
+  if (!Number.isInteger(n) || n < 0x20 || n > 0x10ffff || (n >= 0x7f && n <= 0x9f) || (n >= 0xd800 && n <= 0xdfff)) return ' ';
+  if ((n >= 0x200b && n <= 0x200f) || (n >= 0x202a && n <= 0x202e) || (n >= 0x2066 && n <= 0x2069) || n === 0xfeff) return ' ';
+  return String.fromCodePoint(n);
+}
 export function decodeEntities(s: string): string {
   return s
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => safeCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, n) => safeCodePoint(Number(n)))
     .replace(/&([a-z]+);/gi, (m, n) => ENTITIES[n.toLowerCase()] ?? m);
 }
 

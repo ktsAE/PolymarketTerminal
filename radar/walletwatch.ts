@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { PolymarketClient, TradeLine } from './polymarket.ts';
 
@@ -23,6 +23,14 @@ export function loadWatched(path: string = WALLETS_PATH): WatchedWallet[] {
   try {
     raw = JSON.parse(readFileSync(path, 'utf8'));
   } catch {
+    // A file that exists but does not parse is moved aside, so the next save cannot overwrite what is left of it.
+    if (existsSync(path)) {
+      try {
+        renameSync(path, `${path}.corrupt-${Date.now()}`);
+      } catch {
+        /* read-only dir: nothing more to do */
+      }
+    }
     return [];
   }
   const seen = new Set<string>();
@@ -38,7 +46,9 @@ export function loadWatched(path: string = WALLETS_PATH): WatchedWallet[] {
 
 export function saveWatched(list: readonly WatchedWallet[], path: string = WALLETS_PATH): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(list, null, 2) + '\n');
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmp, JSON.stringify(list, null, 2) + '\n');
+  renameSync(tmp, path);
 }
 
 /** Adds (or updates the note of) a wallet. Returns whether it was new. */
@@ -106,6 +116,11 @@ export async function pollWatched(client: PolymarketClient, list: readonly Watch
   return out;
 }
 
+/** Untrusted text for a notification daemon: no control characters, no markup (many daemons render Pango/HTML). */
+export const notifyText = (s: string): string =>
+  s.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').slice(0, 500);
+
 export function notify(title: string, body: string): void {
-  execFile('notify-send', ['-a', 'polymarket-radar', title, body], () => undefined);
+  // `--` ends option parsing, so a body that starts with `-` stays text
+  execFile('notify-send', ['-a', 'polymarket-radar', '--', notifyText(title), notifyText(body)], { timeout: 5_000 }, () => undefined);
 }

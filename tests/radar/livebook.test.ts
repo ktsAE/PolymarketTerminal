@@ -82,7 +82,10 @@ class FakeWs implements WsLike {
 
 describe('the live feed', () => {
   beforeEach(() => { vi.useFakeTimers(); FakeWs.all = []; });
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
   const make = (over: Record<string, unknown> = {}) => {
     const updates: number[] = [];
     const fetchBook = vi.fn(async () => ({ bids: [{ price: 0.4, size: 10 }], asks: [{ price: 0.6, size: 20 }] }));
@@ -122,6 +125,7 @@ describe('the live feed', () => {
     feed.stop();
   });
   it('falls back to polling when the socket drops, reconnects with backoff, and stops cleanly', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
     const { feed, fetchBook } = make();
     feed.start();
     await vi.advanceTimersByTimeAsync(10);
@@ -146,6 +150,23 @@ describe('the live feed', () => {
     const calls = fetchBook.mock.calls.length;
     await vi.advanceTimersByTimeAsync(20_000);
     expect(fetchBook.mock.calls.length).toBe(calls); // nothing runs after stop
+  });
+  it('keeps backing off when the server accepts the socket but never sends a book (no reconnect storm)', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const { feed } = make();
+    feed.start();
+    await vi.advanceTimersByTimeAsync(10);
+    FakeWs.all[0].open();
+    FakeWs.all[0].drop(); // accepted, then closed: no book frame
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(FakeWs.all.length).toBe(2);
+    FakeWs.all[1].open();
+    FakeWs.all[1].drop();
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(FakeWs.all.length).toBe(2); // the wait grew to 2s because opening alone does not reset it
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(FakeWs.all.length).toBe(3);
+    feed.stop();
   });
   it('pings every 10s and reconnects a socket that went silent for 30s', async () => {
     const { feed } = make();

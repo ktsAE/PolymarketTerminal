@@ -99,3 +99,49 @@ export function sparkline(values: readonly number[], width: number): string {
   if (hi === lo) return BLOCKS[3].repeat(pts.length);
   return pts.map((v) => BLOCKS[Math.min(7, Math.floor(((v - lo) / (hi - lo)) * 8))]).join('');
 }
+
+// Sanitizing externally sourced text (market titles, wallet names, bios, outcomes, error messages). Anyone can put an ESC sequence in a
+// profile name; left in, it would move the cursor, retitle the window or hide text in the terminal.
+const SEQ_RE = new RegExp(
+  [
+    `${ESC}\\][^\\x07${ESC}]*(?:\\x07|${ESC}\\\\)?`, // OSC (window title, hyperlinks...) up to BEL or ST; unterminated ones eat the rest
+    `${ESC}[PX^_][^${ESC}]*(?:${ESC}\\\\)?`, // DCS / SOS / PM / APC strings
+    `${ESC}\\[[0-?]*[ -/]*[@-~]?`, // CSI
+    `${ESC}[ -/]*[0-~]?`, // any other two-byte escape
+  ].join('|'),
+  'g',
+);
+// C0, DEL, C1, bidi overrides/isolates and the BOM: none belong in a table cell
+const CTRL_RE = new RegExp('[\\x00-\\x1f\\x7f-\\x9f\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069\\ufeff]', 'g');
+
+/** Strips ESC sequences and control characters from untrusted text; tabs and line breaks become one space. */
+export function sanitize(s: string): string {
+  if (!/[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/.test(s)) return s;
+  return s.replace(/[\t\r\n]+/g, ' ').replace(SEQ_RE, '').replace(CTRL_RE, '');
+}
+
+/**
+ * Copy of `value` with every string sanitized (arrays and plain objects walked; copy-on-write, so an unchanged subtree is returned as is).
+ * `skip` names keys that hold live data structures and never carry display text.
+ */
+export function sanitizeDeep<T>(value: T, skip: ReadonlySet<string> = new Set(['live']), depth = 0): T {
+  if (typeof value === 'string') return sanitize(value) as T;
+  if (value === null || typeof value !== 'object' || depth > 10) return value;
+  if (Array.isArray(value)) {
+    let out: unknown[] | null = null;
+    value.forEach((x, i) => {
+      const y = sanitizeDeep(x, skip, depth + 1);
+      if (y !== x) (out ??= [...value])[i] = y;
+    });
+    return (out ?? value) as T;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return value;
+  let out: Record<string, unknown> | null = null;
+  for (const [k, x] of Object.entries(value as Record<string, unknown>)) {
+    if (skip.has(k)) continue;
+    const y = sanitizeDeep(x, skip, depth + 1);
+    if (y !== x) (out ??= { ...(value as Record<string, unknown>) })[k] = y;
+  }
+  return (out ?? value) as T;
+}

@@ -1,12 +1,10 @@
 import { pickMarket } from '../../radar/tui/pick';
 import { buildXray } from '../../radar/xray';
 import { describe, expect, it } from 'vitest';
-import { charWidth, clip, fit, sparkline, strip, truncate, vlen } from '../../radar/tui/ansi';
-import { JUMPS_STANDING, LEDGER_STANDING, moveSelection, NEW_STANDING, render, type Model, type View } from '../../radar/tui/render';
+import { charWidth, clip, fit, sanitize, sanitizeDeep, sparkline, strip, truncate, vlen } from '../../radar/tui/ansi';
+import { DECISION_DISCLAIMER, enterOpensDecision, FOOTER, helpRows, moveSelection, opensFollowPrompt, render, TABS, type Model, type View } from '../../radar/tui/render';
 import { scoreJumps, type JumpFlag } from '../../radar/jump';
-import type { EdgeCandidate, ScanResult } from '../../radar/edges';
 import type { EarlyFeatures, ScanRow, ScanSummary } from '../../radar/newmarkets';
-import { scoreLedger } from '../../radar/ledger';
 import type { Anomaly } from '../../radar/detect';
 import type { HolderRow } from '../../radar/holders';
 import { applyFilters } from '../../radar/collect';
@@ -61,7 +59,7 @@ describe('ansi helpers', () => {
 describe('rendering', () => {
   it('never overflows its box at any terminal size, on any tab', () => {
     for (const [cols, rows] of [[60, 16], [80, 24], [100, 30], [140, 40], [220, 60]]) {
-      for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new', 'jumps'] as const) {
+      for (const tab of ['anomalies', 'games', 'holders', 'decision', 'search', 'xray', 'wallets', 'book', 'follow'] as const) {
         const lines = render(model(), { tab, sel: 3, cols, rows }, Date.now());
         expect(lines, `${cols}x${rows} ${tab}`).toHaveLength(rows);
         for (const l of lines) expect(vlen(l), `${cols}x${rows} ${tab}`).toBeLessThanOrEqual(cols);
@@ -84,7 +82,7 @@ describe('rendering', () => {
 
   it('survives empty data and an error state', () => {
     const empty: Model = { ...model(), anomalies: [], games: [], prints: [], leads: [], status: { ...model().status, error: 'HTTP 500', lastPollAt: null, nextPollAt: null } };
-    for (const tab of ['anomalies', 'games', 'prints', 'holders', 'leads', 'decision', 'search', 'news', 'edge', 'ledger', 'new', 'jumps'] as const) expect(() => render(empty, { tab, sel: 0, cols: 100, rows: 30 }, Date.now())).not.toThrow();
+    for (const tab of ['anomalies', 'games', 'holders', 'decision', 'search', 'xray', 'wallets', 'book', 'follow'] as const) expect(() => render(empty, { tab, sel: 0, cols: 100, rows: 30 }, Date.now())).not.toThrow();
     expect(strip(render(empty, { tab: 'anomalies', sel: 0, cols: 100, rows: 30 }, Date.now()).join('\n'))).toContain('error');
   });
 
@@ -147,7 +145,8 @@ describe('games and holders tabs', () => {
   it('lists only people by default and says how many machines are hidden', () => {
     const t = text(withHolders(false), 'holders');
     expect(t).toContain('dubdubdub2');
-    expect(t).toContain('newcomer');
+    expect(t).toContain('0xabcdef01'); // the flagged row shows its address, not its name
+    expect(t).not.toContain('newcomer');
     expect(t).not.toContain('cigarettes');
     expect(t).not.toContain('toosensitive');
     expect(t).toContain('2 bots/market makers hidden');
@@ -194,39 +193,6 @@ describe('games and holders tabs', () => {
 
 
 
-describe('edge tab REF rows', () => {
-  const cand = (over: Partial<EdgeCandidate> = {}): EdgeCandidate => ({
-    kind: 'LADDER', slug: 'ev-ladder', title: 'Structural ladder', legs: [{ cid: '0x1', label: '>$30M', action: 'BUY YES', price: 0.4, yesToken: '1', noToken: '2' }], payoff: 1, cost: 0.95, edgePts: 5,
-    confidence: 'medium', liqMin: 5_000, vol24: 20_000, caveats: [], verified: true, liveEdgePts: 4, depthUsd: 300, profitUsd: 12, note: null, ...over,
-  });
-  const ref = cand({ kind: 'REF', slug: 'onewin-fdv', title: 'Onewin FDV above $70M?', payoff: 0.62, cost: 0.5, edgePts: 12, confidence: 'low', verified: true, liveEdgePts: 12, caveats: ['model range from a DEX price; confirm: official mint'] });
-  const result = (unmapped: string[]): ScanResult => ({ at: Date.now(), eventsScanned: 400, marketsScanned: 2_000, candidates: [cand(), ref], errors: [], unmapped });
-  const withEdges = (unmapped: string[]): Model => ({ ...model(), edges: { stage: 'done', done: true, error: null, result: result(unmapped) } });
-  const text = (m: Model, cols = 150, rows = 40, sel = 0) => strip(render(m, { tab: 'edge', sel, cols, rows }, Date.now()).join('\n'));
-
-  it('shows REF rows with their type label, a model edge and low confidence, plus the unmapped note', () => {
-    const m = withEdges(['Predict.fun FDV above ___ one day after launch?', 'Other token FDV?']);
-    const t = text(m);
-    expect(t).toMatch(/REF\s+~\+12\.0pt\s+\+12pt\s+\$\d+\s+low\s+.*Onewin FDV above \$70M\?/);
-    expect(t).toMatch(/LADDER\s+\+4\.0pt/);
-    expect(t).toContain('2 token markets have no reference price (add to .radar/refs.json)');
-    expect(t).toContain('no forecasting edge is claimed');
-    const raw = render(m, { tab: 'edge', sel: 0, cols: 150, rows: 40 }, Date.now()).join('\n');
-    expect(raw).toContain('\x1b[33mREF'); // yellow = low confidence styling
-    expect(text(m, 150, 40, 1)).toContain('NOT guaranteed');
-  });
-
-  it('prints no unmapped line when every token ladder is mapped, and never overflows', () => {
-    expect(text(withEdges([]))).not.toContain('no reference price');
-    for (const m of [withEdges([]), withEdges(['x'])]) {
-      for (const [cols, rows] of [[40, 10], [80, 24], [220, 60]]) {
-        const lines = render(m, { tab: 'edge', sel: 1, cols, rows }, Date.now());
-        expect(lines).toHaveLength(rows);
-        for (const l of lines) expect(vlen(l), `${cols}x${rows}`).toBeLessThanOrEqual(cols);
-      }
-    }
-  });
-});
 
 describe('holders market picker', () => {
   const ms = [
@@ -370,7 +336,7 @@ describe('following tab', () => {
     const prompt = strip(render(base(fv([card()], { input: 'https://polymarket.com/@tech' })), { tab: 'follow', sel: 0, cols: 140, rows: 30 }, Date.now()).join('\n'));
     expect(prompt).toMatch(/Follow: paste a 0x wallet, polymarket\.com\/profile\/0x… or polymarket\.com\/@name\s+https:\/\/polymarket\.com\/@tech/);
     expect(strip(render(base(fv([card()], { message: 'now following Sonix (1 total)' })), { tab: 'follow', sel: 0, cols: 140, rows: 30 }, Date.now()).join('\n'))).toMatch(/now following Sonix/);
-    expect(strip(render(base(fv([])), { tab: 'follow', sel: 0, cols: 140, rows: 30 }, Date.now()).join('\n'))).toMatch(/nobody followed yet: press \+ and paste/);
+    expect(strip(render(base(fv([])), { tab: 'follow', sel: 0, cols: 140, rows: 30 }, Date.now()).join('\n'))).toMatch(/nobody followed yet: press n \(or \+ on another tab\) and paste/);
     expect(strip(render(base(fv([card({ error: 'HTTP 500', trades: [], positions: [], style: null, newTrades: 0 })])), { tab: 'follow', sel: 0, cols: 140, rows: 30 }, Date.now()).join('\n'))).toMatch(/HTTP 500/);
   });
   it('stays inside its box at every size', () => {
@@ -381,5 +347,153 @@ describe('following tab', () => {
         expect(lines, `${cols}x${rows}`).toHaveLength(rows);
         for (const l of lines) expect(vlen(l)).toBeLessThanOrEqual(cols);
       }
+  });
+});
+
+const ESCC = String.fromCharCode(27);
+const hostile = `${ESCC}]0;pwned\x07Evil${ESCC}[2J${ESCC}[31mred\x07\x08\u009b31m name\u202ertl\r\nline2`;
+
+describe('sanitizing external strings', () => {
+  it('strips ESC sequences, C0/C1 controls and bidi overrides, keeps ordinary text', () => {
+    expect(sanitize(hostile)).toBe('Evilred31m namertl line2');
+    expect(sanitize('Will 日本語 🚀 happen? $5')).toBe('Will 日本語 🚀 happen? $5');
+    expect(sanitize(`a${ESCC}`)).toBe('a');
+    expect(sanitize(`a${ESCC}]8;;http://x`)).toBe('a'); // unterminated OSC eats the rest
+  });
+  it('walks arrays and plain objects without touching the original, skips live structures', () => {
+    const live = new Map([[1, 2]]);
+    const input = { a: [`x${ESCC}[2Jy`, 3, { b: 'ok' }], live: { t: `${ESCC}[2J` }, m: live };
+    const out = sanitizeDeep(input);
+    expect(out.a[0]).toBe('xy');
+    expect(input.a[0]).toContain(ESCC);
+    expect(out.live).toBe(input.live);
+    expect(out.m).toBe(live);
+    expect(sanitizeDeep(input.a[2])).toBe(input.a[2]); // unchanged subtree is returned as is
+  });
+  it('never lets hostile titles, names or errors reach the terminal as raw sequences, on any tab', () => {
+    const m = model();
+    m.anomalies[0] = anomaly(0, { title: hostile, cat: hostile });
+    m.games[0] = anomaly(100, { isGame: true, title: hostile, startsAt: null });
+    m.status.error = hostile;
+    m.status.message = hostile;
+    m.holders = { slug: 's', eventTitle: hostile, question: hostile, cid: 'c', rows: [], markets: [], total: 0, loaded: 0, done: true, error: hostile } as never;
+    m.search = { query: '', typing: false, loading: false, error: hostile, results: [{ slug: hostile, title: hostile, volume: 1, closed: false }] };
+    m.xray = { wallet: hostile, stage: hostile, done: false, error: null, report: null };
+    for (const tab of TABS) {
+      for (const sel of [0, 1]) {
+        const text = render(m, { tab, sel, cols: 140, rows: 40 }, Date.now()).join('\n');
+        // only SGR colour codes (ESC [ digits m) may remain
+        expect(text.replace(/\x1b\[[0-9;]*m/g, ''), tab).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/);
+        expect(text, tab).not.toContain('pwned');
+      }
+    }
+  });
+});
+
+describe('footer and help overlay', () => {
+  const base = (over: Partial<Model> = {}): Model => ({ ...model(3), ...over });
+  it('fits 100 columns, keeps the quit/refresh/search/help keys and is the footer at 100, 120 and 150 columns', () => {
+    expect(vlen(FOOTER)).toBeLessThanOrEqual(100);
+    for (const key of ['? all keys', 'r refresh', 'q quit', '/ search', 'Enter open']) expect(FOOTER).toContain(key);
+    for (const cols of [100, 120, 150]) {
+      const last = strip(render(base(), { tab: 'anomalies', sel: 0, cols, rows: 30 }, Date.now()).at(-1) ?? '');
+      expect(last, `${cols}`).toContain('q quit');
+      expect(last).toContain('? all keys');
+    }
+  });
+  it('shows a per-tab key map when help is open, with the global keys, and Esc/? close wording in the footer', () => {
+    for (const tab of TABS) {
+      const lines = render(base(), { tab, sel: 0, cols: 120, rows: 30, help: true }, Date.now()).map(strip);
+      const text = lines.join('\n');
+      expect(text, tab).toMatch(/KEYS/);
+      expect(text, tab).toMatch(/EVERYWHERE/);
+      expect(text, tab).toMatch(/\? {2,}this help/);
+      expect(lines.at(-1), tab).toMatch(/Esc or \? closes help/);
+      expect(lines, tab).toHaveLength(30);
+      for (const l of render(base(), { tab, sel: 0, cols: 60, rows: 14, help: true }, Date.now())) expect(vlen(l)).toBeLessThanOrEqual(60);
+    }
+    expect(helpRows('book', 20, 120).map(strip).join('\n')).toMatch(/compress \/ expand price ticks/);
+    expect(helpRows('wallets', 20, 120).map(strip).join('\n')).toMatch(/Esc {2}cancel the scan/);
+    expect(helpRows('follow', 20, 120).map(strip).join('\n')).toMatch(/n {11}add a wallet/);
+  });
+  it('routes keys: Enter opens Decision on Markets/Games/Search; + opens the follow prompt except on Book and Following; n opens it anywhere', () => {
+    for (const t of ['anomalies', 'games', 'search'] as const) expect(enterOpensDecision(t)).toBe(true);
+    for (const t of ['holders', 'wallets', 'decision', 'xray', 'book', 'follow'] as const) expect(enterOpensDecision(t)).toBe(false);
+    expect(opensFollowPrompt('+', 'anomalies')).toBe(true);
+    expect(opensFollowPrompt('+', 'book')).toBe(false);
+    expect(opensFollowPrompt('=', 'follow')).toBe(false);
+    for (const t of TABS) expect(opensFollowPrompt('n', t)).toBe(true);
+  });
+});
+
+describe('newbies honesty', () => {
+  const mk = (rows: unknown[], over = {}) =>
+    ({ ...model(1), newWallets: { stage: 'done', done: true, error: null, at: new Date(2026, 10, 12, 14, 7).getTime(), result: { rows, windowMins: 30, maxAgeDays: 14, trades: 10, markets: 5, wallets: 20, aged: 18, toAge: 2, coverage: 0.73, platformNewShare: 0.05, newWalletsTotal: 4 }, ...over } }) as unknown as Model;
+  const row = (over = {}) => ({ cid: 'c', eventSlug: 'e', question: 'Q one?', wallets: 9, newWallets: 4, knownUsd: 900, newUsd: 127, newShare: 0.14, lift: 14, lean: null, topShare: 0.5, top: [], ...over });
+  it('shows the ordinary-people caveat at every height, with or without a result', () => {
+    for (const rows of [5, 6, 8, 10, 12, 20, 40]) {
+      for (const m of [mk([row()]), { ...mk([]), newWallets: null } as unknown as Model, mk([row()], { done: false, stage: 'looking up wallet ages: 3/9' })]) {
+        const text = render(m, { tab: 'wallets', sel: 0, cols: 120, rows }, Date.now()).map(strip).join('\n');
+        expect(text, `${rows}`).toMatch(/new accounts are mostly ordinary people; not evidence of wrongdoing/);
+      }
+    }
+  });
+  it('marks a small sample with * on LIFT and explains it; a big sample has no star', () => {
+    const small = render(mk([row()]), { tab: 'wallets', sel: 0, cols: 120, rows: 30 }, Date.now()).map(strip).join('\n');
+    expect(small).toMatch(/x14\.0\*/);
+    expect(small).toMatch(/\* small sample \(under 5 new wallets or under \$500/);
+    const lowUsd = render(mk([row({ newWallets: 9, newUsd: 499 })]), { tab: 'wallets', sel: 0, cols: 120, rows: 30 }, Date.now()).map(strip).join('\n');
+    expect(lowUsd).toMatch(/x14\.0\*/);
+    const big = render(mk([row({ newWallets: 9, newUsd: 9000 })]), { tab: 'wallets', sel: 0, cols: 120, rows: 30 }, Date.now()).map(strip).join('\n');
+    expect(big).toMatch(/x14\.0(?!\*)/);
+    expect(big).not.toMatch(/small sample/);
+  });
+  it('states the coverage (age known for N% of the money) at every height of 8 or more', () => {
+    for (const rows of [8, 9, 10, 11, 12, 20, 40]) {
+      const text = render(mk([row()]), { tab: 'wallets', sel: 0, cols: 140, rows }, Date.now()).map(strip).join('\n');
+      expect(text, `${rows}`).toMatch(/age known for 73% of the money/);
+    }
+    expect(render(mk([row()]), { tab: 'wallets', sel: 0, cols: 140, rows: 8 }, Date.now()).map(strip).join('\n')).toMatch(/not a funding trace/);
+  });
+  it('shows an as-of time, the Esc hint while scanning, and a cancelled partial result', () => {
+    expect(render(mk([row()]), { tab: 'wallets', sel: 0, cols: 140, rows: 30 }, Date.now()).map(strip).join('\n')).toMatch(/New wallets\s+as of 14:07/);
+    const busy = render(mk([row()], { done: false, at: null, stage: 'looking up wallet ages: 50/900, ~2m left' }), { tab: 'wallets', sel: 0, cols: 140, rows: 30 }, Date.now()).map(strip).join('\n');
+    expect(busy).toMatch(/looking up wallet ages: 50\/900, ~2m left…\s+Esc cancels/);
+    expect(busy).not.toMatch(/as of/);
+    expect(render(mk([row()], { cancelled: true }), { tab: 'wallets', sel: 0, cols: 140, rows: 30 }, Date.now()).map(strip).join('\n')).toMatch(/scan cancelled: partial result/);
+  });
+});
+
+describe('x-ray as-of', () => {
+  it('shows when the figures were read', () => {
+    const rep = buildXray('0xabc', [], [], [], { all: [], takerOnly: [] }, new Date(2026, 10, 12, 9, 30).getTime() / 1000);
+    const m = { ...model(1), xray: { wallet: '0xabc', stage: 'done', done: true, error: null, report: rep } } as Model;
+    expect(render(m, { tab: 'xray', sel: 0, cols: 120, rows: 30 }, Date.now()).map(strip).join('\n')).toMatch(/Wallet X-ray\s+0xabc\s+as of 09:30/);
+  });
+});
+
+describe('decision honesty line', () => {
+  it('exports the standing line', () => {
+    expect(DECISION_DISCLAIMER).toMatch(/model estimate, not advice/);
+  });
+});
+
+describe('holders tab: names never sit beside a label without the caveat', () => {
+  const nowS = Math.floor(Date.now() / 1000);
+  const row = (name: string, over: Partial<HolderRow> = {}): HolderRow => ({
+    wallet: `0x${name.padEnd(8, 'e').slice(0, 8)}${'0'.repeat(32)}`, name, outcomeIndex: 0, outcome: 'Yes', shares: 1000, avgPrice: 0.5, curPrice: 0.6, posUsd: 600, uPnl: 100,
+    pnlAll: 1000, pnlWeek: 10, vol: 5000, traded: 4, ageDays: 5, perDay: 2, cls: 'HUMAN', confidence: 'medium', reasons: [], flags: [], createdAt: nowS - 2 * 86_400, xUsername: null, matches: [], ...over,
+  });
+  const m = (): Model => ({
+    ...model(), holders: { slug: 's', eventTitle: 't', question: 'Q?', cid: '0xc', markets: [], total: 2, loaded: 2, done: true, error: null, rows: [row('freshname'), row('oldname', { createdAt: nowS - 900 * 86_400 })] },
+  });
+  it('shows the caveat at every terminal height and the address instead of the name on a NEW row', () => {
+    for (const rows of [8, 12, 16, 20, 26, 40]) {
+      const t = strip(render(m(), { tab: 'holders', sel: 0, cols: 150, rows }, Date.now()).join('\n'));
+      expect(t, `rows=${rows}`).toMatch(/labels \(NEW, !, ≈\) are screens/);
+    }
+    const t = strip(render(m(), { tab: 'holders', sel: 1, cols: 150, rows: 30 }, Date.now()).join('\n'));
+    expect(t).not.toContain('freshname'); // NEW row: address only in the table (its name is on its own card, selected)
+    expect(t).toContain('oldname'); // unlabelled row keeps its name
   });
 });

@@ -100,6 +100,10 @@ The renderer has no Node access and the signer never returns from the main proce
 
 Private-key login is the fastest MVP integration, not the ideal long-term design. A dedicated signer or Polymarket session key limits exposure better than importing a primary wallet key. Live authentication and order placement cannot be fully verified without the owner's actual wallet type and a deliberately funded test account; keep the first live test at the minimum supported size.
 
+## Radar (terminal screener)
+
+A separate read-only terminal tool lives in `radar/`: `npm run doctor`, then `npm run tui`. It is not part of the Electron app and places no orders. See [radar/README.md](radar/README.md).
+
 ## Sources
 
 - [Polymarket market WebSocket](https://docs.polymarket.com/api-reference/wss/market)

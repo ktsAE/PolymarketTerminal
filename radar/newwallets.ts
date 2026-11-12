@@ -186,16 +186,17 @@ export async function scanNewWallets(client: PolymarketClient, store: RadarStore
     }
     todo.sort((a, b) => (spent.get(b) ?? 0) - (spent.get(a) ?? 0));
     const partial = () => aggregateNewWallets(trades, created, nowSecs, windowMins, opts);
-    opts.onProgress?.(`looking up ${todo.length.toLocaleString('en-US')} wallet ages (${created.size.toLocaleString('en-US')} cached)`, partial());
+    opts.onProgress?.(`looking up wallet ages: 0/${todo.length.toLocaleString('en-US')} (${created.size.toLocaleString('en-US')} cached)`, partial());
     let next = 0;
     let doneN = 0;
+    const startedAt = now();
     const worker = async () => {
       while (!opts.cancelled?.()) {
         const w = todo[next++];
         if (w === undefined) return;
         const id = await identityFor(client, store, w, now);
         created.set(w, id?.createdAt ?? null);
-        if (++doneN % 25 === 0) opts.onProgress?.(`looking up wallet ages: ${doneN}/${todo.length}`, partial());
+        if (++doneN % 10 === 0 && doneN < todo.length) opts.onProgress?.(`looking up wallet ages: ${doneN}/${todo.length}, ${etaText(((now() - startedAt) / 1000 / doneN) * (todo.length - doneN))}`, partial());
       }
     };
     await Promise.all(Array.from({ length: opts.concurrency ?? 10 }, worker));
@@ -215,3 +216,36 @@ export function summarizeScan(r: NewWalletsResult): string {
 }
 
 export const usdShort = usd0;
+
+/** "~2m left" style estimate for a progress line. */
+export function etaText(secs: number): string {
+  if (!Number.isFinite(secs) || secs < 0) return 'ETA unknown';
+  if (secs < 5) return 'a few seconds left';
+  if (secs < 90) return `~${Math.round(secs)}s left`;
+  return `~${Math.round(secs / 60)}m left`;
+}
+
+/** The standing line for every place that shows this screener (the TUI tab and the `newbies` command). */
+export const NEWBIES_CAVEAT = 'new accounts are mostly ordinary people; not evidence of wrongdoing';
+export const SMALL_SAMPLE_WALLETS = 5;
+export const SMALL_SAMPLE_USD = 500;
+export const SMALL_SAMPLE_NOTE = `* small sample (under ${SMALL_SAMPLE_WALLETS} new wallets or under $${SMALL_SAMPLE_USD} of new money): LIFT is not meaningful`;
+export const isSmallSample = (row: Pick<NewMarketRow, 'newWallets' | 'newUsd'>): boolean => row.newWallets < SMALL_SAMPLE_WALLETS || row.newUsd < SMALL_SAMPLE_USD;
+/** LIFT as shown to the user: a trailing `*` marks a small sample. */
+export const liftText = (row: Pick<NewMarketRow, 'lift' | 'newWallets' | 'newUsd'>): string => `x${row.lift.toFixed(1)}${isSmallSample(row) ? '*' : ''}`;
+/** What "new" means here, and how much of the money it covers. */
+export const coverageNote = (r: Pick<NewWalletsResult, 'coverage' | 'maxAgeDays'>): string => `age known for ${Math.round(r.coverage * 100)}% of the money; "new" = profile created under ${r.maxAgeDays} days ago, not a funding trace`;
+/** Lines the CLI `newbies` command should print under the summary: the caveat always, the small-sample note when a listed row has one. */
+export function newbiesNotes(r: NewWalletsResult, shown: readonly NewMarketRow[] = r.rows): string[] {
+  return [NEWBIES_CAVEAT, ...(shown.some(isSmallSample) ? [SMALL_SAMPLE_NOTE] : []), coverageNote(r)];
+}
+
+/** The whole `newbies` command output under the scan line: caveat notes, header, one line per shown market. */
+export function newbiesLines(r: NewWalletsResult, top: number): string[] {
+  const shown = r.rows.slice(0, top);
+  return [
+    ...newbiesNotes(r, shown),
+    `${'NEW$'.padStart(8)} ${'NEW'.padStart(4)} ${'/ALL'.padStart(5)} ${'SHARE'.padStart(6)} ${'LIFT'.padStart(6)}  LEANS TO              MARKET`,
+    ...shown.map((x) => `${usd0(x.newUsd).padStart(8)} ${String(x.newWallets).padStart(4)} ${String(x.wallets).padStart(5)} ${(x.newShare * 100).toFixed(0).padStart(5)}% ${liftText(x).padStart(6)}  ${(x.lean ? `${x.lean.outcome.slice(0, 14)} ${Math.round(x.lean.share * 100)}%` : '-').padEnd(20)}  ${x.question.slice(0, 60)}  [${x.eventSlug}]`),
+  ];
+}
