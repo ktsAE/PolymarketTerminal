@@ -12,9 +12,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/kskroyal/PolymarketTerminal
-Environment=PATH=/home/kskroyal/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/kskroyal/.local/bin/node --no-warnings radar/cli.ts daemon --every 30
+WorkingDirectory=%h/PolymarketTerminal
+ExecStart=/usr/bin/env node --no-warnings radar/cli.ts daemon --every 30
 Restart=always
 RestartSec=20
 # the daemon only writes under .radar/ in the project directory

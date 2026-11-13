@@ -234,9 +234,9 @@ Images belong to their respective vendors; copies here are research references, 
 
 | File / link | Official source and intended comparison |
 | --- | --- |
-| [Tiger DOM](tiger-dom.png) | [T1]. Downloaded official DOM image; reference for combined DOM composition. Original: https://s3-eu-central-1.amazonaws.com/euc-cdn.freshdesk.com/data/helpdesk/attachments/production/80035074291/original/VJAeZcubp3WokNerBKLbVB7cstMziZRbjA.png?1630933767 |
+| Tiger DOM (third-party screenshot, not redistributed) | [T1]. Downloaded official DOM image; reference for combined DOM composition. Original: https://s3-eu-central-1.amazonaws.com/euc-cdn.freshdesk.com/data/helpdesk/attachments/production/80035074291/original/VJAeZcubp3WokNerBKLbVB7cstMziZRbjA.png?1630933767 |
 | [Bookmap bubbles](bookmap-bubbles.webp) | [B1]. Downloaded official feature image. Original: https://bookmap.com/static/features/v2/s3/1.webp |
-| [Bet Angel league filter](betangel-league-filter.png) | [S2]. Downloaded official filter example. Original: https://www.betangel.com/user-guide/drex_filtering_markets_custom_2.png |
+| Bet Angel league filter (third-party screenshot, not redistributed) | [S2]. Downloaded official filter example. Original: https://www.betangel.com/user-guide/drex_filtering_markets_custom_2.png |
 | [MetaScalp DOM page](https://metascalp.gitbook.io/metascalp/stakan) | [M1]. Embedded complete DOM, trade tape and cluster screenshots; local image retrieval blocked. Use the page rather than relying on expiring image tokens. |
 | [Quantower resizing animation](https://help.quantower.com/quantower/general-settings/binds) | [Q1]. Embedded animation documents bind resizing and divider interaction; not locally archived. |
 | [ATAS Smart DOM image](https://atas.net/wp-content/uploads/2026/06/smart-dom-depth-of-market-analysis-atas.webp) | [A1]. Official mini-footprint/DOM reference; URL checked by research subagent, not locally archived. |

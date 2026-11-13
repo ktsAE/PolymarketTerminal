@@ -87,5 +87,5 @@ Further: `decide.ts` and `ladder.ts` are live through decision. `fairvalue.ts` i
 
 ## Verification
 
-Every line number above came from `grep -n` or `sed -n` output on the files in /home/kskroyal/PolymarketTerminal/radar. Not run: tsc, tests and the TUI. Execution and build checks are out of scope for this audit.
+Every line number above came from `grep -n` or `sed -n` output on the files in ~/PolymarketTerminal/radar. Not run: tsc, tests and the TUI. Execution and build checks are out of scope for this audit.
 Not verified: whether `poll()` and `loadBookMeta` actually never throw. I read `loadBookMeta`'s doc comment (bookview.ts:51) but not its body.

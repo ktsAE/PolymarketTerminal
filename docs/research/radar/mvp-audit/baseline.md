@@ -1,6 +1,6 @@
 # MVP audit baseline
 
-Repo: /home/kskroyal/PolymarketTerminal (branch main, up to date with github/main)
+Repo: ~/PolymarketTerminal (branch main, up to date with github/main)
 Scope: baseline checks only. No code changed.
 
 ## Results
@@ -20,4 +20,4 @@ None. No failure ids or signatures to report.
 
 - Vitest emitted 9 `ExperimentalWarning: SQLite is an experimental feature` lines (Node SQLite). These are warnings, not failures.
 - Doctor latencies: gamma events 958ms, clob time 519ms, data v2 trades 901ms, holders 1237ms, activity 1068ms, positions 984ms, user-pnl 1626ms. Live network calls, so timings vary between runs.
-- Raw logs: /home/kskroyal/.hermes/cache/scratch/{tsc,vitest,doctor,gitstatus}.log
+- Raw logs: ~/.hermes/cache/scratch/{tsc,vitest,doctor,gitstatus}.log

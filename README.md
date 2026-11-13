@@ -1,4 +1,35 @@
-# Polymarket Orderbook Terminal MVP
+# Polymarket Terminal
+
+Two independent local tools for Polymarket, built on its public APIs:
+
+| | What it is | Orders? | Start |
+|---|---|---|---|
+| **Radar** (`radar/`) | A terminal screener: markets where new accounts are putting money, holders by wallet class, a live order-book DOM, a wallet's real record, cost of a trade, wallet following | **Never.** Read-only | `npm run doctor`, then `npm run tui` |
+| **Desktop terminal** (Electron) | Several live order books on a price ladder, with optional order entry | Yes, only after you connect a key and arm it. DRY by default | `npm install`, then `npm run dev` |
+
+Requires Node >= 22.18. Everything runs on your machine; there is no server, account or telemetry.
+
+## Radar in 60 seconds
+
+```sh
+npm install
+npm run doctor     # checks the Polymarket endpoints the radar needs
+npm run tui        # 1 Markets . 2 Games . 3 Newbies . 4 Holders . 5 Decision . 6 X-ray . 7 Search . 8 Book . 9 Following
+```
+
+Typical flow: **3 Newbies** (markets ranked by money from accounts under 14 days old) -> Enter for **Holders** -> `8` for the live **Book** -> `p` for **Decision** -> `x` for a wallet's **X-ray**. Press `?` for every key. Full guide: [`radar/README.md`](radar/README.md). Release notes: [`CHANGELOG.md`](CHANGELOG.md).
+
+What the radar is **not**: it is not trading advice and it has found no trading edge (see the studies in [`docs/research/radar/`](docs/research/radar/)). Labels such as "new account" or "cluster" describe behaviour; they are not accusations about anyone.
+
+## Disclaimer and risk
+
+Educational and research software, provided as is, with no warranty. Nothing here is financial, legal or investment advice. Prediction markets can lose you money, and trading may be restricted where you live: check Polymarket's terms and geographic rules yourself. The desktop terminal can place real orders if you connect a key and arm live trading; you are responsible for every order. This project is not affiliated with or endorsed by Polymarket.
+
+## Security
+
+Read [`SECURITY.md`](SECURITY.md) before connecting a key. In short: use a dedicated low-balance signer, never a primary wallet; the radar needs no key at all. Report vulnerabilities privately as described there.
+
+## Desktop terminal
 
 Local Electron workstation for opening several Polymarket order books and placing orders directly from the price ladder.
 
@@ -62,22 +93,6 @@ npm run dev:web
 
 The visual reference audit and implementation tokens are documented in [`DESIGN.md`](DESIGN.md).
 
-## Engineering agent
-
-Hermes with Oh My Hermes is installed as local developer tooling; it is not bundled into the Electron app or shipped to terminal users. Start the project-scoped agent from this repository with:
-
-```sh
-npm run agent
-```
-
-This selects the repository's `.hermes` profile and `.omh` workflow store. Check that integration without starting an AI session with:
-
-```sh
-npm run agent:doctor
-```
-
-Running `hermes` directly uses the user-wide profile instead, so the same engineering workflows remain available from other directories.
-
 ## Connect an account
 
 1. Start the desktop app and click **NOT CONNECTED**.
@@ -99,10 +114,6 @@ PM_TERMINAL_MAX_ORDER_USD=5 npm start
 The renderer has no Node access and the signer never returns from the main process after connection. Every live order rechecks session arming, a recent Polymarket geoblock result and the notional cap. Resting orders are post-only. The account drawer includes a confirmed cancel-all control that also disarms live trading.
 
 Private-key login is the fastest MVP integration, not the ideal long-term design. A dedicated signer or Polymarket session key limits exposure better than importing a primary wallet key. Live authentication and order placement cannot be fully verified without the owner's actual wallet type and a deliberately funded test account; keep the first live test at the minimum supported size.
-
-## Radar (terminal screener)
-
-A separate read-only terminal tool lives in `radar/`: `npm run doctor`, then `npm run tui`. It is not part of the Electron app and places no orders. See [radar/README.md](radar/README.md).
 
 ## Sources
 
