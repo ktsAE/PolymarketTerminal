@@ -2,6 +2,7 @@
   "name": "polymarket-orderbook-terminal",
   "version": "0.2.0",
   "private": true,
+  "license": "MIT",
   "engines": { "node": ">=22.18" },
   "type": "module",
   "description": "Local multi-order-book desktop terminal for Polymarket",

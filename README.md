@@ -25,6 +25,10 @@ What the radar is **not**: it is not trading advice and it has found no trading 
 
 Educational and research software, provided as is, with no warranty. Nothing here is financial, legal or investment advice. Prediction markets can lose you money, and trading may be restricted where you live: check Polymarket's terms and geographic rules yourself. The desktop terminal can place real orders if you connect a key and arm live trading; you are responsible for every order. This project is not affiliated with or endorsed by Polymarket.
 
+## Research data and third-party claims
+
+The research notes and the case file (`radar/cases.seed.ts`, `docs/research/`) reproduce reports and allegations made by other people, each with its source and a confidence tier. They are unverified unless a tier says an official body confirmed them, and they are not statements by this project. If something about you is wrong or you want it removed, open an issue and it will be fixed.
+
 ## Security
 
 Read [`SECURITY.md`](SECURITY.md) before connecting a key. In short: use a dedicated low-balance signer, never a primary wallet; the radar needs no key at all. Report vulnerabilities privately as described there.
@@ -123,3 +127,7 @@ Private-key login is the fastest MVP integration, not the ideal long-term design
 - [Polymarket TypeScript SDK](https://docs.polymarket.com/getting-started/typescript)
 - [Polymarket wallet activity](https://docs.polymarket.com/trading/wallet-activity)
 - [Polymarket geographic restrictions](https://docs.polymarket.com/api-reference/geoblock)
+
+## License
+
+[MIT](LICENSE). Copyright (c) 2026 ktsAE.
